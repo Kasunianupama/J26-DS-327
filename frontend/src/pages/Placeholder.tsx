@@ -1,0 +1,1 @@
+export default function Placeholder({title}:{title:string}){return <><p className="eyebrow">DEMO MODULE</p><h2>{title}</h2><section className="panel"><p>This interface is ready to consume the FastAPI integration contracts. Research algorithms and live data are intentionally not implemented in this scaffold.</p></section></>}

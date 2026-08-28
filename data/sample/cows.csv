@@ -1,0 +1,4 @@
+cow_id,farm_id,breed,lactation_number
+COW_001,FARM_01,Friesian,2
+COW_002,FARM_01,Jersey,1
+
