@@ -21,6 +21,7 @@ import {
 } from '../../../data/component2';
 import { useC2 } from '../state';
 import { Card, ConfidenceBadge, DelProLink, EmptyState, Meter, Note } from '../ui';
+import { BreedingAlerts } from '../panels/BreedingAlerts';
 
 export function Reproduction() {
   const { openDrawer } = useC2();
@@ -85,9 +86,11 @@ export function Reproduction() {
         </div>
       </Card>
 
+      {/* ---- who has fallen out of the programme, before who is most likely ---- */}
+      <BreedingAlerts />
+
       {/* ---- AI intelligence (secondary to capacity) ---- */}
-      <div className="pfie-grid side">
-        <Card
+      <Card
           title="Conception likelihood"
           sub="Live breeding decisions only, ranked by likelihood. Event probability — not the same thing as forecast confidence."
         >
@@ -131,9 +134,9 @@ export function Reproduction() {
               </Note>
             </div>
           )}
-        </Card>
+      </Card>
 
-        <div className="pfie-stack">
+      <div className="pfie-grid c2">
           <Card title="Herd reproductive performance" sub="Descriptive, from the recorded service history.">
             <dl className="pfie-dl" style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '8px 16px', fontSize: 13 }}>
               <dt style={{ color: 'var(--muted)' }}>Animals served</dt><dd style={{ textAlign: 'right', fontWeight: 600 }}>{AI_SUMMARY.servedAnimals}</dd>
@@ -166,7 +169,6 @@ export function Reproduction() {
               </Note>
             </div>
           </Card>
-        </div>
       </div>
 
       {/* ---- dry planning ---- */}
@@ -176,13 +178,46 @@ export function Reproduction() {
 }
 
 function DryPlanning() {
-  const { openDrawer } = useC2();
+  const { openDrawer, dryRest, setDryRest, clearDryRest } = useC2();
+  /* Typing is free-form; the hard minimum is applied when the value is
+     committed. Clamping on every keystroke would make "104" impossible to
+     type, because the first "1" would already snap to 90. */
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const commit = (id: string) => {
+    const value = draft[id];
+    if (value === undefined) return;
+    if (value.trim() === '') clearDryRest(id);
+    else setDryRest(id, Number(value));
+    setDraft((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  };
   const [filter, setFilter] = useState<'All' | 'Recommendation available' | 'Provisional' | 'Schedule only' | 'No reliable recommendation'>('All');
 
   const rows = useMemo(
     () => (filter === 'All' ? DRY_PLAN : DRY_PLAN.filter((r) => r.status === filter)).slice(0, 60),
     [filter],
   );
+
+  const planned = Object.keys(dryRest).length;
+  const plannedDays = Object.values(dryRest);
+  const averagePlanned = plannedDays.length
+    ? Math.round(plannedDays.reduce((sum, d) => sum + d, 0) / plannedDays.length)
+    : 0;
+  const atMinimum = plannedDays.filter((d) => d === HARD_MINIMUM_DAYS).length;
+  /* A set window shorter than the published recommendation is legal but worth
+     showing back, because it trades rest against milking days. */
+  const belowRecommended = DRY_PLAN.filter(
+    (r) => r.window && dryRest[r.animal.id] !== undefined && dryRest[r.animal.id] < r.window[0],
+  ).length;
+
+  const applyRecommended = () => {
+    DRY_PLAN.forEach((r) => {
+      if (r.window) setDryRest(r.animal.id, Math.round((r.window[0] + r.window[1]) / 2));
+    });
+  };
 
   return (
     <Card
@@ -201,6 +236,27 @@ function DryPlanning() {
         </label>
       }
     >
+      <div className="pfie-restplan">
+        <div className="pfie-restplan-stats">
+          <div><span>Rest windows set</span><b>{planned} <i>of {DRY_PLAN.length}</i></b></div>
+          <div><span>Average planned rest</span><b>{planned ? `${averagePlanned} days` : '—'}</b></div>
+          <div><span>At the hard minimum</span><b className={atMinimum ? 'warn' : undefined}>{atMinimum}</b></div>
+          <div><span>Below the recommendation</span><b className={belowRecommended ? 'warn' : undefined}>{belowRecommended}</b></div>
+        </div>
+        <div className="pfie-row tight">
+          <button className="pfie-btn primary" onClick={applyRecommended}>
+            Set every published recommendation
+          </button>
+          <button
+            className="pfie-btn"
+            disabled={planned === 0}
+            onClick={() => Object.keys(dryRest).forEach(clearDryRest)}
+          >
+            Clear all
+          </button>
+        </div>
+      </div>
+
       {rows.length === 0 ? (
         <EmptyState title="No animals in this state">
           Change the status filter to see the rest of the dry-off schedule.
@@ -213,6 +269,7 @@ function DryPlanning() {
                 <th>Cow</th>
                 <th>Current stage</th>
                 <th>Recommended window</th>
+                <th>Planned rest</th>
                 <th className="pfie-num">Hard minimum</th>
                 <th>Confidence</th>
                 <th className="pfie-num">Comparable cases</th>
@@ -232,6 +289,39 @@ function DryPlanning() {
                       <span style={{ color: 'var(--muted)' }}>Not published</span>
                     )}
                   </td>
+                  <td onClick={(e) => e.stopPropagation()}>
+                    <span className="pfie-restcell">
+                      <input
+                        type="number"
+                        min={HARD_MINIMUM_DAYS}
+                        max={240}
+                        step={1}
+                        value={draft[r.animal.id] ?? (dryRest[r.animal.id]?.toString() ?? '')}
+                        placeholder={r.window ? `${Math.round((r.window[0] + r.window[1]) / 2)}` : '—'}
+                        aria-label={`Planned rest days for ${r.animal.id} (minimum ${HARD_MINIMUM_DAYS})`}
+                        onChange={(e) => setDraft((c) => ({ ...c, [r.animal.id]: e.target.value }))}
+                        onBlur={() => commit(r.animal.id)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                      />
+                      <span className="unit">days</span>
+                      {r.window && dryRest[r.animal.id] === undefined && (
+                        <button
+                          className="pfie-btn ghost"
+                          onClick={() => setDryRest(r.animal.id, Math.round((r.window![0] + r.window![1]) / 2))}
+                        >
+                          Use
+                        </button>
+                      )}
+                      {dryRest[r.animal.id] !== undefined && (
+                        <button className="pfie-btn ghost" onClick={() => clearDryRest(r.animal.id)} aria-label={`Clear planned rest for ${r.animal.id}`}>
+                          ×
+                        </button>
+                      )}
+                    </span>
+                    {r.window && dryRest[r.animal.id] !== undefined && dryRest[r.animal.id] < r.window[0] && (
+                      <small className="pfie-restwarn">Shorter than the recommendation</small>
+                    )}
+                  </td>
                   <td className="pfie-num">{r.hardMinimum} days</td>
                   <td><ConfidenceBadge level={r.confidence} hint={false} /></td>
                   <td className="pfie-num">{r.comparableCases}</td>
@@ -248,7 +338,9 @@ function DryPlanning() {
       <div style={{ marginTop: 14 }} className="pfie-row between">
         <Note tone="caution">
           A recommendation is only published where enough comparable completed dry periods exist. “Schedule only”
-          shows the planned date without a recommendation.
+          shows the planned date without a recommendation. Planned rest cannot be set below the{' '}
+          {HARD_MINIMUM_DAYS}-day hard minimum — the field clamps rather than warning after the fact — and these
+          plans stay in Component 2; the dry-off itself is still recorded in DelPro.
         </Note>
         <DelProLink id="the dry-off schedule" />
       </div>
