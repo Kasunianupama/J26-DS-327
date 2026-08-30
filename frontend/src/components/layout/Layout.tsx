@@ -83,8 +83,8 @@ export function Layout() {
           </NavLink>)}
         </section>)}
       </nav>
-      <NavLink className={({isActive}) => `settings-link${isActive ? ' active' : ''}`} to="/settings" title="Settings"><span className="nav-icon" aria-hidden="true">⚙</span><span className="nav-label">Settings</span></NavLink>
-      <label className="role-switcher">Demo role<select value={role} onChange={e => setRole(e.target.value as typeof role)}><option value="farm_worker">Farm worker</option><option value="veterinarian">Veterinarian</option><option value="farm_manager">Farm manager</option><option value="nldb_management">NLDB management</option></select></label>
+      <NavLink className={({isActive}) => `settings-link${isActive ? ' active' : ''}`} to="/settings"><span className="nav-icon" aria-hidden="true">⚙</span>Settings</NavLink>
+      <label className="role-switcher">View as<select value={role} onChange={e => setRole(e.target.value as typeof role)}><option value="farm_worker">Farm worker</option><option value="veterinarian">Veterinarian</option><option value="farm_manager">Farm manager</option><option value="nldb_management">NLDB management</option></select></label>
     </aside>
     <main className={isPredictiveWorkspace ? 'page-main--full' : undefined}>
       {!isPredictiveWorkspace && <div className="page-context"><span>Workspace</span><b>{pageTitle(pathname)}</b></div>}
