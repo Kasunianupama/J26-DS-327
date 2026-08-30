@@ -1,7 +1,9 @@
 /**
  * Component 2 — Predictive Farm Intelligence.
  *
- * Four workspaces over one shared selection state. This is a hard-coded
+ * Five workspaces over one shared selection state, presented as a command deck:
+ * a frosted header, a metric deck scoped to the current workspace, the priority
+ * signals that point into it, and a full-width canvas. This is a hard-coded
  * prototype: all data is fictional synthetic scaffold data, and no backend,
  * model or DelPro integration is involved.
  */
@@ -14,6 +16,7 @@ import {
   HERD,
   HORIZONS,
   PROFILES,
+  SEVERITY_META,
   isoDate,
   longDate,
   type HorizonId,
@@ -40,14 +43,16 @@ import { Reproduction } from './workspaces/Reproduction';
 import { HerdOutcomes } from './workspaces/HerdOutcomes';
 import { Operations } from './workspaces/Operations';
 import { EmptyState, Tabs } from './ui';
+import { Icon, type IconName } from './icons';
+import { MetricDeck, signalsFor } from './deck';
 import './pfie.css';
 
-const WORKSPACES: { id: Workspace; label: string }[] = [
-  { id: 'future', label: 'Farm Outlook' },
-  { id: 'capacity', label: 'Herd & Production' },
-  { id: 'commerce', label: 'Products & Income' },
-  { id: 'evidence', label: 'Forecast Confidence' },
-  { id: 'operations', label: 'Daily Operations' },
+const WORKSPACES: { id: Workspace; label: string; icon: IconName }[] = [
+  { id: 'future', label: 'Farm Outlook', icon: 'outlook' },
+  { id: 'capacity', label: 'Herd & Production', icon: 'herd' },
+  { id: 'commerce', label: 'Products & Income', icon: 'products' },
+  { id: 'evidence', label: 'Forecast Confidence', icon: 'confidence' },
+  { id: 'operations', label: 'Daily Operations', icon: 'operations' },
 ];
 
 const CAPACITY_TABS: { id: CapacityTab; label: string }[] = [
@@ -72,113 +77,210 @@ function Shell() {
   } = useC2();
 
   const openFindings = findingsOpenCount(acknowledged, snoozed);
+  const detailOpen = drawer.kind !== 'none';
   const activeFarm = FARMS.find((f) => f.id === farm)!;
   const [overviewOpen, setOverviewOpen] = useState(false);
 
   return (
     <div className="pfie">
-      {/* ---- persistent control bar ---- */}
-      <div className="pfie-bar">
-        <span className="pfie-seg" role="group" aria-label="Forecast horizon">
-          {HORIZONS.map((h) => (
-            <button key={h.id} aria-pressed={horizon === h.id} onClick={() => setHorizon(h.id as HorizonId)}>
-              {h.label}
-            </button>
-          ))}
-        </span>
+      {/* ================= command header ================= */}
+      <header className="pfie-head">
+        <div className="pfie-bar">
+          <div className="pfie-ident">
+            <span className="pfie-ident-mark" aria-hidden><Icon name="spark" size={19} /></span>
+            <div>
+              <h1>Predictive intelligence</h1>
+              <p>{activeFarm.name} · synthetic prototype</p>
+            </div>
+          </div>
 
-        <CowSearch />
+          <span className="spacer" />
 
-        <span className="spacer" />
+          <CowSearch />
 
-        <button className="pfie-btn" onClick={() => openDrawer({ kind: 'findings' })}>
-          Findings {openFindings > 0 && <span className="pfie-badge conf-Limited" style={{ marginLeft: 4 }}>{openFindings}</span>}
-        </button>
-
-        <div className="pfie-stamp">
-          Updated <b>{GENERATED_AT}</b>
-          <br />
-          Data through <b>{longDate(isoDate(DATA_THROUGH))}</b>
-        </div>
-      </div>
-
-      {/* ---- workspace navigation ---- */}
-      <nav className="pfie-nav">
-        {WORKSPACES.map((w) => (
           <button
-            key={w.id}
-            aria-current={workspace === w.id ? 'page' : undefined}
-            onClick={() => go(w.id)}
+            className="pfie-btn pfie-findings-btn"
+            onClick={() => openDrawer({ kind: 'findings' })}
           >
-            {w.label}
+            <Icon name="flag" size={14} />
+            Findings
+            {openFindings > 0 && <span className="count">{openFindings}</span>}
           </button>
-        ))}
-      </nav>
 
-      <main className="pfie-body">
-        {activeFarm.populated && workspace !== 'operations' && (
-          <section className={`pfie-overview${overviewOpen ? ' open' : ''}`}>
-            <button
-              className="pfie-overview-toggle"
-              onClick={() => setOverviewOpen((open) => !open)}
-              aria-expanded={overviewOpen}
-              aria-controls="farm-overview-content"
-            >
-              <span className="pfie-overview-icon" aria-hidden>{overviewOpen ? '⌄' : '›'}</span>
-              <span>
-                <b>Farm overview</b>
-                <small>Timeline and current herd composition</small>
-              </span>
-              <span className="pfie-overview-action">{overviewOpen ? 'Collapse' : 'Expand'}</span>
-            </button>
-            {overviewOpen && (
-              <div id="farm-overview-content" className="pfie-overview-content">
-                <TimelinePlayer />
-                <HerdStrip />
-              </div>
-            )}
-          </section>
-        )}
-        {!activeFarm.populated ? (
+          <span className="pfie-live"><i aria-hidden />Live · {GENERATED_AT.slice(11)}</span>
+
+          <div className="pfie-stamp">
+            <span>Updated <b>{GENERATED_AT.slice(0, 10)}</b></span>
+            <span>Data through <b>{longDate(isoDate(DATA_THROUGH))}</b></span>
+          </div>
+        </div>
+
+        <nav className="pfie-nav" aria-label="Workspaces">
+          <div className="pfie-nav-tabs">
+            {WORKSPACES.map((w) => (
+              <button
+                key={w.id}
+                aria-current={workspace === w.id ? 'page' : undefined}
+                onClick={() => go(w.id)}
+              >
+                <Icon name={w.icon} size={15} />
+                {w.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Abbreviated so the workspace pills and the horizon share one row on
+              a 14-inch screen; the full label stays available to assistive tech. */}
+          <span className="pfie-seg compact" role="group" aria-label="Forecast horizon">
+            {HORIZONS.map((h) => (
+              <button
+                key={h.id}
+                aria-pressed={horizon === h.id}
+                aria-label={h.label}
+                title={h.label}
+                onClick={() => setHorizon(h.id as HorizonId)}
+              >
+                {h.id.toUpperCase()}
+              </button>
+            ))}
+          </span>
+        </nav>
+      </header>
+
+      <div className="pfie-body">
+        {detailOpen ? (
+          <DetailPage />
+        ) : !activeFarm.populated ? (
           <EmptyState title={`${activeFarm.name} has no data in this prototype`}>
             Only {FARMS[0].name} is populated. Switch back to it in the farm selector to explore the
             forecasts.
           </EmptyState>
         ) : (
           <>
-            {workspace === 'future' && <FutureWorkspace />}
-            {workspace === 'capacity' && (
-              <>
-                <Tabs tabs={CAPACITY_TABS} value={capacityTab} onChange={(t) => go('capacity', t)} />
-                {capacityTab === 'milk' && <MilkSupply />}
-                {capacityTab === 'reproduction' && <Reproduction />}
-                {capacityTab === 'outcomes' && <HerdOutcomes />}
-                {capacityTab === 'genetics' && <HerdGenetics />}
-              </>
-            )}
-            {workspace === 'commerce' && <ProductsFinance />}
-            {workspace === 'evidence' && <Evidence />}
-            {workspace === 'operations' && <Operations />}
+            {/* ================= metric deck ================= */}
+            <MetricDeck />
+
+            {/* ================= priority signals ================= */}
+            <SignalBand />
+
+            {/* ================= working canvas ================= */}
+            <div className="pfie-canvas">
+              {/* Farm Outlook carries the full timeline inline, so the compact
+                  overview would only repeat it. */}
+              {workspace !== 'operations' && workspace !== 'future' && (
+                <section className={`pfie-overview${overviewOpen ? ' open' : ''}`}>
+                  <button
+                    className="pfie-overview-toggle"
+                    onClick={() => setOverviewOpen((open) => !open)}
+                    aria-expanded={overviewOpen}
+                    aria-controls="farm-overview-content"
+                  >
+                    <span className="pfie-overview-icon" aria-hidden>›</span>
+                    <span>
+                      <b>Farm timeline &amp; herd composition</b>
+                      <small>Recorded history, today, and the expected path</small>
+                    </span>
+                    <span className="pfie-overview-action">{overviewOpen ? 'Collapse' : 'Expand'}</span>
+                  </button>
+                  {overviewOpen && (
+                    <div id="farm-overview-content" className="pfie-overview-content">
+                      <TimelinePlayer />
+                      <HerdStrip />
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {workspace === 'future' && <FutureWorkspace />}
+              {workspace === 'capacity' && (
+                <>
+                  <Tabs tabs={CAPACITY_TABS} value={capacityTab} onChange={(t) => go('capacity', t)} />
+                  {capacityTab === 'milk' && <MilkSupply />}
+                  {capacityTab === 'reproduction' && <Reproduction />}
+                  {capacityTab === 'outcomes' && <HerdOutcomes />}
+                  {capacityTab === 'genetics' && <HerdGenetics />}
+                </>
+              )}
+              {workspace === 'commerce' && <ProductsFinance />}
+              {workspace === 'evidence' && <Evidence />}
+              {workspace === 'operations' && <Operations />}
+            </div>
           </>
         )}
 
-        <p style={{ fontSize: 11.5, color: 'var(--faint)', marginTop: 40, paddingTop: 16, borderTop: '1px solid var(--line)', lineHeight: 1.6 }}>
+        {!detailOpen && <p className="pfie-disclaimer">
           All figures are fictional synthetic prototype data. They are not NLDB records, not DelPro data, and do
           not represent research findings. Component 2 is a predictive layer — animal records, event entry,
           treatments and operational reporting remain in DelPro. The Operations workspace demonstrates how
           acknowledgement, action and outcome evidence can be monitored without replacing those source systems.
-        </p>
-      </main>
+        </p>}
+      </div>
 
-      {/* ---- drawers ---- */}
-      {drawer.kind === 'cow' && <CowPanel animalId={drawer.animalId} />}
-      {drawer.kind === 'cohort' && <CohortDrawer groupKey={drawer.groupKey} value={drawer.value} />}
-      {drawer.kind === 'structure' && <StructureDrawer date={drawer.date} domain={drawer.domain} />}
-      {drawer.kind === 'outcome' && <OutcomeReasoningDrawer date={drawer.date} chart={drawer.chart} />}
-      {drawer.kind === 'flow-stage' && <FlowStageDrawer stageId={drawer.stageId} />}
-      {drawer.kind === 'product' && <ProductDrawer product={drawer.product} />}
-      {drawer.kind === 'findings' && <FindingsDrawer />}
     </div>
+  );
+}
+
+/** Routes the open detail state to the panel that knows how to render it. */
+function DetailPage() {
+  const { drawer } = useC2();
+  switch (drawer.kind) {
+    case 'cow': return <CowPanel animalId={drawer.animalId} />;
+    case 'cohort': return <CohortDrawer groupKey={drawer.groupKey} value={drawer.value} />;
+    case 'structure': return <StructureDrawer date={drawer.date} domain={drawer.domain} />;
+    case 'outcome': return <OutcomeReasoningDrawer date={drawer.date} chart={drawer.chart} />;
+    case 'flow-stage': return <FlowStageDrawer stageId={drawer.stageId} />;
+    case 'product': return <ProductDrawer product={drawer.product} />;
+    case 'findings': return <FindingsDrawer />;
+    default: return null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Priority signals — the findings that point into this workspace.     */
+
+function SignalBand() {
+  const {
+    workspace, acknowledged, snoozed, openDrawer, go, setSelectedDate, setSelectedMonth,
+  } = useC2();
+  const signals = signalsFor(workspace, acknowledged, snoozed);
+  if (signals.length === 0) return null;
+
+  return (
+    <section className="pfie-band-signals">
+      <div className="pfie-band-signals-head">
+        <h2>Priority signals</h2>
+        <button className="pfie-btn ghost" onClick={() => openDrawer({ kind: 'findings' })}>
+          View all findings <Icon name="arrowRight" size={13} />
+        </button>
+      </div>
+      <ul className="pfie-signals">
+        {signals.map((f) => {
+          const sev = SEVERITY_META[f.severity];
+          const link = f.links[0];
+          return (
+            <li key={f.id} className={`pfie-signal sev-${f.severity}`}>
+              <span className="kind" style={{ color: sev.color }}>
+                <span aria-hidden>{sev.mark}</span> {f.kind}
+              </span>
+              <b>{f.title}</b>
+              <p>{f.summary}</p>
+              {link && (
+                <button
+                  className="pfie-btn ghost"
+                  onClick={() => {
+                    if (link.date) setSelectedDate(link.date);
+                    if (link.month) setSelectedMonth(link.month);
+                    go(link.workspace, link.tab);
+                  }}
+                >
+                  {link.label} <Icon name="arrowRight" size={13} />
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 
@@ -202,48 +304,22 @@ function CowSearch() {
   }, [search]);
 
   return (
-    <span style={{ position: 'relative' }}>
-      <label className="pfie-field">
-        <input
-          type="search"
-          placeholder="Find a cow or cohort…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setTimeout(() => setFocused(false), 160)}
-          style={{ width: 190 }}
-          aria-label="Search animals and cohorts"
-        />
-      </label>
+    <span className="pfie-search">
+      <Icon name="search" size={14} />
+      <input
+        type="search"
+        placeholder="Find a cow or cohort…"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setTimeout(() => setFocused(false), 160)}
+        aria-label="Search animals and cohorts"
+      />
       {focused && results.length > 0 && (
-        <div
-          style={{
-            position: 'absolute',
-            top: '100%',
-            left: 0,
-            marginTop: 6,
-            width: 330,
-            background: 'var(--paper)',
-            border: '1px solid var(--line)',
-            borderRadius: 10,
-            boxShadow: 'var(--shadow-lg)',
-            zIndex: 50,
-            overflow: 'hidden',
-          }}
-        >
+        <div className="pfie-search-results">
           {results.map((a) => (
             <button
               key={a.id}
-              style={{
-                display: 'block',
-                width: '100%',
-                textAlign: 'left',
-                border: 0,
-                background: 'none',
-                padding: '9px 12px',
-                fontSize: 12.5,
-                borderBottom: '1px solid var(--line-2)',
-              }}
               onClick={() => { openDrawer({ kind: 'cow', animalId: a.id }); setSearch(''); }}
             >
               <b>{a.id}</b>
@@ -255,15 +331,8 @@ function CowSearch() {
         </div>
       )}
       {focused && search.trim().length >= 2 && results.length === 0 && (
-        <div
-          style={{
-            position: 'absolute', top: '100%', left: 0, marginTop: 6, width: 330,
-            background: 'var(--paper)', border: '1px solid var(--line)', borderRadius: 10,
-            boxShadow: 'var(--shadow-lg)', zIndex: 50, padding: '12px 14px',
-            fontSize: 12.5, color: 'var(--muted)',
-          }}
-        >
-          No animal or cohort matches “{search}”.
+        <div className="pfie-search-results">
+          <p className="none">No animal or cohort matches “{search}”.</p>
         </div>
       )}
     </span>
