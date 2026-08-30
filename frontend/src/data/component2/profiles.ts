@@ -6,7 +6,7 @@
  * days in milk, litres per day, recorded health events and AI attempts.
  */
 
-import { DAY_MS, lactationTotal, round, woodsYield } from './core';
+import { DAY_MS, lactationTotal, round, woodsYield, type Confidence } from './core';
 import { HERD, PROFILES, type Animal, type ProfileId } from './herd';
 
 export const PROFILE_IDS = Object.keys(PROFILES) as ProfileId[];
@@ -130,4 +130,77 @@ export function profileHologramState(profile: ProfileId, selectedDay: number): P
     meanAiAttempts: round(mean(animals.map((animal) => animal.aiAttempts)), 1),
     supportingAnimals: animals.length,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* Profile indicators                                                  */
+/* ------------------------------------------------------------------ */
+
+export interface ProfileIndicators {
+  /** Animals whose recorded curve supports this profile. */
+  animals: number;
+  /** Those animals as a share of the milking herd, %. */
+  herdShare: number;
+  /**
+   * Yield at day 240 as a share of peak, %. This is the number that actually
+   * separates a persistent group from a fast-tapering one.
+   */
+  persistence: number;
+  /** Share of the herd's expected 90-day litres this group carries, %. */
+  milkShare90: number;
+  /** Median day of peak, and how far the selected day sits past it. */
+  peakDay: number;
+  daysPastPeak: number;
+  /** Median projected 305-day lactation total, litres. */
+  median305: number;
+  /** The weakest confidence level found across the group. */
+  confidence: Confidence;
+  /** Share of the group whose forecast rests on peer data, %. */
+  peerDerived: number;
+}
+
+const MILKING_HERD = HERD.filter((a) => a.prodState === 'Milking');
+const HERD_CONTRIBUTION_90 = HERD.reduce((sum, a) => sum + a.contribution90, 0);
+
+export function profileIndicators(profile: ProfileId, selectedDay: number): ProfileIndicators {
+  const animals = profileCurveAnimals(profile);
+  const n = Math.max(1, animals.length);
+  const summary = profileSummary(profile, selectedDay);
+
+  const persistence = round(mean(animals.map((a) => a.persistence)), 0);
+  const peerDerived = round(
+    (animals.filter((a) => a.evidence === 'Peer' || a.evidence === 'Herd' || a.evidence === 'Historical only').length / n) * 100,
+    0,
+  );
+  const confidence: Confidence = animals.some((a) => a.confidence === 'Limited')
+    ? 'Limited'
+    : animals.some((a) => a.confidence === 'Moderate')
+      ? 'Moderate'
+      : 'High';
+
+  return {
+    animals: animals.length,
+    herdShare: round((animals.length / Math.max(1, MILKING_HERD.length)) * 100, 0),
+    persistence,
+    milkShare90: round((summary.totalContribution90 / Math.max(1, HERD_CONTRIBUTION_90)) * 100, 1),
+    peakDay: summary.medianPeakDay,
+    daysPastPeak: selectedDay - summary.medianPeakDay,
+    median305: summary.median305,
+    confidence,
+    peerDerived,
+  };
+}
+
+/**
+ * The aggregate lactation curve for one profile across a full 305-day
+ * lactation, with its interquartile band. Days at or before the selected day
+ * are what the group's recorded curves have already established; the rest is
+ * the expected remainder of the lactation.
+ */
+export function profileLactationCurve(profile: ProfileId, step = 5): ProfileCurvePoint[] {
+  const animals = profileCurveAnimals(profile);
+  const days: number[] = [];
+  for (let day = 1; day <= 305; day += step) days.push(day);
+  if (days[days.length - 1] !== 305) days.push(305);
+  return days.map((day) => curvePoint(animals, day));
 }

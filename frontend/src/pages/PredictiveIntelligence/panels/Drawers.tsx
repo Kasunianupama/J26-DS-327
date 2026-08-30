@@ -24,7 +24,10 @@ import {
   type Product,
 } from '../../../data/component2';
 import { useC2, type ForecastDomain, type OutcomeChart } from '../state';
-import { Card, ConfidenceBadge, DelProLink, Drawer, EvidenceBadge, Meter, Note } from '../ui';
+import {
+  Card, ConfidenceBadge, DelProLink, Drawer, EvidenceBadge, InfoPoint, KpiStrip, KpiTile, Meter, Note,
+} from '../ui';
+import { ContributionChart } from './ContributionChart';
 import { FindingsList } from './Findings';
 
 /* ------------------------------------------------------------------ */
@@ -45,25 +48,50 @@ export function StructureDrawer({ date, domain }: { date: string; domain: Foreca
   const largestMagnitude = Math.max(1, ...variation.contributors.map((item) => item.magnitude));
   const dominant = [...variation.contributors].sort((a, b) => b.magnitude - a.magnitude)[0];
 
+  const ev = s.evidence;
+
   return (
     <Drawer
       wide
+      eyebrow={`Point explanation · ${variation.domain}`}
       title={`${variation.domain} — point explanation`}
-      sub={`${longDate(date)} · only the selected chart and its relevant evidence`}
+      sub={`${longDate(date)} · only the selected chart and the evidence that is actually relevant to it. Every number below describes this single point, not the herd average.`}
       onClose={closeDrawer}
+      actions={<ConfidenceBadge level={ev.confidence} />}
+      summary={
+        <KpiStrip>
+          {variation.metrics.slice(0, 4).map((metric) => (
+            <KpiTile
+              key={metric.label}
+              label={
+                <>
+                  {metric.label}
+                  <InfoPoint label={metric.label}>
+                    Measured at {longDate(date)} for the {variation.domain.toLowerCase()} chart only —
+                    not averaged across the herd or across the horizon. {ev.confidence} confidence, with{' '}
+                    {Math.round(ev.transitionDependency)}% of the estimate resting on transitions that have
+                    not happened yet.
+                  </InfoPoint>
+                </>
+              }
+              value={metric.value}
+              tone={metric.label.toLowerCase().includes('range') ? 'pred' : 'plain'}
+            />
+          ))}
+          <KpiTile
+            icon="confidence"
+            label="Evidence quality"
+            value={ev.confidence}
+            tone={ev.confidence === 'High' ? 'brand' : ev.confidence === 'Moderate' ? 'caution' : 'concern'}
+            foot={`${Math.round(ev.individualShare)}% individual · ${Math.round(ev.transitionDependency)}% depends on future transitions`}
+          />
+        </KpiStrip>
+      }
     >
       <div className="pfie-section-title" style={{ marginTop: 0 }}>01 · What happened</div>
       <section className="pfie-variation">
         <b>{variation.change}</b>
         <p>{variation.explanation}</p>
-        <div className="pfie-variation-metrics">
-          {variation.metrics.map((metric) => (
-            <div key={metric.label}>
-              <span>{metric.label}</span>
-              <b>{metric.value}</b>
-            </div>
-          ))}
-        </div>
       </section>
 
       {domain === 'herd' && (
@@ -82,6 +110,9 @@ export function StructureDrawer({ date, domain }: { date: string; domain: Foreca
       )}
 
       <div className="pfie-section-title">02 · Why — ranked contributors</div>
+      {variation.contributors.length > 0 && (
+        <ContributionChart contributors={variation.contributors} />
+      )}
       <div className="pfie-contributors">
         {variation.contributors.length ? variation.contributors.map((item) => (
           <article className="pfie-contributor" key={item.label}>

@@ -9,11 +9,13 @@ export * from './core';
 export * from './herd';
 export * from './forecast';
 export * from './capacity';
+export * from './breeding';
 export * from './commerce';
 export * from './composition';
 export * from './budget';
 export * from './intelligence';
 export * from './outcomes';
+export * from './timeline';
 export * from './profiles';
 
 /** Farms offered by the persistent farm selector. Only one is populated. */

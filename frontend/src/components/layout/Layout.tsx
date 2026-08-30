@@ -22,17 +22,28 @@ const navigation: {label: string; items: NavItem[]}[] = [
 
 function pageTitle(pathname: string) {
   for (const group of navigation) {
-    const match = group.items.find((item) => item.to === pathname);
+    const match = group.items.find((item) => item.to === pathname || pathname.startsWith(`${item.to}/`));
     if (match) return match.label;
   }
   return 'Workspace';
 }
 
+/** Collapsed state survives a reload — it is a workspace preference, not view state. */
+const RAIL_KEY = 'dairyiq.sidebar.collapsed';
+
 export function Layout() {
   const {role, setRole} = useUser();
   const {pathname} = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
-  const isPredictiveWorkspace = pathname === '/predictive';
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem(RAIL_KEY) === '1'; } catch { return false; }
+  });
+  /* The workspace owns a URL subtree — its detail pages are still the workspace. */
+  const isPredictiveWorkspace = pathname === '/predictive' || pathname.startsWith('/predictive/');
+
+  useEffect(() => {
+    try { localStorage.setItem(RAIL_KEY, collapsed ? '1' : '0'); } catch { /* private mode */ }
+  }, [collapsed]);
 
   useEffect(() => setMenuOpen(false), [pathname]);
   useEffect(() => {
@@ -41,7 +52,7 @@ export function Layout() {
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, []);
 
-  return <div className="shell">
+  return <div className={`shell${collapsed ? ' shell--rail' : ''}`}>
     <header className="mobile-header">
       <NavLink className="mobile-brand" to="/" aria-label="DairyIQ dashboard">DAIRY<span>IQ</span></NavLink>
       <button className="menu-toggle" type="button" aria-expanded={menuOpen} aria-controls="app-navigation" onClick={() => setMenuOpen((open) => !open)}>
@@ -50,17 +61,29 @@ export function Layout() {
     </header>
     {menuOpen && <button className="nav-scrim" type="button" aria-label="Close navigation" onClick={() => setMenuOpen(false)} />}
     <aside className={menuOpen ? 'open' : ''} aria-label="Application sidebar">
-      <NavLink className="brand" to="/" aria-label="DairyIQ dashboard">DAIRY<span>IQ</span></NavLink>
+      <div className="sidebar-top">
+        <NavLink className="brand" to="/" aria-label="DairyIQ dashboard">DAIRY<span>IQ</span></NavLink>
+        <button
+          className="rail-toggle"
+          type="button"
+          aria-expanded={!collapsed}
+          onClick={() => setCollapsed((v) => !v)}
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          <span aria-hidden="true">{collapsed ? '»' : '«'}</span>
+          <span className="sr-only">{collapsed ? 'Expand sidebar' : 'Collapse sidebar'}</span>
+        </button>
+      </div>
       <p className="brand-tagline">Decision support workspace</p>
       <nav className="app-navigation" id="app-navigation" aria-label="Main navigation">
         {navigation.map((group) => <section className="nav-group" key={group.label}>
           <p>{group.label}</p>
-          {group.items.map((item) => <NavLink key={item.to} to={item.to} end={item.end} className={({isActive}) => isActive ? 'active' : undefined}>
-            <span className="nav-icon" aria-hidden="true">{item.icon}</span>{item.label}
+          {group.items.map((item) => <NavLink key={item.to} to={item.to} end={item.end} title={item.label} className={({isActive}) => isActive ? 'active' : undefined}>
+            <span className="nav-icon" aria-hidden="true">{item.icon}</span><span className="nav-label">{item.label}</span>
           </NavLink>)}
         </section>)}
       </nav>
-      <NavLink className={({isActive}) => `settings-link${isActive ? ' active' : ''}`} to="/settings"><span className="nav-icon" aria-hidden="true">⚙</span>Settings</NavLink>
+      <NavLink className={({isActive}) => `settings-link${isActive ? ' active' : ''}`} to="/settings" title="Settings"><span className="nav-icon" aria-hidden="true">⚙</span><span className="nav-label">Settings</span></NavLink>
       <label className="role-switcher">Demo role<select value={role} onChange={e => setRole(e.target.value as typeof role)}><option value="farm_worker">Farm worker</option><option value="veterinarian">Veterinarian</option><option value="farm_manager">Farm manager</option><option value="nldb_management">NLDB management</option></select></label>
     </aside>
     <main className={isPredictiveWorkspace ? 'page-main--full' : undefined}>
