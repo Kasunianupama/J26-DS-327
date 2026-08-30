@@ -52,7 +52,17 @@ npm run dev
 
 The frontend reads `VITE_API_BASE_URL`, defaulting to `http://localhost:8000/api/v1`. FastAPI permits the Vite development origin `http://localhost:5173` via configured CORS.
 
-Optional local PostgreSQL: `docker compose up -d`. Basic tests do not require it.
+### SQL Server / DBeaver
+
+The backend is configured for the existing SQL Server Docker setup shown in your DBeaver connection flow:
+
+- Server: `localhost:1433`
+- Container: `delpro-sql`
+- Database: `master` (the initial database in the existing DBeaver connection)
+
+Copy `.env.example` to `.env` and set `DATABASE_USER` and `DATABASE_PASSWORD` to the same SQL Server credentials used in DBeaver. Install Microsoft **ODBC Driver 18 for SQL Server** if it is not already installed. Basic tests do not require the database to be online.
+
+The included `docker-compose.yml` is retained as the original optional PostgreSQL development template; do not run it when using the existing SQL Server instance.
 
 ## Team workflow
 

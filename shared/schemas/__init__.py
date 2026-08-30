@@ -9,4 +9,4 @@ from .risk import DairyRiskScore, NationalDairyRiskIndex
 from .explanation import Explanation
 from .evidence import EvidenceSource
 from .recommendation import Recommendation
-
+from .predictive import PredictiveFarmContext
