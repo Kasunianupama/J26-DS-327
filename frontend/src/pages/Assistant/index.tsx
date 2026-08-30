@@ -3,11 +3,15 @@ import { api } from '../../services/api';
 import { useUser } from '../../context/UserContext';
 import type { Role } from '../../types/api';
 import { ContextChart } from './ContextChart';
+import { Icon } from '../PredictiveIntelligence/icons';
 import './Assistant.css';
 import './VoiceInput.css';
+import './ToolbarControls.css';
+import './AssistantEnhancements.css';
+import './StickyWorkspace.css';
 
 type Language = 'en' | 'si' | 'ta';
-type Tab = 'ask' | 'recent' | 'saved' | 'summary';
+type Tab = 'ask' | 'briefing' | 'recent' | 'saved' | 'summary';
 type Evidence = { source: string; label: string; freshness: string };
 type Priority = { animal_id: string; priority?: string; reason?: string; expected_calving?: string };
 type Answer = { answer: string; intent: string; confidence: number; recommendations: { action: string }[]; evidence: Evidence[]; priorityItems: Priority[]; visualization?: { type: string; title: string; data?: Record<string, string | number>[] } | null; conversationId?: string };
@@ -50,11 +54,17 @@ export default function Assistant() {
   const [voiceNotice, setVoiceNotice] = useState('');
   const [evidenceId, setEvidenceId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
   const t = copy[language];
   const voice = voiceCopy[language];
 
   useEffect(() => () => recognitionRef.current?.abort?.(), []);
+  useEffect(() => {
+    if (!messages.length) return;
+    const frame = window.requestAnimationFrame(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }));
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages.length, loading]);
 
   async function ask(request: string, selectedLanguage = language, existingId?: string, displayQuestion = request) {
     if (!request.trim() || loading) return;
@@ -70,6 +80,7 @@ export default function Assistant() {
     } finally { setLoading(false); }
   }
   function send(question = query) { setQuery(''); void ask(question); }
+  function openDailyBriefing() { setTab('briefing'); if (!messages.some(message => message.response?.intent === 'morning_briefing')) void ask('Show my morning briefing.', language, undefined, prompts[0][language]); }
   function toggleVoice() {
     if (listening) { recognitionRef.current?.stop?.(); return; }
     const Recognition = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
@@ -89,10 +100,10 @@ export default function Assistant() {
   function newConversation() { setMessages([]); setConversationId(undefined); setQuery(''); setEvidenceId(null); setTab('ask'); window.setTimeout(() => inputRef.current?.focus(), 0); }
 
   return <div className="assistant-workspace">
-    <header className="assistant-toolbar"><button className="new-conversation" onClick={newConversation}>{t.newChat}</button><div className="toolbar-context"><span>NLDB Ridiyagama Farm</span><span>{roles[role]}</span></div><div className="language-picker"><button className={language === 'si' ? 'active' : ''} onClick={() => changeLanguage('si')}>සිංහල</button><button className={language === 'en' ? 'active' : ''} onClick={() => changeLanguage('en')}>EN</button><button className={language === 'ta' ? 'active' : ''} onClick={() => changeLanguage('ta')}>தமிழ்</button></div></header>
-    <nav className="assistant-tabs"><button className={tab === 'ask' ? 'active' : ''} onClick={() => setTab('ask')}>{t.ask}</button><button className={tab === 'recent' ? 'active' : ''} onClick={() => setTab('recent')}>{t.recent}</button><button className={tab === 'saved' ? 'active' : ''} onClick={() => setTab('saved')}>{t.saved}</button><button className={tab === 'summary' ? 'active' : ''} onClick={() => setTab('summary')}>{t.summary}</button></nav>
-    <main className="assistant-content">{tab === 'ask' && <><section className="assistant-welcome"><span>DA</span><p>DAIRY INTELLIGENCE ASSISTANT</p><h1>{t.greeting}</h1><div className="prompt-grid">{prompts.map(prompt => <button key={prompt.en} onClick={() => void ask(prompt.en, language, undefined, prompt[language])}>{prompt[language]}<b>→</b></button>)}</div></section>{messages.map(message => <article className="chat-turn" key={message.id}><div className="user-message"><small>{t.you}</small>{message.question}</div>{!message.response && !message.error && <div className="thinking">{t.working}</div>}{message.error && <div className="response-error">{message.error}</div>}{message.response && <Response answer={message.response} language={language} t={t} expanded={evidenceId === message.id} onEvidence={() => setEvidenceId(evidenceId === message.id ? null : message.id)} />}</article>)}</>}{tab === 'recent' && <Empty title={t.recent} description={messages.length ? 'Select a previous question to continue the discussion.' : 'Your recent farm questions will appear here.'}>{messages.slice().reverse().map(message => <button className="history-item" key={message.id} onClick={() => { setQuery(message.question); setTab('ask'); }}>{message.question}<b>→</b></button>)}</Empty>}{tab === 'saved' && <Empty title={t.saved} description="Save a farm decision after reviewing a response to track its outcome over time." />}{tab === 'summary' && <Empty title={t.summary} description="Generate a concise view of today’s production, health, and priorities."><button className="summary-action" onClick={() => send('Summarize the farm today.')}>{t.summary}</button></Empty>}</main>
-    <footer className="assistant-composer"><div><input ref={inputRef} value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => event.key === 'Enter' && send()} placeholder={t.composer}/><button className={`voice-button${listening ? ' listening' : ''}`} onClick={toggleVoice} aria-label={listening ? voice.stop : voice.start} title={listening ? voice.stop : voice.start} type="button"><MicrophoneIcon listening={listening}/><small>{listening ? voice.listening : ''}</small></button><button onClick={() => send()} disabled={!query.trim() || loading}>{loading ? t.working : t.send}</button></div>{voiceNotice && <p className="voice-notice" role="status">{voiceNotice}</p>}</footer>
+    <div className="assistant-topbar"><header className="assistant-toolbar"><button className="new-conversation" onClick={newConversation}><span aria-hidden="true">+</span>{t.newChat.replace(/^[+＋]\s*/, '')}</button><div className="toolbar-context"><span><i aria-hidden="true">⌂</i>NLDB Ridiyagama Farm</span><span><i aria-hidden="true">◉</i>{roles[role]}</span></div><div className="language-picker"><button className={language === 'si' ? 'active' : ''} onClick={() => changeLanguage('si')}>සිංහල</button><button className={language === 'en' ? 'active' : ''} onClick={() => changeLanguage('en')}>EN</button><button className={language === 'ta' ? 'active' : ''} onClick={() => changeLanguage('ta')}>தமிழ்</button></div></header>
+    <nav className="assistant-tabs"><button className={tab === 'ask' ? 'active' : ''} onClick={() => setTab('ask')}><Icon name="spark" size={15}/>{t.ask}</button><button className={tab === 'briefing' ? 'active' : ''} onClick={openDailyBriefing}><Icon name="calendar" size={15}/>Daily briefing</button><button className={tab === 'recent' ? 'active' : ''} onClick={() => setTab('recent')}><Icon name="operations" size={15}/>{t.recent}</button><button className={tab === 'saved' ? 'active' : ''} onClick={() => setTab('saved')}><Icon name="products" size={15}/>{t.saved}</button><button className={tab === 'summary' ? 'active' : ''} onClick={() => setTab('summary')}><Icon name="outlook" size={15}/>{t.summary}</button></nav></div>
+    <main className="assistant-content">{tab === 'ask' && <>{messages.length === 0 && <section className="assistant-welcome"><span>DA</span><p>DAIRY INTELLIGENCE ASSISTANT</p><h1>{t.greeting}</h1><div className="prompt-grid">{prompts.map(prompt => <button key={prompt.en} onClick={() => void ask(prompt.en, language, undefined, prompt[language])}>{prompt[language]}<b>→</b></button>)}</div></section>}{messages.map(message => <article className="chat-turn" key={message.id}><div className="user-message"><small>{t.you}</small>{message.question}</div>{!message.response && !message.error && <div className="thinking">{t.working}</div>}{message.error && <div className="response-error">{message.error}</div>}{message.response && <Response answer={message.response} language={language} t={t} expanded={evidenceId === message.id} onEvidence={() => setEvidenceId(evidenceId === message.id ? null : message.id)} />}</article>)}<div className="chat-end" ref={chatEndRef} aria-hidden="true" /></>}{tab === 'briefing' && <section className="daily-briefing"><div><span>DA</span><p>DAILY BRIEFING</p><h1>Today’s farm briefing</h1></div>{messages.filter(message => message.response?.intent === 'morning_briefing' || message.request === 'Show my morning briefing.').map(message => <article className="chat-turn" key={message.id}>{!message.response && !message.error && <div className="thinking">{t.working}</div>}{message.error && <div className="response-error">{message.error}</div>}{message.response && <Response answer={message.response} language={language} t={t} expanded={evidenceId === message.id} onEvidence={() => setEvidenceId(evidenceId === message.id ? null : message.id)} />}</article>)}</section>}{tab === 'recent' && <Empty title={t.recent} description={messages.length ? 'Select a previous question to continue the discussion.' : 'Your recent farm questions will appear here.'}>{messages.slice().reverse().map(message => <button className="history-item" key={message.id} onClick={() => { setQuery(message.question); setTab('ask'); }}>{message.question}<b>→</b></button>)}</Empty>}{tab === 'saved' && <Empty title={t.saved} description="Save a farm decision after reviewing a response to track its outcome over time." />}{tab === 'summary' && <Empty title={t.summary} description="Generate a concise view of today’s production, health, and priorities."><button className="summary-action" onClick={() => send('Summarize the farm today.')}>{t.summary}</button></Empty>}</main>
+    <footer className="assistant-composer"><div><input ref={inputRef} value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => event.key === 'Enter' && send()} placeholder={t.composer}/><button className={`voice-button${listening ? ' listening' : ''}`} onClick={toggleVoice} aria-label={listening ? voice.stop : voice.start} title={listening ? voice.stop : voice.start} type="button"><MicrophoneIcon listening={listening}/><small>{listening ? voice.listening : ''}</small></button><button className="send-button" onClick={() => send()} disabled={!query.trim() || loading}>{loading ? t.working : t.send}</button></div>{voiceNotice && <p className="voice-notice" role="status">{voiceNotice}</p>}</footer>
   </div>;
 }
 
