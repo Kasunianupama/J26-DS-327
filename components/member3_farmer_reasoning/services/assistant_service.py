@@ -89,12 +89,41 @@ class AssistantService:
         behavior, behavior_output = self._behavioral_context(farm_id)
         direction = "increased" if p["change_pct"] >= 0 else "decreased"
         answer = f"This week the farm produced {p['current']:.1f} L of milk. Last week it produced {p['previous']:.1f} L. That means production {direction} by {abs(p['change_pct']):.1f}%. {behavior_output['sentence']} Check the cows and routines behind the change before changing feed or treatment plans."
+        evidence_label = "14-day milk records"
+        recommendations = ["Review Shed 2 feeding and cooling checks.", "Inspect LK-2121 and LK-2193 before changing the ration."]
+        chart_title = "Farm milk production – 14 days"
+        if language == "si":
+            direction_si = "වැඩි වී" if p["change_pct"] >= 0 else "අඩු වී"
+            answer = (
+                f"මෙම සතියේ ගොවිපළ කිරි ලීටර් {p['current']:.1f} ක් නිෂ්පාදනය කළා. "
+                f"පසුගිය සතියේ කිරි ලීටර් {p['previous']:.1f} ක් නිෂ්පාදනය කර තිබුණා. "
+                f"එයින් නිෂ්පාදනය {abs(p['change_pct']):.1f}% කින් {direction_si} ඇති බව පෙනේ. "
+                f"රංචු හැසිරීම දැනට {behavior['routine']} මට්ටමේ පවතින අතර, සුභසාධන ලකුණු {behavior['welfare_score']:.0f}/100 කි. "
+                "මෙය රංචු මට්ටමේ සලකුණක් පමණි; තනි සතෙකුගේ රෝග විනිශ්චයක් නොවේ. "
+                "ආහාර හෝ ප්‍රතිකාර වෙනස් කිරීමට පෙර ගවයන්ගේ ආහාර, ජලය සහ දෛනික පුරුද්ද පරීක්ෂා කරන්න."
+            )
+            evidence_label = "දින 14 කිරි වාර්තා"
+            recommendations = ["Shed 2 හි ආහාර සහ සිසිලන පරීක්ෂා සමාලෝචනය කරන්න.", "ආහාර අනුපාතය වෙනස් කිරීමට පෙර LK-2121 සහ LK-2193 පරීක්ෂා කරන්න."]
+            chart_title = "ගොවිපළ කිරි නිෂ්පාදනය – දින 14"
+        elif language == "ta":
+            direction_ta = "அதிகரித்துள்ளது" if p["change_pct"] >= 0 else "குறைந்துள்ளது"
+            answer = (
+                f"இந்த வாரம் பண்ணை {p['current']:.1f} லிட்டர் பால் உற்பத்தி செய்தது. "
+                f"கடந்த வாரம் {p['previous']:.1f} லிட்டர் உற்பத்தி செய்தது. "
+                f"அதாவது உற்பத்தி {abs(p['change_pct']):.1f}% {direction_ta}. "
+                f"மந்தையின் நடைமுறை தற்போது {behavior['routine']} நிலையில் உள்ளது; நலன் மதிப்பெண் {behavior['welfare_score']:.0f}/100. "
+                "இது மந்தை அளவிலான சூழல் தகவல் மட்டுமே; ஒரு தனி விலங்கிற்கான நோயறிதல் அல்ல. "
+                "தீவனம் அல்லது சிகிச்சையை மாற்றுவதற்கு முன் விலங்குகள், தண்ணீர் மற்றும் தினசரி நடைமுறையைச் சரிபார்க்கவும்."
+            )
+            evidence_label = "14 நாள் பால் பதிவுகள்"
+            recommendations = ["Shed 2 தீவனம் மற்றும் குளிரூட்டல் சோதனைகளை மதிப்பாய்வு செய்யவும்.", "தீவன விகிதத்தை மாற்றுவதற்கு முன் LK-2121 மற்றும் LK-2193 ஐப் பரிசோதிக்கவும்."]
+            chart_title = "பண்ணை பால் உற்பத்தி – 14 நாட்கள்"
         daily_totals: dict[str, float] = {}
         for record in self.data.repository.milk_records(farm_id, days=14):
             day = record["date"].isoformat()
             daily_totals[day] = daily_totals.get(day, 0) + record["milk_litres"]
         chart_data = [{"date": day, "milk_litres": round(total, 1)} for day, total in sorted(daily_totals.items())]
-        return self._response(cid, language, "weekly_production_comparison", answer, [{"source":"milk_production", "label":"14-day milk records", "recordIds":[], "freshness":"today"}, behavior_output["evidence"]], ["Review Shed 2 feeding and cooling checks.", "Inspect LK-2121 and LK-2193 before changing the ration."], .89, .9, visualization={"type":"line", "title":"Farm milk production – 14 days", "data":chart_data}, behavioral_context=behavior)
+        return self._response(cid, language, "weekly_production_comparison", answer, [{"source":"milk_production", "label":evidence_label, "recordIds":[], "freshness":"today"}, behavior_output["evidence"]], recommendations, .89, .9, visualization={"type":"line", "title":chart_title, "data":chart_data}, behavioral_context=behavior)
 
     def _animal_history(self, farm_id, text, role, cid, language):
         match = re.search(r"(?:cow\s*#?|cow[_ -]?|lk[- ]?)(\d+)", text, re.I)
