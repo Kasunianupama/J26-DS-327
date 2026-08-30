@@ -1,131 +1,101 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../../services/api';
 import { useUser } from '../../context/UserContext';
 import type { Role } from '../../types/api';
-import { AnswerVisualization, type ChartKind } from './AnswerVisualization';
+import { ContextChart } from './ContextChart';
 import './Assistant.css';
+import './VoiceInput.css';
 
-type Language = 'en' | 'si' | 'ta' | 'si-Latn';
-type Answer = { text: string; confidence: number; quality: number; recommendations: string[]; abstained?: boolean };
+type Language = 'en' | 'si' | 'ta';
+type Tab = 'ask' | 'recent' | 'saved' | 'summary';
+type Evidence = { source: string; label: string; freshness: string };
+type Priority = { animal_id: string; priority?: string; reason?: string; expected_calving?: string };
+type Answer = { answer: string; intent: string; confidence: number; recommendations: { action: string }[]; evidence: Evidence[]; priorityItems: Priority[]; visualization?: { type: string; title: string; data?: Record<string, string | number>[] } | null; conversationId?: string };
+type Message = { id: string; question: string; request: string; response?: Answer; error?: string };
 
-type RoleProfile = { title: string; subtitle: string; context: string; answerType: string; actionHeading: string; suggestions: string[]; priorities: string[]; priorityTitle: string; reviewNote: string; showQuality: boolean };
+const prompts = [
+  { en: 'Show my morning briefing.', si: 'මගේ උදෑසන සාරාංශය පෙන්වන්න.', ta: 'எனது காலை சுருக்கத்தைக் காட்டு.' },
+  { en: 'Which cows need attention today?', si: 'අද අවධානය අවශ්‍ය ගවයන් කවුද?', ta: 'இன்று கவனம் தேவைப்படும் பசுக்கள் எவை?' },
+  { en: 'How much milk did the farm produce this week compared with last week?', si: 'පසුගිය සතියට සාපේක්ෂව මේ සතියේ කිරි නිෂ්පාදනය කෙසේද?', ta: 'கடந்த வாரத்துடன் ஒப்பிடுகையில் இந்த வார பால் உற்பத்தி எவ்வளவு?' },
+  { en: 'What happened to animal LK-2121 in the last 30 days?', si: 'පසුගිය දින 30 තුළ LK-2121 සතාට සිදු වූයේ කුමක්ද?', ta: 'கடந்த 30 நாட்களில் LK-2121 விலங்கிற்கு என்ன நடந்தது?' },
+  { en: 'Which cows are expected to calve next month?', si: 'ලබන මාසයේ පැටවුන් බිහිකිරීමට නියමිත ගවයන් කවුද?', ta: 'அடுத்த மாதம் கன்று ஈன எதிர்பார்க்கப்படும் பசுக்கள் எவை?' },
+  { en: 'Did the feed change we made two weeks ago improve production?', si: 'සති දෙකකට පෙර කළ ආහාර වෙනස නිෂ්පාදනය වැඩි කළාද?', ta: 'இரண்டு வாரங்களுக்கு முன் செய்த தீவன மாற்றம் உற்பத்தியை மேம்படுத்தியதா?' },
+  { en: 'Summarize the farm today.', si: 'අද ගොවිපළ සාරාංශ කරන්න.', ta: 'இன்றைய பண்ணையைச் சுருக்கமாகக் கூறுங்கள்.' },
+];
 
-const roleProfiles: Record<Role, RoleProfile> = {
-  farm_worker: { title: 'Today’s farm actions', subtitle: 'Simple, safe steps for the current shift.', context: 'Operational shift guidance', answerType: 'Action-focused guidance', actionHeading: 'What to do now', suggestions: ['What should I check for cow 312 today?', 'What should I do during hot weather?', 'Which animals need attention now?'], priorities: ['Check water and cooling', 'Observe cows and report changes', 'Confirm the feeding routine'], priorityTitle: 'Current shift checklist', reviewNote: 'Report any health or welfare concern to the manager or veterinarian.', showQuality: false },
-  veterinarian: { title: 'Herd health and welfare review', subtitle: 'Clinical and welfare-focused decision support.', context: 'Veterinary and welfare context', answerType: 'Health and welfare guidance', actionHeading: 'Suggested clinical checks', suggestions: ['How is cow 312’s health today?', 'Are there signs of heat stress in the herd?', 'Which welfare observations need review?'], priorities: ['Review health observations', 'Assess heat-stress signs', 'Escalate abnormal findings'], priorityTitle: 'Clinical review priorities', reviewNote: 'Clinical diagnosis and treatment remain the veterinarian’s responsibility.', showQuality: true },
-  farm_manager: { title: 'Farm performance and decisions', subtitle: 'Turn the current farm situation into practical next actions.', context: 'Farm management context', answerType: 'Management decision support', actionHeading: 'Recommended next actions', suggestions: ['Why did today’s milk yield decrease?', 'What should I check during hot weather?', 'What needs manager review today?'], priorities: ['Check cooling and water', 'Confirm feeding routine', 'Review herd response'], priorityTitle: 'Today’s priority plan', reviewNote: 'A manager or veterinarian must review high-impact actions.', showQuality: true },
-  nldb_management: { title: 'Strategic dairy intelligence', subtitle: 'A concise view for network-level monitoring and escalation.', context: 'NLDB management context', answerType: 'Strategic decision support', actionHeading: 'Recommended management follow-up', suggestions: ['Which farm issues need escalation?', 'What requires regional management review?', 'What should be monitored this week?'], priorities: ['Review priority farm alerts', 'Confirm escalation ownership', 'Monitor follow-up status'], priorityTitle: 'Management oversight priorities', reviewNote: 'Strategic summaries support management review and do not replace farm-level assessment.', showQuality: true },
+const copy = {
+  en: { newChat: '+ New conversation', ask: 'Ask assistant', recent: 'Recent conversations', saved: 'Saved decisions', summary: 'Farm summary', greeting: 'Good morning. What would you like to know about your farm?', composer: 'Ask about your farm…', send: 'Send', working: 'Working…', you: 'You', evidence: 'Why this answer?', hide: 'Hide evidence', record: 'Record decision', actions: 'RECOMMENDED NEXT ACTIONS', chart: 'CHART', confidence: 'confidence', evidenceTitle: 'Evidence' },
+  si: { newChat: '+ නව සංවාදය', ask: 'සහයකයාගෙන් අසන්න', recent: 'මෑත සංවාද', saved: 'සුරැකි තීරණ', summary: 'ගොවිපළ සාරාංශය', greeting: 'සුබ උදෑසනක්. ඔබේ ගොවිපළ ගැන දැනගැනීමට අවශ්‍ය කුමක්ද?', composer: 'ඔබේ ගොවිපළ ගැන අසන්න…', send: 'යවන්න', working: 'සකස් කරමින්…', you: 'ඔබ', evidence: 'මෙම පිළිතුර ඇයි?', hide: 'සාක්ෂි සඟවන්න', record: 'තීරණය සටහන් කරන්න', actions: 'නිර්දේශිත ඊළඟ ක්‍රියාමාර්ග', chart: 'ප්‍රස්තාරය', confidence: 'විශ්වාසය', evidenceTitle: 'සාක්ෂි' },
+  ta: { newChat: '+ புதிய உரையாடல்', ask: 'உதவியாளரிடம் கேளுங்கள்', recent: 'சமீப உரையாடல்கள்', saved: 'சேமித்த முடிவுகள்', summary: 'பண்ணை சுருக்கம்', greeting: 'காலை வணக்கம். உங்கள் பண்ணையைப் பற்றி என்ன தெரிந்துகொள்ள விரும்புகிறீர்கள்?', composer: 'உங்கள் பண்ணையைப் பற்றி கேளுங்கள்…', send: 'அனுப்பு', working: 'செயலாக்குகிறது…', you: 'நீங்கள்', evidence: 'இந்த பதில் ஏன்?', hide: 'சான்றை மறை', record: 'முடிவை பதிவு செய்', actions: 'பரிந்துரைக்கப்பட்ட அடுத்த செயல்கள்', chart: 'வரைபடம்', confidence: 'நம்பிக்கை', evidenceTitle: 'சான்றுகள்' },
+} as const;
+
+const roles: Record<Role, string> = { farm_worker: 'Farm worker', veterinarian: 'Veterinarian', farm_manager: 'Farm manager', nldb_management: 'NLDB management' };
+const speechLocales: Record<Language, string> = { en: 'en-LK', si: 'si-LK', ta: 'ta-LK' };
+const voiceCopy = { en: { start: 'Start voice input', stop: 'Stop voice input', listening: 'Listening…', unavailable: 'Voice input is not supported in this browser. Try Chrome or Edge.', denied: 'Microphone access was denied. Please allow it and try again.' }, si: { start: 'හඬ ආදානය ආරම්භ කරන්න', stop: 'හඬ ආදානය නවත්වන්න', listening: 'අසමින් පවතී…', unavailable: 'මෙම බ්‍රවුසරයේ හඬ ආදානය සහාය නොදක්වයි. Chrome හෝ Edge භාවිතා කරන්න.', denied: 'මයික්‍රෆෝන අවසරය ප්‍රතික්ෂේප කර ඇත. අවසර දී නැවත උත්සාහ කරන්න.' }, ta: { start: 'குரல் உள்ளீட்டைத் தொடங்கு', stop: 'குரல் உள்ளீட்டை நிறுத்து', listening: 'கேட்கிறது…', unavailable: 'இந்த உலாவியில் குரல் உள்ளீடு ஆதரிக்கப்படவில்லை. Chrome அல்லது Edge பயன்படுத்தவும்.', denied: 'மைக்ரோஃபோன் அனுமதி மறுக்கப்பட்டது. அனுமதித்து மீண்டும் முயற்சிக்கவும்.' } } as const;
+const titles: Record<Language, Record<string, string>> = {
+  en: { morning_briefing: 'Morning briefing', herd_count: 'Herd snapshot', attention_animals: 'Animals needing attention', animal_history: 'Animal history', weekly_production_comparison: 'Production comparison', expected_calvings: 'Reproduction alert', feed_change_evaluation: 'Decision outcome', profit_overview: 'Farm profit overview', farm_summary: 'Farm summary' },
+  si: { morning_briefing: 'උදෑසන සාරාංශය', herd_count: 'රංචු තොරතුරු', attention_animals: 'අවධානය අවශ්‍ය සතුන්', animal_history: 'සත්ව ඉතිහාසය', weekly_production_comparison: 'නිෂ්පාදන සංසන්දනය', expected_calvings: 'ප්‍රජනන දැනුම්දීම', feed_change_evaluation: 'තීරණ ප්‍රතිඵලය', profit_overview: 'ගොවිපළ ලාභය', farm_summary: 'ගොවිපළ සාරාංශය' },
+  ta: { morning_briefing: 'காலை சுருக்கம்', herd_count: 'மந்தை நிலவரம்', attention_animals: 'கவனம் தேவைப்படும் விலங்குகள்', animal_history: 'விலங்கு வரலாறு', weekly_production_comparison: 'உற்பத்தி ஒப்பீடு', expected_calvings: 'இனப்பெருக்க எச்சரிக்கை', feed_change_evaluation: 'முடிவு விளைவு', profit_overview: 'பண்ணை லாபம்', farm_summary: 'பண்ணை சுருக்கம்' },
 };
-
-const demoAnswers: Record<Language, Answer> = {
-  en: { text: 'Today’s production outlook needs attention. Check cooling, water access, and the afternoon feeding routine first. Review the herd response before making a feed or treatment change.', confidence: 87, quality: 91, recommendations: ['Check cooling and water access before the afternoon heat peak.', 'Confirm that feeding timing matched the planned routine.', 'Review the herd response tomorrow with the farm manager.'] },
-  si: { text: 'අද කිරි නිෂ්පාදන තත්ත්වය අවධානයට ගත යුතුය. පළමුව සිසිලනය, ජල ප්‍රවේශය සහ දහවල් ආහාර ලබාදීමේ ක්‍රමය පරීක්ෂා කරන්න. ආහාර හෝ ප්‍රතිකාර වෙනස් කිරීමට පෙර රංචුවේ ප්‍රතිචාරය සමාලෝචනය කරන්න.', confidence: 87, quality: 91, recommendations: ['දහවල් උෂ්ණත්වයට පෙර සිසිලනය සහ ජලය පරීක්ෂා කරන්න.', 'ආහාර වේලාව සැලසුම් කළ පරිදිදැයි තහවුරු කරන්න.', 'හෙට රංචු ප්‍රතිචාරය ගොවිපළ කළමනාකරු සමඟ සමාලෝචනය කරන්න.'] },
-  ta: { text: 'இன்றைய பால் உற்பத்தி நிலைக்கு கவனம் தேவை. முதலில் குளிர்வித்தல், தண்ணீர் அணுகல் மற்றும் பிற்பகல் தீவன முறையைச் சரிபார்க்கவும். தீவனம் அல்லது சிகிச்சையை மாற்றுவதற்கு முன் மந்தையின் பதிலை மதிப்பாய்வு செய்யவும்.', confidence: 87, quality: 91, recommendations: ['பிற்பகல் வெப்பத்திற்கு முன் குளிர்வித்தல் மற்றும் தண்ணீரைச் சரிபார்க்கவும்.', 'தீவன நேரம் திட்டமிட்ட முறையைப் பின்பற்றியதா என உறுதி செய்யவும்.', 'நாளை பண்ணை மேலாளருடன் மந்தை பதிலை மதிப்பாய்வு செய்யவும்.'] },
-  'si-Latn': { text: 'Ada kiri nishpadana thathwaya avadhanayata gatha yuthui. Mulima sisilaneeya, jala praveshaya saha dahawal aahara laba deeme krama pariksha karanna.', confidence: 87, quality: 91, recommendations: ['Dahawal ushnathwayata pera sisilaneeya saha jala praveshaya pariksha karanna.', 'Aahara welawa salasum kala paridida kiyala thahawuru karanna.', 'Heta ranchu prathicharaya govipala kalamanakaru samaga samalochanaya karanna.'] },
-};
-
-const labels: Record<Language, { ask: string; placeholder: string; suggestions: string[] }> = {
-  en: { ask: 'Ask agronomist', placeholder: 'Ask a dairy-farm question…', suggestions: ['Why did today’s milk yield decrease?', 'What should I check during hot weather?', 'What needs manager review today?'] },
-  si: { ask: 'කෘෂි උපදේශකගෙන් අසන්න', placeholder: 'කිරි ගොවිපළ පිළිබඳ ප්‍රශ්නයක් අසන්න…', suggestions: ['අද කිරි නිෂ්පාදනය අඩු වූයේ ඇයි?', 'උණුසුම් කාලගුණයේදී පරීක්ෂා කළ යුත්තේ මොනවාද?', 'අද කළමනාකරුගේ සමාලෝචනයට අවශ්‍ය කුමක්ද?'] },
-  ta: { ask: 'வேளாண் ஆலோசகரிடம் கேளுங்கள்', placeholder: 'பால் பண்ணை தொடர்பான கேள்வியைக் கேளுங்கள்…', suggestions: ['இன்று பால் உற்பத்தி ஏன் குறைந்தது?', 'வெப்பமான காலநிலையில் நான் எதைச் சரிபார்க்க வேண்டும்?', 'இன்று மேலாளர் மதிப்பாய்வு செய்ய வேண்டியது என்ன?'] },
-  'si-Latn': { ask: 'Ask agronomist', placeholder: 'Dairy farm prashnayak ahanna…', suggestions: ['Ada 312 cow ge health eka kohomada?', 'Usna kalagunayedi balanna ona mokakda?', 'Ada manager review karanna ona mokakda?'] },
-};
-
-function inferLanguage(question: string, selected: Language): Language {
-  if (/[඀-෿]/.test(question)) return 'si';
-  if (/[஀-௿]/.test(question)) return 'ta';
-  if (/\b(ada|heta|kohomada|mokakda|ona|wenne|cow|ge|eka|balanna|prashna)\b/i.test(question)) return 'si-Latn';
-  return selected;
-}
-
-function chartFor(question: string): ChartKind {
-  const normalized = question.toLowerCase();
-  if (/\b(trend|july|month|monthly|production)\b/.test(normalized)) return 'production_trend';
-  if (/\b(health|sick|disease|cow|lameness|roga)\b/.test(normalized)) return 'health_review';
-  if (/\b(heat|hot|water|temperature|thi|usna)\b/.test(normalized)) return 'heat_conditions';
-  return null;
-}
-
-function fallbackAnswer(question: string, role: Role, language: Language): Answer {
-  const normalized = question.toLowerCase();
-  const healthQuestion = /\b(health|sick|disease|cow|lameness|roga)\b/.test(normalized);
-  if (!healthQuestion) return demoAnswers[language];
-
-  const healthAnswers: Record<Role, Answer> = {
-    farm_worker: { text: 'Cow 312 needs an on-site health observation. Check appetite, movement, water intake, and any visible abnormal signs, then report concerns to the supervisor.', confidence: 84, quality: 86, recommendations: ['Observe cow 312 and note any abnormal signs.', 'Confirm water access and feed intake.', 'Notify the supervisor or veterinarian if concerns continue.'] },
-    veterinarian: { text: 'Cow 312 should be reviewed clinically using the current observation, health history, activity, and welfare signs before deciding on treatment.', confidence: 86, quality: 89, recommendations: ['Perform a focused clinical examination.', 'Review recent health and activity observations.', 'Document findings and treatment decisions.'] },
-    farm_manager: { text: 'Cow 312 has a health question that needs prompt verification. Arrange a welfare check, confirm feed and water conditions, and decide whether veterinary review is required.', confidence: 85, quality: 87, recommendations: ['Assign an on-site welfare check for cow 312.', 'Confirm feed, water, and housing conditions.', 'Escalate persistent findings to the veterinarian.'] },
-    nldb_management: { text: 'Cow 312’s health concern should be followed up at farm level. Confirm that responsibility is assigned and monitor whether it becomes a repeated welfare pattern.', confidence: 82, quality: 85, recommendations: ['Confirm farm-level follow-up ownership.', 'Monitor unresolved welfare incidents.', 'Review recurring patterns in the management summary.'] },
-  };
-  const answer = healthAnswers[role];
-  if (language === 'si-Latn') return { ...answer, text: `Cow 312 ge health eka on-site pariksha karanna one. ${answer.text}`, recommendations: ['Cow 312 nirikshanaya karala asamanya lakshana satahan karanna.', 'Wathura saha aahara praveshaya thahawuru karanna.', 'Prashnaya digatama thibunoth supervisor ho veterinarian ta danwanna.'] };
-  if (language === 'si') return { ...answer, text: 'Cow 312ගේ සෞඛ්‍ය තත්ත්වය ස්ථානීයව පරීක්ෂා කළ යුතුය. ආහාර රුචිය, ගමන් කිරීම, ජල ප්‍රවේශය සහ අසාමාන්‍ය ලක්ෂණ නිරීක්ෂණය කරන්න.', recommendations: ['Cow 312 නිරීක්ෂණය කර අසාමාන්‍ය ලක්ෂණ සටහන් කරන්න.', 'ජලය සහ ආහාර ප්‍රවේශය තහවුරු කරන්න.', 'ගැටලුව දිගටම තිබේ නම් අධීක්ෂක හෝ පශු වෛද්‍යවරයාට දන්වන්න.'] };
-  if (language === 'ta') return { ...answer, text: 'பசு 312-ன் உடல்நிலையை நேரடியாகச் சரிபார்க்க வேண்டும். பசியுணர்வு, நடமாட்டம், தண்ணீர் அணுகல் மற்றும் அசாதாரண அறிகுறிகளைக் கவனிக்கவும்.', recommendations: ['பசு 312-ஐ கவனித்து அசாதாரண அறிகுறிகளைப் பதிவு செய்யவும்.', 'தண்ணீர் மற்றும் தீவன அணுகலை உறுதி செய்யவும்.', 'சிக்கல் தொடர்ந்தால் மேற்பார்வையாளர் அல்லது கால்நடை மருத்துவரிடம் தெரிவிக்கவும்.'] };
-  return answer;
-}
 
 export default function Assistant() {
   const { role } = useUser();
+  const [tab, setTab] = useState<Tab>('ask');
   const [language, setLanguage] = useState<Language>('en');
-  const [query, setQuery] = useState('Why did Shed 3 milk production decrease today?');
-  const [answer, setAnswer] = useState<Answer>(demoAnswers.en);
+  const [query, setQuery] = useState('');
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [conversationId, setConversationId] = useState<string>();
   const [loading, setLoading] = useState(false);
-  const [showEvidence, setShowEvidence] = useState(false);
-  const [feedback, setFeedback] = useState<'helpful' | 'not_helpful' | null>(null);
-  const [chartKind, setChartKind] = useState<ChartKind>(null);
-  const answerRef = useRef<HTMLElement>(null);
-  const copy = labels[language];
-  const profile = roleProfiles[role];
-  const suggestedQuestions = language === 'en' ? profile.suggestions : copy.suggestions;
+  const [listening, setListening] = useState(false);
+  const [voiceNotice, setVoiceNotice] = useState('');
+  const [evidenceId, setEvidenceId] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const recognitionRef = useRef<any>(null);
+  const t = copy[language];
+  const voice = voiceCopy[language];
 
-  async function loadAnswer(question: string, responseLanguage: Language) {
-    try {
-      const { data } = await api.post('/agent/query', { query: question, farm_id: 'FARM_01', role, language: responseLanguage });
-      setAnswer({ text: data.answer, confidence: Math.round(data.confidence * 100), quality: Math.round(data.context_quality * 100), recommendations: data.recommendations.map((item: { action: string }) => item.action), abstained: data.abstained });
-    } catch { setAnswer(fallbackAnswer(question, role, responseLanguage)); }
-  }
+  useEffect(() => () => recognitionRef.current?.abort?.(), []);
 
-  async function selectLanguage(nextLanguage: Language) {
-    setLanguage(nextLanguage);
+  async function ask(request: string, selectedLanguage = language, existingId?: string, displayQuestion = request) {
+    if (!request.trim() || loading) return;
+    const pending = { id: existingId ?? crypto.randomUUID(), question: displayQuestion, request };
+    if (!existingId) setMessages(items => [...items, pending]);
     setLoading(true);
-    await loadAnswer(query, nextLanguage);
-    setLoading(false);
+    try {
+      const { data } = await api.post<Answer>('/agent/query', { query: request, farm_id: 'FARM_01', role, language: selectedLanguage, conversation_id: conversationId });
+      setConversationId(data.conversationId);
+      setMessages(items => items.map(item => item.id === pending.id ? { ...item, response: data, error: undefined } : item));
+    } catch {
+      setMessages(items => items.map(item => item.id === pending.id ? { ...item, error: 'The farm-data service is unavailable. Check that the backend is running, then try again.' } : item));
+    } finally { setLoading(false); }
   }
-
-  async function ask() {
-    setLoading(true); setFeedback(null);
-    const responseLanguage = inferLanguage(query, language);
-    await loadAnswer(query, responseLanguage);
-    setChartKind(chartFor(query));
-    setLoading(false);
-    window.setTimeout(() => answerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
+  function send(question = query) { setQuery(''); void ask(question); }
+  function toggleVoice() {
+    if (listening) { recognitionRef.current?.stop?.(); return; }
+    const Recognition = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+    if (!Recognition) { setVoiceNotice(voice.unavailable); return; }
+    const recognition = new Recognition();
+    recognitionRef.current = recognition;
+    recognition.lang = speechLocales[language];
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.onstart = () => { setVoiceNotice(''); setListening(true); };
+    recognition.onresult = (event: any) => { const transcript = Array.from(event.results).map((result: any) => result[0].transcript).join(''); setQuery(transcript); };
+    recognition.onerror = (event: any) => { setVoiceNotice(event.error === 'not-allowed' || event.error === 'service-not-allowed' ? voice.denied : voice.unavailable); };
+    recognition.onend = () => { setListening(false); recognitionRef.current = null; inputRef.current?.focus(); };
+    recognition.start();
   }
+  function changeLanguage(next: Language) { setLanguage(next); const latest = messages[messages.length - 1]; const prompt = latest && prompts.find(item => item.en === latest.request); if (latest) void ask(latest.request, next, latest.id, prompt?.[next] ?? latest.question); }
+  function newConversation() { setMessages([]); setConversationId(undefined); setQuery(''); setEvidenceId(null); setTab('ask'); window.setTimeout(() => inputRef.current?.focus(), 0); }
 
-  return <div className="reasoning-agent">
-    <header className="agent-hero">
-      <div><p className="eyebrow">COMPONENT 3 · CONTEXT-AWARE FARM REASONING AGENT</p><h2>{profile.title}</h2><p>{profile.subtitle}</p></div>
-      <div className="hero-actions"><div className="language-switch" aria-label="Response language"><button className={language === 'si' ? 'selected' : ''} onClick={() => selectLanguage('si')}>සිංහල</button><button className={language === 'en' ? 'selected' : ''} onClick={() => selectLanguage('en')}>EN</button><button className={language === 'ta' ? 'selected' : ''} onClick={() => selectLanguage('ta')}>தமிழ்</button></div></div>
-    </header>
-
-    <section className="agent-workspace">
-      <main className="conversation-pane">
-        <div className="context-strip"><span>Farm: NLDB Ridiyagama Farm</span><span>•</span><span>{profile.context}</span><span>•</span><span>Current context</span></div>
-        <article className="answer-card" ref={answerRef}>
-          <div className="answer-heading"><span className="agent-avatar">DA</span><div><p className="panel-label">DIGITAL AGRONOMIST</p><span className="answer-type">{profile.answerType}</span></div></div>
-          {answer.abstained ? <div className="abstention"><b>I need more reliable information before advising.</b><p>Please confirm the farm, time period, and the current animal or herd observation.</p></div> : <><h3>{answer.text}</h3><div className="recommendation-box"><p className="panel-label">{profile.actionHeading}</p><ol>{answer.recommendations.map(item => <li key={item}>{item}</li>)}</ol></div></>}
-          <AnswerVisualization kind={chartKind} />
-          <div className="answer-footer"><button className="link-button" onClick={() => setShowEvidence(!showEvidence)}>{showEvidence ? 'Hide evidence' : 'View evidence'}</button><span>Was this helpful?</span><button className={feedback === 'helpful' ? 'feedback selected' : 'feedback'} onClick={() => setFeedback('helpful')}>Yes</button><button className={feedback === 'not_helpful' ? 'feedback selected' : 'feedback'} onClick={() => setFeedback('not_helpful')}>Not yet</button></div>
-          {showEvidence && <section className="evidence-drawer"><div><b>Observed farm information</b><p>Recent production, routine, and environmental information relevant to this question.</p></div><div><b>AI interpretation</b><p>Model-based patterns are translated into plain language and kept distinct from observed facts.</p></div><div><b>Knowledge support</b><p>Approved veterinary and agronomic guidance, with source and version details.</p></div></section>}
-        </article>
-
-        <section className="question-area"><p className="panel-label">ASK A QUESTION</p><div className="ask"><input value={query} onChange={event => setQuery(event.target.value)} placeholder={copy.placeholder} aria-label={copy.placeholder} /><button onClick={ask} disabled={loading}>{loading ? 'Preparing…' : copy.ask}</button></div><div className="suggestions">{suggestedQuestions.map(suggestion => <button key={suggestion} onClick={() => setQuery(suggestion)}>{suggestion}</button>)}</div></section>
-      </main>
-
-      <aside className="insight-rail">
-        {profile.showQuality && <section className="rail-card trust-card"><p className="panel-label">TRUST & DATA QUALITY</p><h3>How reliable is this guidance?</h3><div className="trust-score"><div><b>{answer.confidence}%</b><span>Answer confidence</span></div><div><b>{answer.quality}%</b><span>Context quality</span></div></div><p className="muted">Confidence reflects the response; context quality reflects completeness, freshness, agreement, and evidence traceability.</p><div className="quality-row"><span>Data completeness</span><i><b style={{ width: '92%' }} /></i></div><div className="quality-row"><span>Evidence freshness</span><i><b style={{ width: '88%' }} /></i></div></section>}
-        <section className="rail-card"><p className="panel-label">DECISION SUPPORT</p><h3>{profile.priorityTitle}</h3>{profile.priorities.map((priority, index) => <div className={`priority-step ${index === 0 ? 'active' : ''}`} key={priority}><b>{index + 1}</b><span>{priority}</span></div>)}<p className="muted">{profile.reviewNote}</p></section>
-        <section className="rail-card safety-card"><p className="panel-label">SAFE RESPONSE</p><h3>When evidence is insufficient</h3><p>The agent asks for missing context, abstains, or recommends expert review instead of making an unsupported conclusion.</p></section>
-      </aside>
-    </section>
+  return <div className="assistant-workspace">
+    <header className="assistant-toolbar"><button className="new-conversation" onClick={newConversation}>{t.newChat}</button><div className="toolbar-context"><span>NLDB Ridiyagama Farm</span><span>{roles[role]}</span></div><div className="language-picker"><button className={language === 'si' ? 'active' : ''} onClick={() => changeLanguage('si')}>සිංහල</button><button className={language === 'en' ? 'active' : ''} onClick={() => changeLanguage('en')}>EN</button><button className={language === 'ta' ? 'active' : ''} onClick={() => changeLanguage('ta')}>தமிழ்</button></div></header>
+    <nav className="assistant-tabs"><button className={tab === 'ask' ? 'active' : ''} onClick={() => setTab('ask')}>{t.ask}</button><button className={tab === 'recent' ? 'active' : ''} onClick={() => setTab('recent')}>{t.recent}</button><button className={tab === 'saved' ? 'active' : ''} onClick={() => setTab('saved')}>{t.saved}</button><button className={tab === 'summary' ? 'active' : ''} onClick={() => setTab('summary')}>{t.summary}</button></nav>
+    <main className="assistant-content">{tab === 'ask' && <><section className="assistant-welcome"><span>DA</span><p>DAIRY INTELLIGENCE ASSISTANT</p><h1>{t.greeting}</h1><div className="prompt-grid">{prompts.map(prompt => <button key={prompt.en} onClick={() => void ask(prompt.en, language, undefined, prompt[language])}>{prompt[language]}<b>→</b></button>)}</div></section>{messages.map(message => <article className="chat-turn" key={message.id}><div className="user-message"><small>{t.you}</small>{message.question}</div>{!message.response && !message.error && <div className="thinking">{t.working}</div>}{message.error && <div className="response-error">{message.error}</div>}{message.response && <Response answer={message.response} language={language} t={t} expanded={evidenceId === message.id} onEvidence={() => setEvidenceId(evidenceId === message.id ? null : message.id)} />}</article>)}</>}{tab === 'recent' && <Empty title={t.recent} description={messages.length ? 'Select a previous question to continue the discussion.' : 'Your recent farm questions will appear here.'}>{messages.slice().reverse().map(message => <button className="history-item" key={message.id} onClick={() => { setQuery(message.question); setTab('ask'); }}>{message.question}<b>→</b></button>)}</Empty>}{tab === 'saved' && <Empty title={t.saved} description="Save a farm decision after reviewing a response to track its outcome over time." />}{tab === 'summary' && <Empty title={t.summary} description="Generate a concise view of today’s production, health, and priorities."><button className="summary-action" onClick={() => send('Summarize the farm today.')}>{t.summary}</button></Empty>}</main>
+    <footer className="assistant-composer"><div><input ref={inputRef} value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => event.key === 'Enter' && send()} placeholder={t.composer}/><button className={`voice-button${listening ? ' listening' : ''}`} onClick={toggleVoice} aria-label={listening ? voice.stop : voice.start} title={listening ? voice.stop : voice.start} type="button"><MicrophoneIcon listening={listening}/><small>{listening ? voice.listening : ''}</small></button><button onClick={() => send()} disabled={!query.trim() || loading}>{loading ? t.working : t.send}</button></div>{voiceNotice && <p className="voice-notice" role="status">{voiceNotice}</p>}</footer>
   </div>;
 }
+
+function Empty({ title, description, children }: { title: string; description: string; children?: React.ReactNode }) { return <section className="empty-view"><span>DA</span><h1>{title}</h1><p>{description}</p>{children && <div>{children}</div>}</section>; }
+function MicrophoneIcon({ listening }: { listening: boolean }) { return listening ? <svg aria-hidden="true" viewBox="0 0 24 24" className="voice-icon"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/><path d="M12 3v1M12 20v1M4 12h1M19 12h1M6.3 6.3l.7.7M17 17l.7.7M17.7 6.3l-.7.7M7 17l-.7.7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg> : <svg aria-hidden="true" viewBox="0 0 24 24" className="voice-icon"><rect x="8" y="3" width="8" height="12" rx="4" fill="none" stroke="currentColor" strokeWidth="1.8"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8.5 21h7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>; }
+function Response({ answer, language, t, expanded, onEvidence }: { answer: Answer; language: Language; t: (typeof copy)[Language]; expanded: boolean; onEvidence: () => void }) { return <section className="assistant-response"><header><span>DA</span><div><p>DIGITAL AGRONOMIST</p><h2>{titles[language][answer.intent] ?? 'Farm guidance'}</h2></div><em>{Math.round(answer.confidence * 100)}% {t.confidence}</em></header><p className="answer-text">{answer.answer}</p>{answer.priorityItems.length > 0 && <div className="priority-items">{answer.priorityItems.map((item, index) => <div key={item.animal_id}><b>{index + 1}</b><span><strong>{item.animal_id}</strong><small>{item.reason ?? `Expected calving: ${item.expected_calving}`}</small></span><em>{item.priority ?? 'review'}</em></div>)}</div>}{answer.recommendations.length > 0 && <section className="recommendations"><p>{t.actions}</p><ol>{answer.recommendations.map(item => <li key={item.action}>{item.action}</li>)}</ol></section>}{answer.visualization && <ContextChart chart={answer.visualization} label={t.chart} language={language}/>}<footer><button onClick={onEvidence}>{expanded ? t.hide : t.evidence}</button><button>{t.record}</button></footer>{expanded && <div className="evidence"><h3>{t.evidenceTitle}</h3>{answer.evidence.map(item => <p key={item.label}><b>{item.label}</b><span>{item.source.replace('_', ' · ')} · {item.freshness}</span></p>)}</div>}</section>; }
