@@ -45,6 +45,7 @@ body{margin:0}
 .shell > aside select{color:var(--text);background:var(--surface);font-weight:600;text-transform:none;letter-spacing:0}
 select{display:block;width:100%;margin-top:7px;padding:8px;border-radius:6px;border:1px solid var(--border)}
 main{padding:32px 48px 48px;max-width:1050px}
+.page-main--wide{max-width:none;width:100%;min-width:0}
 .page-main--full{max-width:none;padding:0}
 .page-context{align-items:center;color:var(--text-muted);display:flex;font-size:12px;gap:8px;margin:0 0 26px}
 .page-context span{font-weight:700;letter-spacing:.9px;text-transform:uppercase}
