@@ -211,6 +211,17 @@ export const COST_LINES: CostLine[] = [
 
 export const COST_CATEGORIES = [...new Set(COST_LINES.map((l) => l.category))];
 
+/** Stable colours so a cost category reads the same in every chart. */
+export const COST_CATEGORY_COLOR: Record<string, string> = {
+  Feed: '#9a4f27',
+  Veterinary: '#a44b3c',
+  Labour: '#5b7fa6',
+  Utilities: '#a8770a',
+  Maintenance: '#6b7f76',
+  Depreciation: '#8a9a94',
+  CAPEX: '#6b5bd1',
+};
+
 /** Scale a cost line by the herd/volume driver for a given month. */
 function costFor(line: CostLine, milkers: number, milk: number) {
   const milkerRatio = milkers / MILKING.length;
@@ -222,6 +233,14 @@ function costFor(line: CostLine, milkers: number, milk: number) {
     case 'Milk volume': return line.monthly * volumeRatio;
     default: return line.monthly;
   }
+}
+
+/** The same cost model as the monthly total, split by category. */
+export function costByCategory(milkers: number, milk: number): Record<string, number> {
+  return COST_LINES.reduce((acc, line) => {
+    acc[line.category] = Math.round((acc[line.category] ?? 0) + costFor(line, milkers, milk));
+    return acc;
+  }, {} as Record<string, number>);
 }
 
 /* ------------------------------------------------------------------ */
