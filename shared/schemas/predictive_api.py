@@ -4,7 +4,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-HorizonId = Literal["30d", "90d", "1y", "2y"]
+HorizonId = Literal["30d", "90d", "12m", "18m", "24m", "1y", "2y"]
 Confidence = Literal["High", "Moderate", "Limited"]
 
 

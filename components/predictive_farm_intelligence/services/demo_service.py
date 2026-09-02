@@ -14,7 +14,26 @@ from random import Random
 TODAY = date(2026, 8, 29)
 DATA_THROUGH = date(2026, 8, 27)
 GENERATED_AT = "2026-08-29T05:40:00+05:30"
-HORIZONS = {"30d": 30, "90d": 90, "1y": 365, "2y": 730}
+HORIZONS = {
+    "30d": 30,
+    "90d": 90,
+    "12m": 365,
+    "18m": 548,
+    "24m": 730,
+    # Backward-compatible aliases for clients using the original API contract.
+    "1y": 365,
+    "2y": 730,
+}
+
+HORIZON_LABELS = {
+    "30d": "30 days",
+    "90d": "90 days",
+    "12m": "12 months",
+    "18m": "18 months",
+    "24m": "24 months",
+    "1y": "1 year",
+    "2y": "2 years",
+}
 
 FARMS = (
     {"id": "FARM_01", "name": "Ridiyagama Farm", "populated": True},
@@ -112,7 +131,7 @@ class PredictiveDemoService:
         entries = sum(point["calvings"] for point in points)
         step = max(1, len(points) // 40)
         return {
-            "label": next(label for label, days in (("30 days", 30), ("90 days", 90), ("1 year", 365), ("2 years", 730)) if days == HORIZONS[horizon]),
+            "label": HORIZON_LABELS[horizon],
             "days": HORIZONS[horizon], "start_date": points[0]["date"], "end_date": points[-1]["date"],
             "average_daily_milk": _round(average, 1), "average_per_cow": _round(average_per_cow, 1),
             "early_milk": _round(early_milk, 1), "late_milk": _round(late_milk, 1),
