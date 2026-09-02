@@ -11,8 +11,9 @@ import { fmtInt, fmtLKR, longDate } from '../../../data/component2';
 import { MasterTimeline } from '../panels/MasterTimeline';
 import { FindingsList } from '../panels/Findings';
 import { ForecastReplay, ReplayCompareStrip } from '../panels/ForecastReplay';
-import { horizonSummary } from '../summary';
+import { horizonSummary, withBackendOverview } from '../summary';
 import { useC2 } from '../state';
+import { usePredictiveBackend } from '../backend';
 import { Card, ConfidenceBadge, Gauge, Note, Sparkline } from '../ui';
 import { Icon } from '../icons';
 
@@ -21,7 +22,8 @@ const CONFIDENCE_ARC = { High: 88, Moderate: 58, Limited: 28 } as const;
 
 export function FutureWorkspace() {
   const { horizon, openDrawer, go, setSelectedMonth, setSelectedDate } = useC2();
-  const s = horizonSummary(horizon);
+  const { snapshot } = usePredictiveBackend();
+  const s = withBackendOverview(horizonSummary(horizon), snapshot?.overview);
   const direction = s.changePct >= 0 ? 'increase' : 'decline';
 
   return (

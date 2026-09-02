@@ -8,6 +8,7 @@
 import { useState } from 'react';
 import { FINDINGS, SEVERITY_META, type Finding } from '../../../data/component2';
 import { useC2 } from '../state';
+import { usePredictiveBackend } from '../backend';
 import { ConfidenceBadge, Tabs } from '../ui';
 
 type FindingFilter = 'All' | Finding['kind'];
@@ -85,11 +86,12 @@ export function FindingCard({ f, compact = false }: { f: Finding; compact?: bool
 
 export function FindingsList({ compact = false }: { compact?: boolean }) {
   const { acknowledged, snoozed, restoreFindings } = useC2();
+  const { snapshot } = usePredictiveBackend();
   const [showDone, setShowDone] = useState(false);
   const [filter, setFilter] = useState<FindingFilter>('All');
 
   const rank: Record<string, number> = { critical: 0, attention: 1, routine: 2 };
-  const all = [...FINDINGS].sort((a, b) => rank[a.severity] - rank[b.severity]);
+  const all = [...(snapshot?.findings ?? FINDINGS)].sort((a, b) => rank[a.severity] - rank[b.severity]);
   const open = all.filter((f) => !acknowledged.has(f.id) && !snoozed.has(f.id));
   const done = all.filter((f) => acknowledged.has(f.id) || snoozed.has(f.id));
   const source = showDone ? all : open;
@@ -126,6 +128,10 @@ export function FindingsList({ compact = false }: { compact?: boolean }) {
   );
 }
 
-export function findingsOpenCount(acknowledged: Set<string>, snoozed: Set<string>) {
-  return FINDINGS.filter((f) => !acknowledged.has(f.id) && !snoozed.has(f.id)).length;
+export function findingsOpenCount(
+  acknowledged: Set<string>,
+  snoozed: Set<string>,
+  findings = FINDINGS,
+) {
+  return findings.filter((f) => !acknowledged.has(f.id) && !snoozed.has(f.id)).length;
 }

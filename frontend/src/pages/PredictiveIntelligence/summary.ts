@@ -13,6 +13,7 @@ import {
   type Confidence,
   type HorizonId,
 } from '../../data/component2';
+import type { BackendOverview } from './backend';
 
 export interface HorizonSummary {
   label: string;
@@ -96,5 +97,34 @@ export function horizonSummary(horizon: HorizonId): HorizonSummary {
     product,
     marginGap,
     spark,
+  };
+}
+
+/** Overlay the API-owned headline values while retaining rich local points as
+ * an explicit prototype fallback for charts that have not loaded yet. */
+export function withBackendOverview(local: HorizonSummary, remote?: BackendOverview): HorizonSummary {
+  if (!remote) return local;
+  return {
+    ...local,
+    label: remote.label,
+    days: remote.days,
+    averageDailyMilk: remote.average_daily_milk,
+    averagePerCow: remote.average_per_cow,
+    earlyMilk: remote.early_milk,
+    lateMilk: remote.late_milk,
+    changePct: remote.change_percent,
+    dryOffs: remote.dry_offs,
+    entries: remote.entries,
+    netMovement: remote.net_movement,
+    confidence: remote.confidence,
+    marginGap: remote.margin_gap_lkr_thousands,
+    spark: remote.spark,
+    first: { ...local.first, date: remote.start_date },
+    last: { ...local.last, date: remote.end_date },
+    lowPoint: {
+      ...local.lowPoint,
+      ...remote.low_point,
+      observed: null,
+    },
   };
 }
