@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from backend.app.api.routes import health, farms, interventions, behavior, agent, risks
+from backend.app.api.routes import health, farms, interventions, behavior, agent, risks, predictive
 from backend.app.core.config import get_settings
 
 
@@ -14,6 +14,7 @@ def create_app() -> FastAPI:
     app.include_router(behavior.router, prefix="/api/v1")
     app.include_router(agent.router, prefix="/api/v1")
     app.include_router(risks.router, prefix="/api/v1")
+    app.include_router(predictive.router, prefix="/api/v1")
     @app.get("/", tags=["system"])
     def root() -> dict[str, str]:
         return {"service": "dairy-intelligence-api", "status": "ready"}
@@ -21,4 +22,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-
