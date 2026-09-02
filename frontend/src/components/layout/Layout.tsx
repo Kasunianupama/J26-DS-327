@@ -7,7 +7,7 @@ type NavItem = {to: string; label: string; icon: string; end?: boolean};
 const navigation: {label: string; items: NavItem[]}[] = [
   {label: 'Overview', items: [{to: '/', label: 'Dashboard', icon: '▦', end: true}, {to: '/herd', label: 'Herd', icon: '♧'}]},
   {label: 'Intelligence', items: [{to: '/predictive', label: 'Predictive intelligence', icon: '⌁'}, {to: '/risks', label: 'Risk intelligence', icon: '⚑'}]},
-  {label: 'Actions', items: [{to: '/interventions', label: 'Intervention simulator', icon: '✦'}, {to: '/assistant', label: 'Digital agronomist', icon: '☼'}, {to: '/reports', label: 'Reports', icon: '▤'}]},
+  {label: 'Actions', items: [{to: '/intervention-simulator', label: 'Intervention simulator', icon: '⌘'}, {to: '/assistant', label: 'Digital agronomist', icon: '☼'}, {to: '/reports', label: 'Reports', icon: '▤'}]},
 ];
 
 function pageTitle(pathname: string) {
@@ -28,6 +28,7 @@ export function Layout() {
     try { return localStorage.getItem(RAIL_KEY) === '1'; } catch { return false; }
   });
   const isFullScreenWorkspace = pathname === '/predictive' || pathname.startsWith('/predictive/') || pathname === '/assistant';
+  const isWideWorkspace = pathname === '/intervention-simulator' || pathname === '/interventions';
 
   useEffect(() => {
     try { localStorage.setItem(RAIL_KEY, collapsed ? '1' : '0'); } catch { /* private mode */ }
@@ -52,6 +53,6 @@ export function Layout() {
       <NavLink className={({isActive}) => `settings-link${isActive ? ' active' : ''}`} to="/settings"><span className="nav-icon" aria-hidden="true">⚙</span>Settings</NavLink>
       <label className="role-switcher">View as<select value={role} onChange={event => setRole(event.target.value as typeof role)}><option value="farm_worker">Farm worker</option><option value="veterinarian">Veterinarian</option><option value="farm_manager">Farm manager</option><option value="nldb_management">NLDB management</option></select></label>
     </aside>
-    <main className={isFullScreenWorkspace ? 'page-main--full' : undefined}>{!isFullScreenWorkspace && <div className="page-context"><span>Workspace</span><b>{pageTitle(pathname)}</b></div>}<Outlet/></main>
+    <main className={isFullScreenWorkspace ? 'page-main--full' : isWideWorkspace ? 'page-main--wide' : undefined}>{!isFullScreenWorkspace && <div className="page-context"><span>Workspace</span><b>{pageTitle(pathname)}</b></div>}<Outlet/></main>
   </div>;
 }
