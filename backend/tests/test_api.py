@@ -32,6 +32,15 @@ def test_predictive_snapshot_is_backend_backed_and_horizon_aware():
     assert data['overview']['average_daily_milk'] > 0
     assert len(data['findings']) == 6
 
+def test_predictive_snapshot_supports_frontend_month_horizons():
+    expected_days = {'12m': 365, '18m': 548, '24m': 730}
+    for horizon, days in expected_days.items():
+        response = client.get(f'/api/v1/predictive/farms/FARM_01/snapshot?horizon={horizon}')
+        assert response.status_code == 200
+        data = response.json()
+        assert data['horizon'] == horizon
+        assert data['overview']['days'] == days
+
 def test_predictive_workspace_contracts_and_animal_lookup():
     assert client.get('/api/v1/predictive/farms/FARM_01/milk?horizon=90d').status_code == 200
     assert client.get('/api/v1/predictive/farms/FARM_01/reproduction').json()['pregnant'] > 0
