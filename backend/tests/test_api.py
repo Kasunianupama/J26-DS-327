@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi.testclient import TestClient
 from backend.app.main import app
 
@@ -40,6 +42,18 @@ def test_predictive_snapshot_supports_frontend_month_horizons():
         data = response.json()
         assert data['horizon'] == horizon
         assert data['overview']['days'] == days
+
+def test_predictive_timestamps_are_live_but_preserve_source_data_cutoff():
+    for endpoint in ('snapshot', 'evidence'):
+        before = datetime.now(timezone.utc)
+        response = client.get(f'/api/v1/predictive/farms/FARM_01/{endpoint}')
+        after = datetime.now(timezone.utc)
+        assert response.status_code == 200
+        data = response.json()
+        generated_at = datetime.fromisoformat(data['generated_at'])
+        assert generated_at.utcoffset() is not None
+        assert before <= generated_at <= after
+        assert data['data_through'] == '2026-08-27'
 
 def test_predictive_workspace_contracts_and_animal_lookup():
     assert client.get('/api/v1/predictive/farms/FARM_01/milk?horizon=90d').status_code == 200
