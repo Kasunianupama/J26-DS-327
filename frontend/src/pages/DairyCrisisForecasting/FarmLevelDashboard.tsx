@@ -69,10 +69,10 @@ export const FarmLevelDashboard: React.FC<FarmLevelDashboardProps> = ({
 
       {/* Row 1: KPI Cards */}
       <div className="kpi-grid-4">
-        {/* Card 1: FARM RISK SCORE */}
+        {/* Card 1: MAIN RISK SCORE */}
         <div className="kpi-card">
           <div className="kpi-card-header">
-            <span className="kpi-card-title">FARM RISK SCORE</span>
+            <span className="kpi-card-title">MAIN RISK SCORE</span>
             <button className="info-btn" title="Composite forward risk score">ⓘ</button>
           </div>
           <div className="gauge-meter-wrapper">
@@ -160,6 +160,13 @@ export const FarmLevelDashboard: React.FC<FarmLevelDashboardProps> = ({
           <div className="kpi-subtext text-green font-semibold mt-2">
             82% Confidence
           </div>
+        </div>
+      </div>
+
+      <div className="section-heading-row mt-4">
+        <div>
+          <h2 className="section-heading-title">Risk Score Breakdown</h2>
+          <p className="section-heading-subtitle">Primary model contributors for the selected farm</p>
         </div>
       </div>
 
@@ -284,19 +291,32 @@ export const FarmLevelDashboard: React.FC<FarmLevelDashboardProps> = ({
           </div>
           <div className="trend-chart-clean">
             <svg viewBox="0 0 200 100" className="trend-line-svg">
+              <g className="trend-grid-lines" aria-hidden="true">
+                <line x1="10" y1="10" x2="10" y2="88" />
+                <line x1="40" y1="10" x2="40" y2="88" />
+                <line x1="70" y1="10" x2="70" y2="88" />
+                <line x1="100" y1="10" x2="100" y2="88" />
+                <line x1="130" y1="10" x2="130" y2="88" />
+                <line x1="160" y1="10" x2="160" y2="88" />
+                <line x1="190" y1="10" x2="190" y2="88" />
+                <line x1="10" y1="15" x2="190" y2="15" />
+                <line x1="10" y1="35" x2="190" y2="35" />
+                <line x1="10" y1="55" x2="190" y2="55" />
+                <line x1="10" y1="75" x2="190" y2="75" />
+              </g>
               <polyline
-                fill="rgba(249, 115, 22, 0.1)"
-                stroke="#F97316"
-                strokeWidth="2.5"
-                points="10,60 40,55 70,68 100,58 130,35 160,35 190,42"
+                fill="none"
+                stroke="#3F6DB5"
+                strokeWidth="3"
+                points="10,67 40,62 70,54 100,27 130,26 160,24 190,18"
               />
-              <circle cx="10" cy="60" r="3.5" fill="#F97316" />
-              <circle cx="40" cy="55" r="3.5" fill="#F97316" />
-              <circle cx="70" cy="68" r="3.5" fill="#F97316" />
-              <circle cx="100" cy="58" r="3.5" fill="#F97316" />
-              <circle cx="130" cy="35" r="3.5" fill="#F97316" />
-              <circle cx="160" cy="35" r="3.5" fill="#F97316" />
-              <circle cx="190" cy="42" r="3.5" fill="#F97316" />
+              <circle cx="10" cy="67" r="3.5" />
+              <circle cx="40" cy="62" r="3.5" />
+              <circle cx="70" cy="54" r="3.5" />
+              <circle cx="100" cy="27" r="3.5" />
+              <circle cx="130" cy="26" r="3.5" />
+              <circle cx="160" cy="24" r="3.5" />
+              <circle cx="190" cy="18" r="3.5" />
             </svg>
             <div className="chart-x-dates">
               <span>May 25</span>
@@ -305,7 +325,7 @@ export const FarmLevelDashboard: React.FC<FarmLevelDashboardProps> = ({
               <span>May 31</span>
             </div>
             <div className="chart-legend-bottom">
-              <span className="legend-dot bg-orange"></span> Risk Score
+              <span className="legend-dot bg-blue"></span> Risk Score
             </div>
           </div>
         </div>
