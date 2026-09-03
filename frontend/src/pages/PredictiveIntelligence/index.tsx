@@ -10,19 +10,16 @@
 
 import { useMemo, useState } from 'react';
 import {
-  DATA_THROUGH,
   FARMS,
-  GENERATED_AT,
   HERD,
   HORIZONS,
   PROFILES,
   SEVERITY_META,
-  isoDate,
-  longDate,
   type HorizonId,
 } from '../../data/component2';
 import { C2Provider, useC2, type CapacityTab, type Workspace } from './state';
 import { PredictiveBackendProvider, usePredictiveBackend } from './backend';
+import { BackendStatus } from './BackendStatus';
 import { CowPanel } from './panels/CowPanel';
 import { TimelinePlayer } from './panels/TimelinePlayer';
 import { HerdStrip } from './panels/HerdFlow';
@@ -90,8 +87,6 @@ function Shell() {
   const detailOpen = drawer.kind !== 'none';
   const farms = backend.snapshot?.farms ?? FARMS;
   const activeFarm = farms.find((f) => f.id === farm) ?? FARMS[0];
-  const generatedAt = backend.snapshot?.generated_at ?? GENERATED_AT;
-  const dataThrough = backend.snapshot?.data_through ?? isoDate(DATA_THROUGH);
   const [overviewOpen, setOverviewOpen] = useState(false);
 
   return (
@@ -120,17 +115,7 @@ function Shell() {
             {openFindings > 0 && <span className="count">{openFindings}</span>}
           </button>
 
-          <span
-            className="pfie-live"
-            title={backend.error ? `Backend unavailable; showing prototype fallback: ${backend.error}` : 'Loaded from the predictive backend'}
-          >
-            <i aria-hidden />{backend.error ? 'Fallback' : backend.loading ? 'Connecting' : 'Backend'} · {generatedAt.slice(11, 16)}
-          </span>
-
-          <div className="pfie-stamp">
-            <span>Updated <b>{generatedAt.slice(0, 10)}</b></span>
-            <span>Data through <b>{longDate(dataThrough)}</b></span>
-          </div>
+          <BackendStatus />
         </div>
 
         <nav className="pfie-nav" aria-label="Workspaces">

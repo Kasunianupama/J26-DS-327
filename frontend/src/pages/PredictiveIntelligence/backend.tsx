@@ -62,20 +62,35 @@ export function PredictiveBackendProvider({ farmId, horizon, children }: {
 
   useEffect(() => {
     const controller = new AbortController();
+    let refreshTimer: ReturnType<typeof setTimeout>;
+    setSnapshot(null);
     setLoading(true);
     setError(null);
-    api.get<PredictiveSnapshot>(`/predictive/farms/${farmId}/snapshot`, {
-      params: { horizon },
-      signal: controller.signal,
-    }).then(({ data }) => {
-      setSnapshot(data);
-      setLoading(false);
-    }).catch((requestError: unknown) => {
-      if (controller.signal.aborted) return;
-      setError(requestError instanceof Error ? requestError.message : 'Predictive backend unavailable');
-      setLoading(false);
-    });
-    return () => controller.abort();
+    const refresh = async () => {
+      try {
+        const { data } = await api.get<PredictiveSnapshot>(`/predictive/farms/${farmId}/snapshot`, {
+          params: { horizon },
+          signal: controller.signal,
+          timeout: 15000,
+        });
+        if (controller.signal.aborted) return;
+        setSnapshot(data);
+        setError(null);
+      } catch (requestError: unknown) {
+        if (controller.signal.aborted) return;
+        setError(requestError instanceof Error ? requestError.message : 'Predictive backend unavailable');
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoading(false);
+          refreshTimer = setTimeout(refresh, 60000);
+        }
+      }
+    };
+    void refresh();
+    return () => {
+      controller.abort();
+      clearTimeout(refreshTimer);
+    };
   }, [farmId, horizon, revision]);
 
   const value = useMemo(() => ({

@@ -6,14 +6,13 @@ contracts.  Values remain fictional and must not be treated as NLDB records.
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from math import exp, pi, sin
 from random import Random
 
 
 TODAY = date(2026, 8, 29)
 DATA_THROUGH = date(2026, 8, 27)
-GENERATED_AT = "2026-08-29T05:40:00+05:30"
 HORIZONS = {
     "30d": 30,
     "90d": 90,
@@ -44,6 +43,11 @@ FARMS = (
 
 def _round(value: float, digits: int = 1) -> float:
     return round(value, digits)
+
+
+def _generated_at() -> str:
+    """Response generation time, distinct from the synthetic data cutoff."""
+    return datetime.now(timezone.utc).isoformat()
 
 
 class PredictiveDemoService:
@@ -169,14 +173,14 @@ class PredictiveDemoService:
 
     def evidence(self, farm_id: str) -> dict:
         self._require_farm(farm_id)
-        return {"farm_id":farm_id, "generated_at":GENERATED_AT, "data_through":DATA_THROUGH.isoformat(), "coverage":[{"source":"Herd & animal records", "coverage":97, "through":"2026-08-27", "gaps":"11 animals with incomplete parentage"},{"source":"Milk recording", "coverage":94, "through":"2026-08-27", "gaps":"6–19 Feb 2026 meter fault"},{"source":"Reproduction events", "coverage":88, "through":"2026-08-26", "gaps":"Sparse heat observations before Mar 2025"},{"source":"Finance & budget", "coverage":99, "through":"2026-08-27", "gaps":"None material"}], "models":[{"id":"milk-yield", "name":"Individual lactation roll-forward", "status":"Active", "last_validated":"2026-08-27"},{"id":"abortion", "name":"Abortion risk", "status":"Reduced", "last_validated":"2026-08-20"}], "source":"deterministic_synthetic_backend"}
+        return {"farm_id":farm_id, "generated_at":_generated_at(), "data_through":DATA_THROUGH.isoformat(), "coverage":[{"source":"Herd & animal records", "coverage":97, "through":"2026-08-27", "gaps":"11 animals with incomplete parentage"},{"source":"Milk recording", "coverage":94, "through":"2026-08-27", "gaps":"6–19 Feb 2026 meter fault"},{"source":"Reproduction events", "coverage":88, "through":"2026-08-26", "gaps":"Sparse heat observations before Mar 2025"},{"source":"Finance & budget", "coverage":99, "through":"2026-08-27", "gaps":"None material"}], "models":[{"id":"milk-yield", "name":"Individual lactation roll-forward", "status":"Active", "last_validated":"2026-08-27"},{"id":"abortion", "name":"Abortion risk", "status":"Reduced", "last_validated":"2026-08-20"}], "source":"deterministic_synthetic_backend"}
 
     def animal(self, farm_id: str, animal_id: str) -> dict | None:
         return next((animal for animal in self.animals(farm_id) if animal["id"] == animal_id.upper()), None)
 
     def snapshot(self, farm_id: str, horizon: str = "90d") -> dict:
         farm = self._require_farm(farm_id)
-        return {"farm":dict(farm), "farms":self.farms(), "generated_at":GENERATED_AT, "data_through":DATA_THROUGH.isoformat(), "horizon":horizon, "overview":self.overview(farm_id, horizon), "findings":self.findings(farm_id), "workspaces":{"milk":self.milk(farm_id, horizon)["overview"], "reproduction":self.reproduction(farm_id), "finance":self.finance(farm_id, horizon), "evidence":self.evidence(farm_id)}, "source":"deterministic_synthetic_backend", "data_notice":"All values are fictional synthetic prototype data."}
+        return {"farm":dict(farm), "farms":self.farms(), "generated_at":_generated_at(), "data_through":DATA_THROUGH.isoformat(), "horizon":horizon, "overview":self.overview(farm_id, horizon), "findings":self.findings(farm_id), "workspaces":{"milk":self.milk(farm_id, horizon)["overview"], "reproduction":self.reproduction(farm_id), "finance":self.finance(farm_id, horizon), "evidence":self.evidence(farm_id)}, "source":"deterministic_synthetic_backend", "data_notice":"All values are fictional synthetic prototype data."}
 
 
 predictive_demo_service = PredictiveDemoService()
