@@ -82,7 +82,7 @@ class SyntheticFarmDataRepository:
     """Read-only Member 3 view of the same prototype population as Member 2."""
 
     farm_id = "FARM_01"
-    farm_name = "NLDB Ridiyagama Farm"
+    farm_name = "Ruhunu Farm"
 
     def animals(self, farm_id: str) -> list[Animal]:
         return list(ANIMALS) if farm_id == self.farm_id else []
