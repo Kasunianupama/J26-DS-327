@@ -20,7 +20,7 @@ export * from './profiles';
 
 /** Farms offered by the persistent farm selector. Only one is populated. */
 export const FARMS = [
-  { id: 'FARM_01', name: 'Ridiyagama Farm', populated: true },
+  { id: 'FARM_01', name: 'Ruhunu Farm', populated: true },
   { id: 'FARM_02', name: 'Bopaththalawa Farm', populated: false },
   { id: 'FARM_03', name: 'Ambewela Livestock', populated: false },
 ] as const;

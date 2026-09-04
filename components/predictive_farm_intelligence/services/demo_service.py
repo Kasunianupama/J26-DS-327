@@ -35,7 +35,7 @@ HORIZON_LABELS = {
 }
 
 FARMS = (
-    {"id": "FARM_01", "name": "Ridiyagama Farm", "populated": True},
+    {"id": "FARM_01", "name": "Ruhunu Farm", "populated": True},
     {"id": "FARM_02", "name": "Bopaththalawa Farm", "populated": False},
     {"id": "FARM_03", "name": "Ambewela Livestock", "populated": False},
 )
