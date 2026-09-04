@@ -207,7 +207,7 @@ class AssistantService:
     def _farm_summary(self, farm_id, text, role, cid, language):
         s = self.data.herd_summary(farm_id); p = self.data.weekly_production(farm_id); attention = self.data.attention_animals(farm_id)
         behavior, behavior_output = self._behavioral_context(farm_id)
-        answer = f"Today’s summary: NLDB Ridiyagama Farm has {s['total']} animals. Milk production is {p['change_pct']:+.1f}% compared with last week. {len(attention)} cows have recent health records that need review, so start with {attention[0]['animal_id']} and then confirm water, cooling, and feeding routines. {behavior_output['sentence']}"
+        answer = f"Today’s summary: Ruhunu Farm has {s['total']} animals. Milk production is {p['change_pct']:+.1f}% compared with last week. {len(attention)} cows have recent health records that need review, so start with {attention[0]['animal_id']} and then confirm water, cooling, and feeding routines. {behavior_output['sentence']}"
         return self._response(cid, language, "farm_summary", answer, [{"source":"farm_summary", "label":"Farm records", "recordIds":[], "freshness":"today"}, behavior_output["evidence"]], ["Review priority health events.", "Confirm cooling, water, and feeding routine."], .86, .86, behavioral_context=behavior)
 
     @staticmethod
