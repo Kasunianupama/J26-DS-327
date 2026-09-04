@@ -6,7 +6,6 @@ type SubItem = {to: string; label: string; icon: string};
 type NavItem = {to: string; label: string; icon: string; end?: boolean; subItems?: SubItem[]};
 
 const navigation: {label: string; items: NavItem[]}[] = [
-  {label: 'Overview', items: [{to: '/', label: 'Dashboard', icon: '▦', end: true}, {to: '/herd', label: 'Herd', icon: '♧'}]},
   {label: 'Intelligence', items: [{to: '/predictive', label: 'Predictive intelligence', icon: '⌁'}, {to: '/risks', label: 'Risk intelligence', icon: '⚑'}]},
   {
     label: 'Actions',

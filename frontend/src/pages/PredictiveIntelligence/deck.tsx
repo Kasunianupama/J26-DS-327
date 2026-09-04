@@ -26,15 +26,20 @@ import {
   structureForDate,
 } from '../../data/component2';
 import { DeltaChip, KpiStrip, KpiTile } from './ui';
-import { horizonSummary } from './summary';
+import { horizonSummary, withBackendOverview } from './summary';
 import { useC2, type CapacityTab, type Workspace } from './state';
+import { usePredictiveBackend } from './backend';
 
 export function MetricDeck() {
   const {
     workspace, capacityTab, horizon, selectedDate, selectedMonth,
     acknowledged, snoozed, go, setSelectedDate, setSelectedMonth, openDrawer,
   } = useC2();
-  const s = useMemo(() => horizonSummary(horizon), [horizon]);
+  const { snapshot } = usePredictiveBackend();
+  const s = useMemo(
+    () => withBackendOverview(horizonSummary(horizon), snapshot?.overview),
+    [horizon, snapshot?.overview],
+  );
 
   /* ---------------- Farm Outlook ---------------- */
   if (workspace === 'future') {
@@ -279,9 +284,14 @@ function CapacityDeck({ tab }: { tab: CapacityTab }) {
 /* ------------------------------------------------------------------ */
 
 /** Findings that actually point into the workspace you are looking at. */
-export function signalsFor(workspace: Workspace, acknowledged: Set<string>, snoozed: Set<string>) {
+export function signalsFor(
+  workspace: Workspace,
+  acknowledged: Set<string>,
+  snoozed: Set<string>,
+  findings = FINDINGS,
+) {
   const rank: Record<string, number> = { critical: 0, attention: 1, routine: 2 };
-  const open = FINDINGS.filter((f) => !acknowledged.has(f.id) && !snoozed.has(f.id));
+  const open = findings.filter((f) => !acknowledged.has(f.id) && !snoozed.has(f.id));
   const scoped = workspace === 'future'
     ? open
     : open.filter((f) => f.links.some((l) => l.workspace === workspace));

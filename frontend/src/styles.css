@@ -94,7 +94,7 @@ h2{font-size:32px;margin-top:0}
 .shell--rail .nav-group > p,
 .shell--rail .nav-label,
 .shell--rail .role-switcher{display:none}
-.shell--rail .app-navigation{gap:12px}
+.shell--rail .app-navigation{gap:12px;margin-top:20px}
 .shell--rail .app-navigation a,
 .shell--rail .settings-link{justify-content:center;padding:11px 0;gap:0}
 .shell--rail .app-navigation a.active,
@@ -104,6 +104,7 @@ h2{font-size:32px;margin-top:0}
   .shell--rail{grid-template-columns:1fr}
   .shell--rail > aside{padding-left:16px;padding-right:16px;width:min(290px,88vw)}
   .rail-toggle{display:none}
+  .shell--rail .app-navigation{margin-top:0}
   .shell--rail .brand-tagline,.shell--rail .nav-group > p,.shell--rail .nav-label,.shell--rail .role-switcher{display:revert}
   .shell--rail .app-navigation a,.shell--rail .settings-link{justify-content:flex-start;padding:10px 12px;gap:11px}
 }

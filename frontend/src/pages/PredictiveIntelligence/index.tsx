@@ -10,18 +10,16 @@
 
 import { useMemo, useState } from 'react';
 import {
-  DATA_THROUGH,
   FARMS,
-  GENERATED_AT,
   HERD,
   HORIZONS,
   PROFILES,
   SEVERITY_META,
-  isoDate,
-  longDate,
   type HorizonId,
 } from '../../data/component2';
 import { C2Provider, useC2, type CapacityTab, type Workspace } from './state';
+import { PredictiveBackendProvider, usePredictiveBackend } from './backend';
+import { BackendStatus } from './BackendStatus';
 import { CowPanel } from './panels/CowPanel';
 import { TimelinePlayer } from './panels/TimelinePlayer';
 import { HerdStrip } from './panels/HerdFlow';
@@ -65,9 +63,16 @@ const CAPACITY_TABS: { id: CapacityTab; label: string }[] = [
 export default function PredictiveIntelligencePage() {
   return (
     <C2Provider>
-      <Shell />
+      <BackendBridge>
+        <Shell />
+      </BackendBridge>
     </C2Provider>
   );
+}
+
+function BackendBridge({ children }: { children: React.ReactNode }) {
+  const { farm, horizon } = useC2();
+  return <PredictiveBackendProvider farmId={farm} horizon={horizon}>{children}</PredictiveBackendProvider>;
 }
 
 function Shell() {
@@ -75,10 +80,13 @@ function Shell() {
     farm, horizon, setHorizon, workspace, capacityTab, go,
     drawer, openDrawer, acknowledged, snoozed,
   } = useC2();
+  const backend = usePredictiveBackend();
 
-  const openFindings = findingsOpenCount(acknowledged, snoozed);
+  const findings = backend.snapshot?.findings;
+  const openFindings = findingsOpenCount(acknowledged, snoozed, findings);
   const detailOpen = drawer.kind !== 'none';
-  const activeFarm = FARMS.find((f) => f.id === farm)!;
+  const farms = backend.snapshot?.farms ?? FARMS;
+  const activeFarm = farms.find((f) => f.id === farm) ?? FARMS[0];
   const [overviewOpen, setOverviewOpen] = useState(false);
 
   return (
@@ -90,7 +98,7 @@ function Shell() {
             <span className="pfie-ident-mark" aria-hidden><Icon name="spark" size={19} /></span>
             <div>
               <h1>Predictive intelligence</h1>
-              <p>{activeFarm.name} · synthetic prototype</p>
+              <p>{activeFarm.name} · prototype</p>
             </div>
           </div>
 
@@ -107,12 +115,7 @@ function Shell() {
             {openFindings > 0 && <span className="count">{openFindings}</span>}
           </button>
 
-          <span className="pfie-live"><i aria-hidden />Live · {GENERATED_AT.slice(11)}</span>
-
-          <div className="pfie-stamp">
-            <span>Updated <b>{GENERATED_AT.slice(0, 10)}</b></span>
-            <span>Data through <b>{longDate(isoDate(DATA_THROUGH))}</b></span>
-          </div>
+          <BackendStatus />
         </div>
 
         <nav className="pfie-nav" aria-label="Workspaces">
@@ -209,7 +212,7 @@ function Shell() {
         )}
 
         {!detailOpen && <p className="pfie-disclaimer">
-          All figures are fictional synthetic prototype data. They are not NLDB records, not DelPro data, and do
+          All figures are fictional sample prototype data. They are not NLDB records, not DelPro data, and do
           not represent research findings. Component 2 is a predictive layer — animal records, event entry,
           treatments and operational reporting remain in DelPro. The Operations workspace demonstrates how
           acknowledgement, action and outcome evidence can be monitored without replacing those source systems.
@@ -242,7 +245,8 @@ function SignalBand() {
   const {
     workspace, acknowledged, snoozed, openDrawer, go, setSelectedDate, setSelectedMonth,
   } = useC2();
-  const signals = signalsFor(workspace, acknowledged, snoozed);
+  const { snapshot } = usePredictiveBackend();
+  const signals = signalsFor(workspace, acknowledged, snoozed, snapshot?.findings);
   if (signals.length === 0) return null;
 
   return (
