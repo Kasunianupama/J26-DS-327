@@ -70,7 +70,7 @@ def synthetic_rates(**overrides) -> RateSet:
 
 def synthetic_state(origin: date = date(2020, 1, 1)) -> OriginState:
     s = OriginState(origin=origin)
-    s.calf[0], s.calf[1] = 14.0, 6.0
+    s.calf[0, 0], s.calf[0, 1] = 14.0, 6.0  # female calves, generations 0 and 1
     s.heifer_open[0] = 15.0
     s.heifer_preg[1, 200] = 10.0
     s.milk_open[0, 0, 30] = 10.0
@@ -220,6 +220,32 @@ class FakeHerdSource:
         out = pd.DataFrame({"gest": np.arange(275, 288), "n": np.full(13, 3.0)})
         out["max_date"] = origin - timedelta(days=1)
         return self._leaky("gestation", out, origin)
+
+    def young_days(self, start, origin):
+        self.calls.append(("young_days", start, origin))
+        out = pd.DataFrame({"sex": ["female", "male"], "days": [6000.0, 2000.0],
+                            "max_date": [origin - timedelta(days=1)] * 2})
+        return self._leaky("young_days", out, origin)
+
+    def young_exits(self, start, origin):
+        self.calls.append(("young_exits", start, origin))
+        out = pd.DataFrame({"sex": ["female", "male", "male"],
+                            "exit_type": ["died", "died", "sold"], "exits": [2.0, 8.0, 6.0],
+                            "max_date": [origin - timedelta(days=1)] * 3})
+        return self._leaky("young_exits", out, origin)
+
+    def births_by_sex(self, start, origin):
+        self.calls.append(("births_by_sex", start, origin))
+        out = pd.DataFrame({"sex": ["female", "male"], "n": [52.0, 48.0],
+                            "max_date": [origin - timedelta(days=1)] * 2})
+        return self._leaky("births_by_sex", out, origin)
+
+    def calf_sex_on(self, asof):
+        self.calls.append(("calf_sex_on", asof))
+        out = pd.DataFrame({"sex": ["female", "male", "female"],
+                            "generation_group": ["0", "0", "1"], "n": [9.0, 3.0, 6.0],
+                            "max_date": [asof] * 3})
+        return self._leaky("calf_sex_on", out, asof + timedelta(days=1))
 
     def panel_daily(self, start, end):
         self.calls.append(("panel_daily", start, end))

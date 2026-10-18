@@ -81,6 +81,10 @@ class HerdSource(Protocol):
     def milking_clock(self, asof: date, known_until: date) -> pd.DataFrame: ...
     def dry_clock(self, asof: date, known_until: date) -> pd.DataFrame: ...
     def heifer_clock(self, asof: date, known_until: date, lag_days: int) -> pd.DataFrame: ...
+    def young_days(self, start: date, origin: date) -> pd.DataFrame: ...
+    def young_exits(self, start: date, origin: date) -> pd.DataFrame: ...
+    def births_by_sex(self, start: date, origin: date) -> pd.DataFrame: ...
+    def calf_sex_on(self, asof: date) -> pd.DataFrame: ...
     def panel_daily(self, start: date, end: date) -> pd.DataFrame: ...
 
 
@@ -112,6 +116,9 @@ def load_origin_inputs(source: HerdSource, origin: date, cfg: EngineConfig) -> O
         preg_milking_days=float(preg["preg_milking_days"].fillna(0).sum()) if len(preg) else 0.0,
         dryoff_gest=check_before(source.dryoff_gest(ws, known_until, origin), origin, "dryoff_gest"),
         gestation=check_before(source.gestation(ws, origin), origin, "gestation"),
+        young_days=check_before(source.young_days(ws, origin), origin, "young_days"),
+        young_exits=check_before(source.young_exits(ws, origin), origin, "young_exits"),
+        births_by_sex=check_before(source.births_by_sex(ws, origin), origin, "births_by_sex"),
     )
 
     cells = check_before(source.cells_on(asof), origin, "cells_on")
@@ -123,8 +130,10 @@ def load_origin_inputs(source: HerdSource, origin: date, cfg: EngineConfig) -> O
         source.heifer_clock(asof, known_until, cfg.pregnancy_check_lag_days),
         known_until, "heifer_clock",
     )
+    calf_sex = check_before(source.calf_sex_on(asof), origin, "calf_sex_on")
     state, notes = build_origin_state(
         origin, cells, milking_clock, dry_clock, heifer_clock, cfg.pregnancy_check_lag_days,
+        calf_sex=calf_sex,
         max_live_gest=max_live_gestation(rate_inputs.gestation),
         conception_per_ai=conception_per_ai(rate_inputs),
     )
@@ -382,6 +391,67 @@ class SqlHerdSource:
                         AND gestation_d BETWEEN 200 AND 329) c
                 GROUP BY 1""",
             start=start, origin=origin,
+        )
+
+    # calf sex split (only used as male/female shares of measured totals) --
+    def young_days(self, start: date, origin: date) -> pd.DataFrame:
+        """Animal-days aged under one year in [start, origin), by sex."""
+        return self._q(
+            f"""SELECT a.sex,
+                       SUM(GREATEST(0,
+                           LEAST(COALESCE(a.exit_date, 'infinity'::date), a.birth_date + 365,
+                                 CAST(:origin AS date))
+                           - GREATEST(a.birth_date, CAST(:start AS date))))::float AS days,
+                       MAX(a.birth_date) AS max_date
+                FROM {self.core}.animal a
+                WHERE a.sex IN ('female', 'male')
+                  AND a.birth_date < CAST(:origin AS date)
+                  AND a.birth_date + 365 > CAST(:start AS date)
+                  AND COALESCE(a.is_placeholder, false) = false
+                GROUP BY a.sex""",
+            start=start, origin=origin,
+        )
+
+    def young_exits(self, start: date, origin: date) -> pd.DataFrame:
+        """Exits before one year of age in [start, origin), by sex and exit type."""
+        return self._q(
+            f"""SELECT a.sex, a.exit_type, COUNT(*)::float AS exits, MAX(a.exit_date) AS max_date
+                FROM {self.core}.animal a
+                WHERE a.sex IN ('female', 'male')
+                  AND a.exit_date >= CAST(:start AS date)
+                  AND a.exit_date < CAST(:origin AS date)
+                  AND a.exit_date < a.birth_date + 365
+                  AND COALESCE(a.is_placeholder, false) = false
+                GROUP BY 1, 2""",
+            start=start, origin=origin,
+        )
+
+    def births_by_sex(self, start: date, origin: date) -> pd.DataFrame:
+        """Live-born calves in [start, origin), by sex."""
+        return self._q(
+            f"""SELECT sex, COUNT(*)::float AS n, MAX(birth_date) AS max_date
+                FROM {self.core}.calf
+                WHERE sex IN ('female', 'male')
+                  AND birth_date >= CAST(:start AS date)
+                  AND birth_date < CAST(:origin AS date)
+                  AND NOT COALESCE(born_dead, false)
+                GROUP BY sex""",
+            start=start, origin=origin,
+        )
+
+    def calf_sex_on(self, asof: date) -> pd.DataFrame:
+        """Animals under one year old present on ``asof``, by sex and generation."""
+        return self._q(
+            f"""SELECT a.sex, {_GENERATION} AS generation_group, COUNT(*)::float AS n,
+                       MAX(a.birth_date) AS max_date
+                FROM {self.core}.animal a
+                WHERE a.sex IN ('female', 'male')
+                  AND a.birth_date <= CAST(:asof AS date)
+                  AND a.birth_date > CAST(:asof AS date) - 365
+                  AND COALESCE(a.exit_date, 'infinity'::date) > CAST(:asof AS date)
+                  AND COALESCE(a.is_placeholder, false) = false
+                GROUP BY 1, 2""",
+            asof=asof,
         )
 
     # actuals for scoring (herd-level daily panel, never fed to the model) --

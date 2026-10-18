@@ -43,9 +43,12 @@ def test_hazard_from_counts_delta():
 def test_estimate_rates_on_synthetic_source():
     inputs = load_origin_inputs(FakeHerdSource(), ORIGIN, EngineConfig())
     r = estimate_rates(inputs.rate_inputs)
-    assert r.calf_to_heifer == pytest.approx(1 / 365, rel=1e-6)
+    assert r.calf_to_heifer == pytest.approx((1 / 365) / 0.75, rel=1e-6)  # per female calf-day
     assert r.conc_heifer == pytest.approx(1 / 120, rel=1e-6)
-    assert r.exit["milking"]["sales"] == pytest.approx(0.0003, rel=1e-6)
+    months = set(inputs.rate_inputs.transitions["month"])
+    tr, pm = inputs.rate_inputs.transitions, inputs.rate_inputs.panel
+    factor = pm[pm["month"].isin(months)]["sales"].sum() / tr[tr["to_state"] == "sold"]["n_moved"].sum()
+    assert r.exit["milking"]["sales"] == pytest.approx(0.0003 * factor, rel=1e-6)  # calibrated
     assert 0 < r.abortion < 0.01
     assert r.births_per_calving == pytest.approx(0.5)
     assert r.conc_cow[:, 0].max() == 0.0  # no conceptions in the first 60 days
@@ -154,3 +157,68 @@ def test_extra_pregnancy_loss_from_transitions():
     e = ri.exposure
     days = e[(e["state"] == "heifer_pregnant") & e["month"].isin(months)]["animal_days"].sum()
     assert r.heifer_loss == pytest.approx(5.0 * len(months) / days - r.abortion)
+
+
+def test_one_off_purchases_are_not_projected_forward():
+    inputs = load_origin_inputs(FakeHerdSource(), ORIGIN, EngineConfig())
+    ri = inputs.rate_inputs
+    ri.panel["external_entries"] = 0.0
+    ri.panel.loc[ri.panel.index[0], "external_entries"] = 120.0  # one restocking month
+    assert estimate_rates(ri).entry_per_day == 0.0
+
+
+def test_calf_split_keeps_measured_totals():
+    inputs = load_origin_inputs(FakeHerdSource(), ORIGIN, EngineConfig())
+    ri = inputs.rate_inputs
+    r = estimate_rates(ri)
+    months = set(ri.transitions["month"])
+    e = ri.exposure
+    calf_days = e[(e["state"] == "calf") & e["month"].isin(months)]["animal_days"].sum()
+    days = {"female": calf_days * 0.75, "male": calf_days * 0.25}  # 6000 vs 2000 young days
+    tr = ri.transitions
+    died = tr[(tr["from_state"] == "calf") & (tr["to_state"] == "dead")]["n_moved"].sum()
+    model_died = sum(r.calf_exit_by_sex[x]["deaths"] * days[x] for x in days)
+    assert model_died == pytest.approx(died)  # total calf deaths preserved
+    assert r.calf_exit_by_sex["male"]["deaths"] / r.calf_exit_by_sex["female"]["deaths"] == \
+        pytest.approx((8 / 2) * 3)  # 80% of young deaths are male, males have 1/3 the days
+    assert r.female_share == pytest.approx(0.52)
+    assert r.calf_to_bull == 0.0  # no calf -> bull moves in the synthetic data
+
+
+def test_calf_split_falls_back_without_sex_data():
+    inputs = load_origin_inputs(FakeHerdSource(), ORIGIN, EngineConfig())
+    ri = inputs.rate_inputs
+    ri.young_days = ri.young_days.iloc[0:0]
+    r = estimate_rates(ri)
+    assert r.calf_exit_by_sex is None and r.female_share == 1.0
+    assert r.calf_to_heifer == pytest.approx(1 / 365, rel=1e-6)
+    assert any(n.startswith("calves") for n in r.notes)
+
+
+def test_starting_calves_split_by_sex():
+    inputs = load_origin_inputs(FakeHerdSource(), ORIGIN, EngineConfig())
+    calf = inputs.state.calf
+    total = calf.sum()
+    assert calf[1, 0] / calf[:, 0].sum() == pytest.approx(0.25)  # gen 0: 3 of 12 male
+    assert calf[1, 1] == pytest.approx(0.0)  # gen 1: only females
+    assert total == pytest.approx(inputs.state.state_totals()["calf"])
+
+
+def test_exit_calibration_matches_panel_totals():
+    inputs = load_origin_inputs(FakeHerdSource(), ORIGIN, EngineConfig())
+    ri = inputs.rate_inputs
+    months = set(ri.transitions["month"])
+    pm = ri.panel[ri.panel["month"].isin(months)]
+    tr = ri.transitions
+    got = {k: tr[tr["to_state"] == v]["n_moved"].sum()
+           for k, v in (("deaths", "dead"), ("culls", "culled"), ("sales", "sold"))}
+    # make the panel show more culls and more deaths than the transition table
+    ri.panel.loc[ri.panel["month"].isin(months), "culls"] *= 2 * got["culls"] / pm["culls"].sum()
+    ri.panel.loc[ri.panel["month"].isin(months), "deaths"] *= (got["deaths"] + 40) / pm["deaths"].sum()
+    base = estimate_rates(load_origin_inputs(FakeHerdSource(), ORIGIN, EngineConfig()).rate_inputs)
+    r = estimate_rates(ri)
+    assert r.exit["milking"]["culls"] / base.exit["milking"]["culls"] == pytest.approx(
+        2.0 / (pm["culls"].sum() / got["culls"]), rel=1e-6)
+    assert r.early_deaths_per_calving == pytest.approx(40 / pm["calvings"].sum())
+    assert r.exit["milking"]["deaths"] == pytest.approx(base.exit["milking"]["deaths"])
+    assert any(n.startswith("exit calibration") for n in r.notes)

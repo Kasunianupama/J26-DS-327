@@ -21,7 +21,8 @@ from .synthetic import FakeHerdSource
 
 ORIGIN = date(2020, 3, 1)
 QUERIES = ("cells_on", "milking_clock", "dry_clock", "heifer_clock", "exposure", "transitions",
-           "panel_months", "cow_open", "preg_milking_days", "dryoff_gest", "gestation")
+           "panel_months", "cow_open", "preg_milking_days", "dryoff_gest", "gestation",
+           "young_days", "young_exits", "births_by_sex", "calf_sex_on")
 
 
 def test_check_before_rejects_origin_date():

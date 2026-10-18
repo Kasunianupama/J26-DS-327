@@ -14,9 +14,12 @@ Each simulated day runs, in this order:
 3. real abortion: pregnant -> open; plus extra pregnancy losses for heifers and dry
    cows measured from the transition table (not counted as abortions);
 4. calving by gestation day: dam -> milking, parity + 1, DIM 0; retained
-   calves enter "calf" with generation = dam generation + 1 (capped at 3+);
+   calves enter "calf" (split female/male by the birth sex ratio; calves that die
+   within their first month are counted as births and deaths only) with
+   generation = dam generation + 1 (capped at 3+);
 5. dry-off: open cows by DIM band, pregnant cows by gestation day;
-6. conception (heifer, milking cow by parity x DIM band, dry cow), calf -> heifer,
+6. conception (heifer, milking cow by parity x DIM band, dry cow), female calf ->
+   heifer, male calf -> bull,
    and inseminations counted as events;
 7. external entries.
 
@@ -37,6 +40,7 @@ import pandas as pd
 
 from .categories import (
     CHILD_GENERATION,
+    SEXES,
     COW_PARITIES,
     DIM_BAND_BOUNDS,
     DIM_BANDS,
@@ -51,6 +55,7 @@ from .categories import (
 
 N_PAR = len(COW_PARITIES)
 N_GEN = len(GENERATIONS)
+N_SEX = len(SEXES)  # 0 = female, 1 = male
 N_DIM = 1000  # last index absorbs DIM >= 999
 CB_WIDTH = 10  # bin width of DIM at conception for pregnant milking cows
 N_CB = N_DIM // CB_WIDTH
@@ -81,7 +86,7 @@ class OriginState:
     """Herd at the end of the day before the origin, as expected counts."""
 
     origin: date
-    calf: np.ndarray = field(default_factory=lambda: np.zeros(N_GEN))
+    calf: np.ndarray = field(default_factory=lambda: np.zeros((N_SEX, N_GEN)))
     heifer_open: np.ndarray = field(default_factory=lambda: np.zeros(N_GEN))
     heifer_preg: np.ndarray = field(default_factory=lambda: np.zeros((N_GEN, N_GEST)))
     milk_open: np.ndarray = field(default_factory=lambda: np.zeros((N_PAR, N_GEN, N_DIM)))
@@ -129,7 +134,7 @@ class OriginState:
         """Herd as day_cell-style rows (state, parity_group, dim_band, generation_group, n)."""
         rows: list[tuple[str, str, str, str, float]] = []
         for g, gen in enumerate(GENERATIONS):
-            rows.append(("calf", "0", NA_BAND, gen, self.calf[g]))
+            rows.append(("calf", "0", NA_BAND, gen, self.calf[:, g].sum()))
             rows.append(("heifer_open", "0", NA_BAND, gen, self.heifer_open[g]))
             rows.append(("heifer_pregnant", "0", NA_BAND, gen, self.heifer_preg[g].sum()))
         open_bands = self.milk_open @ _BAND_MASK_OPEN
@@ -164,6 +169,12 @@ class RateSet:
     abortion: float
     births_per_calving: float
     ai_open: float
+    # Calf sex split. Defaults reproduce a single calf group (all treated as female).
+    female_share: float = 1.0  # share of calves born that are female
+    calf_to_bull: float = 0.0  # daily hazard, male calves only
+    calf_exit_by_sex: dict[str, dict[str, float]] | None = None  # sex -> exit type -> hazard
+    # calves that die before they are counted in the herd (born and dead within a month)
+    early_deaths_per_calving: float = 0.0
     heifer_loss: float = 0.0  # extra pregnant -> open hazard for heifers (not counted as abortion)
     dry_loss: float = 0.0  # same for dry cows
     entry_per_day: float = 0.0
@@ -238,6 +249,14 @@ def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
 
     # 2. exits
     for state in STATES:
+        if state == "calf" and r.calf_exit_by_sex:
+            for i, sex in enumerate(SEXES):
+                sparts, stotal = _exit_fraction(r.calf_exit_by_sex[sex])
+                ns = float(s.calf[i].sum())
+                s.calf[i] *= 1.0 - stotal
+                for k, h in sparts.items():
+                    ev[k] += ns * h
+            continue
         parts, total = _exit_fraction(r.exit[state])
         if total <= 0:
             continue
@@ -312,9 +331,15 @@ def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
     s.milk_open[:, :, 0] += fresh
     ev["calvings"] = float(calved_by_gen.sum())
     born = calved_by_gen * r.births_per_calving
+    early = calved_by_gen * min(r.early_deaths_per_calving, r.births_per_calving)
+    kept = born - early
+    fs = min(max(r.female_share, 0.0), 1.0)
     for g in range(N_GEN):
-        s.calf[CHILD_GENERATION[g]] += born[g]
+        s.calf[0, CHILD_GENERATION[g]] += kept[g] * fs
+        s.calf[1, CHILD_GENERATION[g]] += kept[g] * (1.0 - fs)
     ev["births"] = float(born.sum())
+    ev["deaths"] += float(early.sum())
+    ev["exits"] += float(early.sum())
 
     # 5. dry-off
     flow = s.milk_open * r.dry_open_cow[BAND_OF_DIM]
@@ -341,9 +366,12 @@ def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
     s.dry_open -= flow
     s.dry_preg[:, :, 0] += flow
     ev["conceptions"] += float(flow.sum())
-    flow = s.calf * r.calf_to_heifer
-    s.calf -= flow
+    flow = s.calf[0] * r.calf_to_heifer
+    s.calf[0] -= flow
     s.heifer_open += flow
+    flow = s.calf[1] * r.calf_to_bull
+    s.calf[1] -= flow
+    s.bull += float(flow.sum())
 
     # 7. external entries (generation 0 = purchased; cow parity unknown)
     e = r.entry_per_day
@@ -354,7 +382,7 @@ def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
         for state, share in r.entry_shares.items():
             n = e * share
             if state == "calf":
-                s.calf[0] += n
+                s.calf[0, 0] += n
             elif state == "heifer_open":
                 s.heifer_open[0] += n
             elif state == "heifer_pregnant":
@@ -390,6 +418,8 @@ def project(
         for state, col in STATE_TO_STOCK.items():
             row[col] = totals[state]
         row["n_herd"] = sum(totals.values())
+        row["calves_female"] = float(s.calf[0].sum())
+        row["calves_male"] = float(s.calf[1].sum())
         row.update(events)
         rows.append(row)
         if record_cells:

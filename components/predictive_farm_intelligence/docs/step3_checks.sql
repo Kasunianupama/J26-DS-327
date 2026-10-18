@@ -44,3 +44,9 @@ SELECT COUNT(*) AS lactations_with_conception,
        ROUND(100.0 * AVG(CASE WHEN l.aborted THEN 1 ELSE 0 END), 1) AS pct_aborted
 FROM core.lactation l
 WHERE l.conception_date IS NOT NULL;
+
+-- 5. Exit types in core.animal for animals under one year (calf sex split uses these)
+SELECT sex, exit_type, COUNT(*) AS exits
+FROM core.animal
+WHERE exit_date IS NOT NULL AND exit_date < birth_date + 365
+GROUP BY 1, 2 ORDER BY 1, 2;

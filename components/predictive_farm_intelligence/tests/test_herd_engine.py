@@ -79,7 +79,7 @@ def test_calf_generation_is_dam_plus_one(dam_gen, calf_gen):
     calve = np.zeros(N_GEST)
     calve[280] = 1.0
     proj = project(s, _no_flows(calve_by_gest=calve, births_per_calving=0.5), 3)
-    calves = proj.final_state.calf
+    calves = proj.final_state.calf.sum(0)
     assert calves[GENERATIONS.index(calf_gen)] == pytest.approx(2.0)
     assert calves.sum() == pytest.approx(2.0)
     # the dam (parity "2") moves to parity "3+", keeping her generation
@@ -137,3 +137,43 @@ def test_extra_heifer_loss_is_not_an_abortion():
     assert d["pregnancy_losses"] == pytest.approx(1.0)
     assert d["real_abortions"] == 0
     assert proj.final_state.heifer_open[0] == pytest.approx(1.0)
+
+
+def test_calf_split_by_sex():
+    s = OriginState(origin=ORIGIN)
+    s.calf[0, 0] = 10.0  # female
+    s.calf[1, 0] = 10.0  # male
+    s.dry_preg[1, 0, 279] = 4.0
+    calve = np.zeros(N_GEST)
+    calve[280] = 1.0
+    rates = _no_flows(
+        calve_by_gest=calve, births_per_calving=1.0, female_share=0.25,
+        calf_to_heifer=0.1, calf_to_bull=0.05,
+        calf_exit_by_sex={"female": {"deaths": 0.0, "culls": 0.0, "sales": 0.0},
+                          "male": {"deaths": 0.2, "culls": 0.0, "sales": 0.1}},
+    )
+    proj = project(s, rates, 1)
+    fs, d = proj.final_state, proj.daily.iloc[0]
+    # males: 10 * 0.7 survive exits; 3 newborn males (generation 1) join; then 5% of
+    # all male calves become bulls. Females: none exit, 1 newborn joins, 10% -> heifer.
+    assert fs.calf[1, 0] == pytest.approx(10 * 0.7 * 0.95)
+    assert fs.calf[1, 1] == pytest.approx(3 * 0.95)
+    assert fs.bull == pytest.approx((7 + 3) * 0.05)
+    assert fs.calf[0, 0] == pytest.approx(9.0) and fs.calf[0, 1] == pytest.approx(0.9)
+    assert fs.heifer_open.sum() == pytest.approx(1.1)
+    assert d["deaths"] == pytest.approx(2.0) and d["sales"] == pytest.approx(1.0)
+    assert d["calves_female"] + d["calves_male"] == pytest.approx(d["calves"])
+
+
+def test_early_calf_deaths_count_as_births_and_deaths_only():
+    s = OriginState(origin=ORIGIN)
+    s.dry_preg[1, 0, 279] = 10.0
+    calve = np.zeros(N_GEST)
+    calve[280] = 1.0
+    proj = project(s, _no_flows(calve_by_gest=calve, births_per_calving=1.0,
+                                early_deaths_per_calving=0.2), 1)
+    d = proj.daily.iloc[0]
+    assert d["births"] == pytest.approx(10.0)
+    assert d["deaths"] == pytest.approx(2.0) and d["exits"] == pytest.approx(2.0)
+    assert d["calves"] == pytest.approx(8.0)
+    assert d["n_herd"] == pytest.approx(10.0 - 2.0 + 10.0)  # conservation holds

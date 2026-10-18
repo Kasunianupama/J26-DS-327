@@ -23,6 +23,9 @@ NEXT_PARITY = (1, 2, 2, 3)
 FIRST_PARITY = 0
 
 GENERATIONS = ("0", "1", "2", "3+", "unknown")
+
+# Calves are held by sex: only female calves become heifers, male calves may become bulls.
+SEXES = ("female", "male")
 # Calf generation = dam generation + 1, capped at "3+"; unknown stays unknown.
 CHILD_GENERATION = (1, 2, 3, 3, 4)
 

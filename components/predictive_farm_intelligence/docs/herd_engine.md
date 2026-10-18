@@ -17,7 +17,7 @@ Code: `pfoi/` in this folder. Tests: `tests/` (synthetic herd, no database).
 
 | Flow | Numerator | Exposure |
 |---|---|---|
-| calf → heifer, heifer conception, dry-cow conception | `core.state_transition_month` (complete months) | `day_cell` animal-days, same months |
+| calf → heifer (female calves), calf → bull (male calves), heifer conception, dry-cow conception | `core.state_transition_month` (complete months) | `day_cell` animal-days, same months |
 | death / cull / sale by state | `state_transition_month` exit rows; fallback: `day_panel` totals ÷ herd-days, same rate for every state | as above |
 | cow conception by parity × DIM band | `core.lactation.conception_date` (known only if ≥ 35 days before origin) | open milking days from lactation intervals |
 | open-cow dry-off by DIM band | `core.lactation.dry_off_date` without conception | same |
@@ -26,9 +26,18 @@ Code: `pfoi/` in this folder. Tests: `tests/` (synthetic herd, no database).
 | real abortion | `day_panel.real_abortions` | pregnant heifer + dry days (`day_cell`) + pregnant milking days |
 | births per calving | `day_panel.births / calvings` | — |
 | inseminations (event only) | `day_panel.ais` | open animal-days |
-| external entries | `day_panel.external_entries` per day; state from entry rows in transitions, else heifer_open | — |
+| external entries | median monthly `day_panel.external_entries` per day (one-off restocking is not projected); state from entry rows in transitions, else heifer_open | — |
+| extra pregnancy loss (heifers, dry cows) | `state_transition_month` pregnant → open, minus the abortion rate | pregnant animal-days |
+| unconfirmed recent service (milking cows) | pregnant with probability conceptions ÷ inseminations in the window | — |
 
-Bulls and unknown-state animals are only reduced by exits. Every fallback is recorded
+Bulls and unknown-state animals are only reduced by exits.
+
+**Exit calibration.** The transition table counts moves from each animal's state at the
+start of a month, so animals that arrive and leave within one month (mostly newborn
+calves) are missing from it. Each exit type is matched to `day_panel` over the same
+months: a death shortfall becomes early calf deaths at birth (counted as births and
+deaths, never added to the herd); a cull or sale shortfall rescales that exit type in
+every state (factor limited to 1/3–3). The factors are reported as a note. Every fallback is recorded
 in `RateSet.notes` and counted per backtest run.
 
 ## Leakage
@@ -52,3 +61,13 @@ python -m components.predictive_farm_intelligence.pfoi.cli backtest-herd --grain
 ```
 
 Output: herd-level aggregates only, printed and written to `logs/pfoi/` (gitignored).
+
+## Known limitations (Step 3)
+
+* Calves are split by sex. Measured totals (calf-days, calf exits, calf -> heifer and
+  calf -> bull moves) are kept exactly; the female/male division uses the sex ratio of
+  animal-days and exits under one year (`core.animal`) and of live births (`core.calf`).
+  Constant daily hazards within each sex are an approximation (male calves leave mostly
+  in the first weeks).
+* Inseminations are an event count only and are over-forecast (ratio 1.4–2.5 vs
+  persistence).

@@ -10,7 +10,7 @@ backtest can report which origins used assumed rather than measured rates.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 import numpy as np
@@ -52,6 +52,11 @@ class RateInputs:
     preg_milking_days: float
     dryoff_gest: pd.DataFrame  # gest, n
     gestation: pd.DataFrame  # gest, n
+    # Calf sex split (optional; empty frames keep a single calf group)
+    young_days: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=["sex", "days"]))
+    young_exits: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=["sex", "exit_type", "exits"]))
+    births_by_sex: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=["sex", "n"]))
 
 
 def eb_shrink(events, exposure, prior_rate: float | None = None,
@@ -132,6 +137,57 @@ def max_live_gestation(gestation: pd.DataFrame, quantile: float = 0.99,
     g = gestation.sort_values("gest")
     cum = g["n"].cumsum() / g["n"].sum()
     return int(g.loc[cum >= quantile, "gest"].iloc[0])
+
+
+@dataclass
+class CalfSplit:
+    female_share: float
+    calf_to_heifer: float
+    calf_to_bull: float
+    exit_by_sex: dict[str, dict[str, float]]
+    exit_types_matched: bool = True
+
+
+def calf_split(inp: RateInputs, calf_days: float, moved_to_heifer: float,
+               moved_to_bull: float, calf_exits: dict[str, float]) -> CalfSplit | None:
+    """Split the measured calf totals between female and male calves.
+
+    Totals (calf-days from day_cell, calf exits and calf -> heifer/bull moves from the
+    transition table) are kept exactly; sex only decides how they are shared:
+    calf-days by the sex ratio of animal-days under one year (core.animal), each exit
+    type by the sex ratio of exits under one year. Returns None if sex data is missing.
+    """
+    yd = inp.young_days.groupby("sex")["days"].sum() if len(inp.young_days) else pd.Series(dtype=float)
+    d_f, d_m = float(yd.get("female", 0.0)), float(yd.get("male", 0.0))
+    if calf_days <= 0 or d_f <= 0 or d_m <= 0:
+        return None
+    share_m = d_m / (d_f + d_m)
+    days = {"female": calf_days * (1 - share_m), "male": calf_days * share_m}
+
+    ye = inp.young_exits
+    by_kind = {k: {"female": 0.0, "male": 0.0} for k in EXIT_TYPES}
+    if len(ye):
+        ye = ye.assign(kind=ye["exit_type"].astype(str).str.lower().map(EXIT_TO_STATES))
+        for row in ye.dropna(subset=["kind"]).itertuples(index=False):
+            by_kind[row.kind][row.sex] += float(row.exits)
+    exit_by_sex: dict[str, dict[str, float]] = {"female": {}, "male": {}}
+    for kind in EXIT_TYPES:
+        f, m = by_kind[kind]["female"], by_kind[kind]["male"]
+        sm = m / (f + m) if f + m > 0 else share_m
+        total = calf_exits.get(kind, 0.0)
+        exit_by_sex["male"][kind] = total * sm / days["male"]
+        exit_by_sex["female"][kind] = total * (1 - sm) / days["female"]
+
+    bs = inp.births_by_sex.groupby("sex")["n"].sum() if len(inp.births_by_sex) else pd.Series(dtype=float)
+    b_f, b_m = float(bs.get("female", 0.0)), float(bs.get("male", 0.0))
+    female_share = b_f / (b_f + b_m) if b_f + b_m > 0 else 0.5
+    return CalfSplit(
+        female_share=female_share,
+        calf_to_heifer=moved_to_heifer / days["female"],
+        calf_to_bull=moved_to_bull / days["male"],
+        exit_by_sex=exit_by_sex,
+        exit_types_matched=any(v["female"] + v["male"] > 0 for v in by_kind.values()),
+    )
 
 
 def estimate_rates(inp: RateInputs, cfg: EngineConfig | None = None) -> RateSet:
@@ -239,7 +295,10 @@ def estimate_rates(inp: RateInputs, cfg: EngineConfig | None = None) -> RateSet:
     open_days = E_all["heifer_open"] + E_all["dry_open"] + (co["open_days"].sum() if len(co) else 0.0)
     ai_open = float(panel.get("ais", 0.0)) / open_days if open_days > 0 else 0.0
 
-    entry_per_day = float(panel.get("external_entries", 0.0)) / float(panel["days"])
+    # Purchases are lumpy management decisions (one-off restocking), so the typical
+    # month (median daily rate over the window's months) is projected, not the mean.
+    months = inp.panel[inp.panel["days"] > 0]
+    entry_per_day = float((months["external_entries"] / months["days"]).median())
     entry_shares = {cfg.default_entry_state: 1.0}
     if len(tr):
         ent = tr[tr["from_state"].isin(ENTRY_FROM_STATES) & tr["to_state"].isin(STATES)]
@@ -248,9 +307,63 @@ def estimate_rates(inp: RateInputs, cfg: EngineConfig | None = None) -> RateSet:
     if entry_per_day > 0 and entry_shares == {cfg.default_entry_state: 1.0}:
         notes.append(f"entries: state of entering animals unknown, assigned to {cfg.default_entry_state}")
 
+    split = None
+    if len(tr) and E_tr["calf"] > 0:
+        if len(tr_exit):  # measured calf exits by type
+            ce = tr_exit[tr_exit["from_state"] == "calf"].groupby("kind")["n_moved"].sum()
+            calf_exits = {k: float(ce.get(k, 0.0)) for k in EXIT_TYPES}
+        else:
+            calf_exits = {k: float(exit_rates["calf"].get(k, 0.0)) * E_tr["calf"] for k in EXIT_TYPES}
+        split = calf_split(inp, float(E_tr["calf"]), moved("calf", "heifer_open"),
+                           moved("calf", "bull"), calf_exits)
+    if split is None:
+        notes.append("calves: no sex data in window, one calf group (all may become heifers)")
+        calf_kwargs = dict(calf_to_heifer=trans_rate("calf", "heifer_open", "calf_to_heifer"))
+    else:
+        if not split.exit_types_matched:
+            notes.append("calves: core.animal exit_type values not recognised, "
+                         "male and female calves share exit rates")
+        calf_kwargs = dict(
+            calf_to_heifer=split.calf_to_heifer,
+            calf_to_bull=split.calf_to_bull,
+            female_share=split.female_share,
+            calf_exit_by_sex=split.exit_by_sex,
+        )
+
+    # Exit calibration. The transition table counts moves from each animal's state at
+    # the start of a month, so animals that arrive and leave within one month (mostly
+    # newborn calves) are missing. Match each exit type to day_panel over the same
+    # months: a death shortfall becomes early calf deaths at birth; a cull or sale
+    # shortfall (or any excess) rescales that exit type in every state.
+    early_deaths_per_calving = 0.0
+    if len(tr_exit):
+        pm = inp.panel[inp.panel["month"].isin(tr_months)]
+        measured = tr_exit.groupby("kind")["n_moved"].sum()
+        calv_tr = float(pm["calvings"].sum())
+        parts = []
+        for kind in EXIT_TYPES:
+            target, got = float(pm[kind].sum()), float(measured.get(kind, 0.0))
+            if got <= 0:
+                continue
+            factor = 1.0
+            if kind == "deaths" and target > got and calv_tr > 0:
+                early_deaths_per_calving = min((target - got) / calv_tr, births_per_calving)
+                parts.append(f"deaths +{early_deaths_per_calving:.3f} per calving at birth")
+            elif target > 0:
+                factor = float(np.clip(target / got, 1 / 3, 3.0))
+            if factor != 1.0:
+                for st in STATES:
+                    exit_rates[st][kind] = exit_rates[st].get(kind, 0.0) * factor
+                for d in (calf_kwargs.get("calf_exit_by_sex") or {}).values():
+                    d[kind] *= factor
+                parts.append(f"{kind} x{factor:.2f}")
+        if parts:
+            notes.append("exit calibration: " + ", ".join(parts))
+
     return RateSet(
         exit=exit_rates,
-        calf_to_heifer=trans_rate("calf", "heifer_open", "calf_to_heifer"),
+        **calf_kwargs,
+        early_deaths_per_calving=early_deaths_per_calving,
         conc_heifer=trans_rate("heifer_open", "heifer_pregnant", "conc_heifer"),
         conc_dry=trans_rate("dry_open", "dry_pregnant", "conc_dry"),
         conc_cow=conc_cow,
@@ -273,7 +386,12 @@ def estimate_rates(inp: RateInputs, cfg: EngineConfig | None = None) -> RateSet:
 def rate_summary(r: RateSet) -> pd.DataFrame:
     """Annualised herd-level rates for a sanity check (aggregates only)."""
     rows = [(f"exit_{k}:{s}", v * 365) for s, d in r.exit.items() for k, v in d.items()]
+    if r.calf_exit_by_sex:
+        rows += [(f"exit_{k}:calf_{sex}", v * 365)
+                 for sex, d in r.calf_exit_by_sex.items() for k, v in d.items()]
     rows += [
+        ("female_share_of_calves_born", r.female_share),
+        ("calf_to_bull (male calves)", r.calf_to_bull * 365),
         ("calf_to_heifer", r.calf_to_heifer * 365),
         ("conc_heifer", r.conc_heifer * 365),
         ("conc_dry", r.conc_dry * 365),
@@ -282,6 +400,7 @@ def rate_summary(r: RateSet) -> pd.DataFrame:
         ("extra_loss_dry_pregnant_year", r.dry_loss * 365),
         ("ai_per_open_year", r.ai_open * 365),
         ("births_per_calving", r.births_per_calving),
+        ("early_calf_deaths_per_calving", r.early_deaths_per_calving),
         ("entries_per_year", r.entry_per_day * 365),
     ]
     rows += [(f"conc_cow:{p}:{b}", r.conc_cow[i, j] * 365)
