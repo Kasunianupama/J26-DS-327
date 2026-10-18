@@ -5,14 +5,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_env: str = "development"
     frontend_url: str = "http://localhost:5173"
-    database_host: str = "localhost"
-    database_port: int = 1433
-    database_name: str = "master"
-    database_user: str = ""
-    database_password: str = ""
-    database_odbc_driver: str = "ODBC Driver 18 for SQL Server"
-    database_encrypt: str = "yes"
-    database_trust_server_certificate: str = "no"
+    # App database (farmx_app, PostgreSQL). The backend logs in as the
+    # least-privilege role farmx_api; it never connects to DelPro / SQL Server.
+    app_db_host: str = "localhost"
+    app_db_port: int = 5433
+    app_db_name: str = "farmx_app"
+    app_db_api_user: str = "farmx_api"
+    app_db_api_password: str = ""
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

@@ -5,11 +5,11 @@ import {
 } from './syntheticData';
 import { SriLankaHeatmap } from './SriLankaHeatmap';
 
-interface NLDBNationalDashboardProps {
+interface NationalDashboardProps {
   onSelectFarm: (farmId: string) => void;
 }
 
-export const NLDBNationalDashboard: React.FC<NLDBNationalDashboardProps> = ({ onSelectFarm }) => {
+export const NationalDashboard: React.FC<NationalDashboardProps> = ({ onSelectFarm }) => {
   const [selectedRegionFilter, setSelectedRegionFilter] = useState<string>('All Regions');
   const [selectedRiskFilter, setSelectedRiskFilter] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -31,9 +31,9 @@ export const NLDBNationalDashboard: React.FC<NLDBNationalDashboardProps> = ({ on
       {/* Top Header Bar */}
       <header className="dashboard-top-header">
         <div className="flex-align-center gap-2">
-          <div className="nldb-cow-badge">🐄</div>
+          <div className="dc-cow-badge">🐄</div>
           <div>
-            <h1 className="header-title">NLDB National Risk Dashboard</h1>
+            <h1 className="header-title">National Risk Dashboard</h1>
             <p className="header-subtitle">National Dairy Crisis Forecasting & Risk Engine</p>
           </div>
         </div>
@@ -45,7 +45,7 @@ export const NLDBNationalDashboard: React.FC<NLDBNationalDashboardProps> = ({ on
               <option>June 01 – June 07, 2026</option>
             </select>
           </div>
-          <button className="btn-export" type="button" onClick={() => alert('Exporting NLDB Risk Report PDF...')}>
+          <button className="btn-export" type="button" onClick={() => alert('Exporting National Risk Report PDF...')}>
             <span className="icon">⤓</span> Export Report
           </button>
           <div className="notification-bell" title="6 New Alerts">
@@ -53,7 +53,7 @@ export const NLDBNationalDashboard: React.FC<NLDBNationalDashboardProps> = ({ on
           </div>
           <div className="user-profile-badge">
             <div className="user-avatar">👤</div>
-            <span className="user-name">NLDB Administrator ▾</span>
+            <span className="user-name">Board Administrator ▾</span>
           </div>
         </div>
       </header>
@@ -64,7 +64,7 @@ export const NLDBNationalDashboard: React.FC<NLDBNationalDashboardProps> = ({ on
         <div className="kpi-card">
           <div className="kpi-card-header">
             <span className="kpi-card-title">NATIONAL DAIRY RISK INDEX (NDRI)</span>
-            <button className="info-btn" title="Aggregated risk index across all NLDB farms">ⓘ</button>
+            <button className="info-btn" title="Aggregated risk index across all network farms">ⓘ</button>
           </div>
           <div className="kpi-value-row flex-align-center">
             <span className="kpi-score-large text-danger">68</span>
@@ -143,7 +143,7 @@ export const NLDBNationalDashboard: React.FC<NLDBNationalDashboardProps> = ({ on
         <div className="kpi-card">
           <div className="kpi-card-header">
             <span className="kpi-card-title">TOTAL FARMS MONITORED</span>
-            <button className="info-btn" title="Total active dairy farms in NLDB network">ⓘ</button>
+            <button className="info-btn" title="Total active dairy farms in the farm network">ⓘ</button>
           </div>
           <div className="kpi-value-row flex-align-center">
             <span className="kpi-val-number text-navy">14</span>
