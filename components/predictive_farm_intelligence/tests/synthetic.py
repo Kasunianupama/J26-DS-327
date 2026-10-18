@@ -174,7 +174,8 @@ class FakeHerdSource:
         rows = []
         for r in days.itertuples(index=False):
             nxt = {"calf": ("heifer_open", 1 / 365), "heifer_open": ("heifer_pregnant", 1 / 120),
-                   "dry_open": ("dry_pregnant", 1 / 100)}.get(r.state)
+                   "dry_open": ("dry_pregnant", 1 / 100),
+                   "heifer_pregnant": ("milking", 1 / 280)}.get(r.state)
             if nxt:
                 rows.append((r.month, r.state, nxt[0], r.n_animals * nxt[1]))
             for to_state, rate in (("dead", 0.0001), ("culled", 0.0002), ("sold", 0.0003)):

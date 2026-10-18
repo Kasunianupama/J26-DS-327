@@ -19,7 +19,7 @@ import pandas as pd
 
 from . import MODEL_VERSION
 from .config import EngineConfig
-from .data import DATA_START, HerdSource, load_origin_inputs
+from .data import DATA_START, HerdSource, load_origin_inputs, month_start
 from .herd_engine import project
 from .periods import HORIZONS, aggregate, check_origin, horizon_days, period_bounds
 from .rates import estimate_rates
@@ -35,6 +35,11 @@ EVENT_SERIES = (
     "external_entries",
 )
 KEY_SERIES = ("milking", "n_herd", "calvings", "real_abortions")
+# Scored at monthly grain only, against core.state_transition_month (diagnostic).
+HEIFER_CALVINGS = "calvings_heifer"
+CORRECTED = "herd_engine_corrected"
+CORRECTION_LOOKBACK_DAYS = 730
+CORRECTION_MIN_ERRORS = 6
 
 
 def development_origins(grain: str, every: int = 1) -> list[date]:
@@ -96,6 +101,12 @@ def run_backtest(
         raise ValueError("the final test block (2024-01 onward) is not scored in development")
     actuals = source.panel_daily(DATA_START, score_until)
     act_dates = pd.to_datetime(actuals["date"]).dt.date
+    heifer_calvings = None
+    if grain == "monthly":
+        tr = source.transitions(DATA_START, month_start(score_until))
+        tr = tr[(tr["from_state"] == "heifer_pregnant") & (tr["to_state"] == "milking")]
+        heifer_calvings = tr.groupby("month")["n_moved"].sum()
+        heifer_calvings.index = [pd.Timestamp(m).date() for m in heifer_calvings.index]
 
     frames, note_counts = [], {}
     for i, origin in enumerate(origins):
@@ -109,16 +120,20 @@ def run_backtest(
             key = note.split(":")[0]
             note_counts[key] = note_counts.get(key, 0) + 1
         proj = project(inputs.state, rates, H)
-        fc = aggregate(proj.daily, origin, grain, horizons, STOCK_SERIES, EVENT_SERIES)
+        fc = aggregate(proj.daily, origin, grain, horizons, STOCK_SERIES,
+                       EVENT_SERIES + ((HEIFER_CALVINGS,) if heifer_calvings is not None else ()))
         future = actuals.loc[(act_dates >= origin) & (act_dates < score_until)]
         act = aggregate(future, origin, grain, horizons, STOCK_SERIES, EVENT_SERIES)
         if not len(act):
             continue
         act = act.rename(columns={"value": "actual"})
         past = actuals.loc[act_dates < origin]
+        pers = persistence(past, origin, grain, horizons)
+        if heifer_calvings is not None:
+            act, pers = _add_heifer_calvings(act, pers, heifer_calvings, origin)
         for model, pred in (
             ("herd_engine", fc[["horizon", "period_start", "series", "value"]]),
-            ("persistence", persistence(past, origin, grain, horizons)),
+            ("persistence", pers),
         ):
             m = act.merge(pred.rename(columns={"value": "forecast"}),
                           on=["horizon", "period_start", "series"])
@@ -131,11 +146,58 @@ def run_backtest(
                  "origin", "model"])
     errors["grain"] = grain
     errors["error"] = errors["forecast"] - errors["actual"]
+    errors = pd.concat([errors, bias_corrected(errors)], ignore_index=True)
     errors["model_version"] = MODEL_VERSION
-    errors = errors[["origin", "grain", "horizon", "period_start", "series", "model",
-                     "forecast", "actual", "error", "model_version"]]
+    errors = errors[["origin", "grain", "horizon", "period_start", "period_end", "series",
+                     "model", "forecast", "actual", "error", "model_version"]]
     notes = pd.DataFrame(sorted(note_counts.items()), columns=["note", "n_origins"])
     return BacktestResult(errors=errors, notes=notes)
+
+
+def _add_heifer_calvings(act: pd.DataFrame, pers: pd.DataFrame, monthly: pd.Series,
+                         origin: date) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Actual heifer calvings per month (transition table) and their persistence value."""
+    starts = act[["horizon", "period_start", "period_end"]].drop_duplicates()
+    rows = [(r.horizon, r.period_start, r.period_end, HEIFER_CALVINGS, float(monthly[r.period_start]))
+            for r in starts.itertuples(index=False) if r.period_start in monthly.index]
+    if rows:
+        act = pd.concat([act, pd.DataFrame(rows, columns=act.columns)], ignore_index=True)
+    prev = date(origin.year - (origin.month == 1), (origin.month - 2) % 12 + 1, 1)
+    if prev in monthly.index and len(pers):
+        prow = [(h, ps, HEIFER_CALVINGS, float(monthly[prev]))
+                for h, ps in pers[["horizon", "period_start"]].drop_duplicates().itertuples(index=False)]
+        pers = pd.concat([pers, pd.DataFrame(prow, columns=pers.columns)], ignore_index=True)
+    return act, pers
+
+
+def bias_corrected(errors: pd.DataFrame,
+                   lookback_days: int = CORRECTION_LOOKBACK_DAYS,
+                   min_errors: int = CORRECTION_MIN_ERRORS) -> pd.DataFrame:
+    """Engine forecasts minus the engine's own mean past error (same grain, series, horizon).
+
+    Only errors whose target period had ended by the origin, from origins in the
+    previous ``lookback_days``, are used, so nothing after the origin is seen. With
+    fewer than ``min_errors`` such errors the raw forecast is kept.
+    """
+    eng = errors[errors["model"] == "herd_engine"]
+    out = []
+    for _, g in eng.groupby(["grain", "series", "horizon"]):
+        g = g.sort_values("origin")
+        origins = pd.to_datetime(g["origin"]).to_numpy()
+        ends = pd.to_datetime(g["period_end"]).to_numpy()
+        err = g["error"].to_numpy(dtype=float)
+        corr = np.zeros(len(g))
+        lookback = np.timedelta64(lookback_days, "D")
+        for i, o in enumerate(origins):
+            mask = (ends <= o) & (origins >= o - lookback)
+            if mask.sum() >= min_errors:
+                corr[i] = err[mask].mean()
+        c = g.copy()
+        c["forecast"] = g["forecast"] - corr
+        c["error"] = c["forecast"] - c["actual"]
+        c["model"] = CORRECTED
+        out.append(c)
+    return pd.concat(out, ignore_index=True) if out else eng.iloc[0:0]
 
 
 def summarise(errors: pd.DataFrame) -> pd.DataFrame:

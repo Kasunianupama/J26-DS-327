@@ -214,11 +214,11 @@ def test_exit_calibration_matches_panel_totals():
            for k, v in (("deaths", "dead"), ("culls", "culled"), ("sales", "sold"))}
     # make the panel show more culls and more deaths than the transition table
     ri.panel.loc[ri.panel["month"].isin(months), "culls"] *= 2 * got["culls"] / pm["culls"].sum()
-    ri.panel.loc[ri.panel["month"].isin(months), "deaths"] *= (got["deaths"] + 40) / pm["deaths"].sum()
+    ri.panel.loc[ri.panel["month"].isin(months), "deaths"] *= (got["deaths"] + 10) / pm["deaths"].sum()
     base = estimate_rates(load_origin_inputs(FakeHerdSource(), ORIGIN, EngineConfig()).rate_inputs)
     r = estimate_rates(ri)
     assert r.exit["milking"]["culls"] / base.exit["milking"]["culls"] == pytest.approx(
         2.0 / (pm["culls"].sum() / got["culls"]), rel=1e-6)
-    assert r.early_deaths_per_calving == pytest.approx(40 / pm["calvings"].sum())
+    assert r.early_deaths_per_calving == pytest.approx(10 / pm["calvings"].sum())
     assert r.exit["milking"]["deaths"] == pytest.approx(base.exit["milking"]["deaths"])
     assert any(n.startswith("exit calibration") for n in r.notes)

@@ -239,6 +239,7 @@ def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
     ev = {name: 0.0 for name in (
         "calvings", "dry_offs", "ais", "real_abortions", "deaths", "culls", "sales",
         "exits", "births", "external_entries", "conceptions", "pregnancy_losses",
+        "calvings_heifer",
     )}
 
     # 1. ageing
@@ -314,6 +315,7 @@ def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
     s.heifer_preg -= flow
     c = flow.sum(-1)
     calved_by_gen += c
+    ev["calvings_heifer"] = float(c.sum())
     fresh = np.zeros((N_PAR, N_GEN))
     fresh[FIRST_PARITY] += c
     flow = s.dry_preg * h

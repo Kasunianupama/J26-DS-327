@@ -57,7 +57,7 @@ in `RateSet.notes` and counted per backtest run.
 
 ```bash
 python -m components.predictive_farm_intelligence.pfoi.cli herd-rates --origin 2020-01-01
-python -m components.predictive_farm_intelligence.pfoi.cli backtest-herd --grain both --window 24
+python -m components.predictive_farm_intelligence.pfoi.cli backtest-herd --grain both --window 12
 ```
 
 Output: herd-level aggregates only, printed and written to `logs/pfoi/` (gitignored).
@@ -71,3 +71,32 @@ Output: herd-level aggregates only, printed and written to `logs/pfoi/` (gitigno
   in the first weeks).
 * Inseminations are an event count only and are over-forecast (ratio 1.4–2.5 vs
   persistence).
+
+## Backtest models
+
+* `herd_engine`: the structural projection (explainable by construction).
+* `herd_engine_corrected`: the same forecast minus the engine's own mean error at that
+  grain, series and horizon, using only errors whose target period had ended before the
+  origin (origins in the previous 2 years, at least 6 errors; otherwise unchanged).
+* `persistence`: last known value (stocks) or last period's daily rate (events).
+* Diagnostic series `calvings_heifer` (monthly only): first calvings, scored against
+  `core.state_transition_month` heifer_pregnant → milking.
+
+## Development decisions (2026-10-18)
+
+Window comparison on the development block (monthly origins 2017-01 – 2023-12), mean
+MAE ratio vs persistence over milking, total herd, calvings and real abortions at
+horizons 1/3/6/12 months:
+
+| Window | Mean ratio |
+|---|---|
+| 12 months | **0.82** |
+| 24 months | 0.87 |
+| 36 months | 0.94 |
+| expanding | 1.04 |
+
+The 12-month window is the default: it is best for milking, calvings and abortions,
+consistent with the persistent rate shifts in the data (e.g. abortions in 2023–26).
+24 months is better for total herd at 3–6 months. The bias-corrected engine is reported
+as a variant: it helps milking and total herd at long horizons and calvings at short
+horizons, but hurts abortions, so it is not used for that series.

@@ -51,7 +51,7 @@ def test_queries_never_ask_beyond_origin():
     assert by_name["cells_on"][1] == ORIGIN - timedelta(days=1)
     assert by_name["cow_open"][2] == known_until
     assert by_name["transitions"][2] == date(2020, 3, 1)
-    assert by_name["exposure"][1] == window_start(ORIGIN, 24) == date(2018, 3, 1)
+    assert by_name["exposure"][1] == window_start(ORIGIN, 12) == date(2019, 3, 1)
 
 
 def test_future_data_does_not_change_forecast():
@@ -85,7 +85,7 @@ def test_backtest_monthly_runs_and_scores_both_models():
     origins = [date(2019, 1, 1), date(2019, 6, 1), date(2023, 6, 1)]
     res = run_backtest(src, "monthly", origins=origins)
     e = res.errors
-    assert set(e["model"]) == {"herd_engine", "persistence"}
+    assert set(e["model"]) == {"herd_engine", "persistence", "herd_engine_corrected"}
     assert set(KEY_SERIES) <= set(e["series"])
     late = e[e["origin"] == date(2023, 6, 1)]
     assert late["horizon"].max() == 6  # 12-month horizon would reach the test block
@@ -125,3 +125,29 @@ def test_database_settings_from_env_without_connecting():
         DatabaseSettings.from_env({"APP_DB_PFOI_USER": " "})
     with pytest.raises(ConfigError):
         DatabaseSettings.from_env({"PFOI_DATABASE_URL": "mssql+pyodbc://u@h/db"})
+
+
+def test_bias_correction_uses_only_finished_past_errors():
+    from components.predictive_farm_intelligence.pfoi.backtest_herd import bias_corrected
+    rows = []
+    for i in range(12):
+        o = date(2018, 1 + i, 1)
+        end = date(2018 + (i + 3) // 12, (i + 3) % 12 + 1, 1)  # 3-month horizon ends later
+        rows.append((o, "monthly", 3, o, end, "milking", "herd_engine", 110.0, 100.0, 10.0))
+    e = pd.DataFrame(rows, columns=["origin", "grain", "horizon", "period_start", "period_end",
+                                    "series", "model", "forecast", "actual", "error"])
+    c = bias_corrected(e, min_errors=2).sort_values("origin")
+    # each error's period ends 3 months after its origin, so the first origin with
+    # >= 2 finished past errors is May (the January and February errors have ended)
+    assert (c["forecast"].iloc[:4] == 110.0).all()
+    assert c["forecast"].iloc[4] == pytest.approx(100.0)
+    assert (c["model"] == "herd_engine_corrected").all()
+
+
+def test_backtest_monthly_scores_heifer_calvings_and_corrected_model():
+    res = run_backtest(FakeHerdSource(), "monthly",
+                       origins=[date(2018, m, 1) for m in range(1, 13)])
+    e = res.errors
+    assert "calvings_heifer" in set(e["series"])
+    assert "herd_engine_corrected" in set(e["model"])
+    assert e["period_end"].notna().all()

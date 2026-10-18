@@ -50,3 +50,24 @@ SELECT sex, exit_type, COUNT(*) AS exits
 FROM core.animal
 WHERE exit_date IS NOT NULL AND exit_date < birth_date + 365
 GROUP BY 1, 2 ORDER BY 1, 2;
+
+-- 6. Does conception_date mark the conceiving service? Compare (next calving - conception)
+--    with the calf's recorded gestation. Similar distributions = consistent clocks.
+WITH nxt AS (
+    SELECT l.conception_date,
+           LEAD(l.calving_date) OVER (PARTITION BY l.animal_key ORDER BY l.calving_date) AS next_calving
+    FROM core.lactation l
+    WHERE COALESCE(l.is_bad_date, false) = false
+),
+d AS (
+    SELECT 'lactation: next calving - conception' AS measure, (next_calving - conception_date) AS days
+    FROM nxt WHERE conception_date IS NOT NULL AND next_calving IS NOT NULL
+    UNION ALL
+    SELECT 'calf: gestation_d', gestation_d FROM core.calf WHERE gestation_d IS NOT NULL
+)
+SELECT measure, COUNT(*) AS n, ROUND(AVG(days), 1) AS mean_days,
+       percentile_cont(0.1) WITHIN GROUP (ORDER BY days) AS p10,
+       percentile_cont(0.5) WITHIN GROUP (ORDER BY days) AS p50,
+       percentile_cont(0.9) WITHIN GROUP (ORDER BY days) AS p90,
+       ROUND(100.0 * AVG(CASE WHEN days > 300 THEN 1 ELSE 0 END), 1) AS pct_over_300
+FROM d GROUP BY measure;

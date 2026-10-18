@@ -91,15 +91,18 @@ def _cmd_report(args: argparse.Namespace) -> int:
         s = pd.read_csv(path)
         eng = s[s["model"] == "herd_engine"].set_index(["series", "horizon"])
         per = s[s["model"] == "persistence"].set_index(["series", "horizon"])
+        cor = s[s["model"] == "herd_engine_corrected"].set_index(["series", "horizon"])
         table = pd.DataFrame({
             "mae_engine": eng["mae"],
             "mae_persistence": per["mae"],
             "ratio": eng["mae"] / per["mae"],
+            "ratio_corrected": cor["mae"] / per["mae"],
             "bias_engine": eng["bias"],
+            "bias_corrected": cor["bias"],
         }).round(2).unstack("horizon")
-        print(f"\n{grain}: ratio < 1 means the engine beats persistence; "
+        print(f"\n{grain}: ratio < 1 means the model beats persistence; "
               "bias > 0 means it forecasts too high")
-        for col in ("ratio", "bias_engine"):
+        for col in ("ratio", "ratio_corrected", "bias_engine", "bias_corrected"):
             print(f"\n{col}")
             print(table[col].to_string())
     return 0
@@ -111,18 +114,18 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("herd-rates", help="rates and starting herd at one origin")
     p.add_argument("--origin", required=True, help="YYYY-MM-DD")
-    p.add_argument("--window", default="24", choices=["12", "24", "36", "expanding"])
+    p.add_argument("--window", default="12", choices=["12", "24", "36", "expanding"])
     p.set_defaults(func=_cmd_herd_rates)
 
     p = sub.add_parser("backtest-herd", help="rolling-origin backtest, development block")
     p.add_argument("--grain", default="both", choices=["monthly", "weekly", "both"])
-    p.add_argument("--window", default="24", choices=["12", "24", "36", "expanding"])
+    p.add_argument("--window", default="12", choices=["12", "24", "36", "expanding"])
     p.add_argument("--every", type=int, default=1, help="use every n-th origin")
     p.add_argument("--out", default="logs/pfoi")
     p.set_defaults(func=_cmd_backtest)
 
     p = sub.add_parser("herd-report", help="ratio and bias tables from a finished backtest")
-    p.add_argument("--window", default="24", choices=["12", "24", "36", "expanding"])
+    p.add_argument("--window", default="12", choices=["12", "24", "36", "expanding"])
     p.add_argument("--out", default="logs/pfoi")
     p.set_defaults(func=_cmd_report)
 

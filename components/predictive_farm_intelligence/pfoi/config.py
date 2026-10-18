@@ -24,7 +24,7 @@ class ConfigError(RuntimeError):
 class EngineConfig:
     """Modelling choices for the herd engine. Defaults follow docs/forecast_design.md."""
 
-    window_months: int | None = 24  # None = expanding window
+    window_months: int | None = 12  # None = expanding; chosen in development (docs/herd_engine.md)
     # A conception counts as "recorded" only once this many days have passed
     # (typical pregnancy-diagnosis delay). Conceptions newer than this at the
     # origin are not known and are projected by the conception hazard instead.
