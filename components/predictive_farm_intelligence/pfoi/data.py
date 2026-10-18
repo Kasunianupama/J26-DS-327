@@ -148,6 +148,108 @@ def load_origin_inputs(source: HerdSource, origin: date, cfg: EngineConfig) -> O
     return OriginInputs(origin=origin, state=state, rate_inputs=rate_inputs, notes=notes)
 
 
+# ------------------------------------------------------------- batched snapshots
+
+SNAPSHOT_METHODS = ("cells_on", "milking_clock", "dry_clock", "heifer_clock", "calf_sex_on")
+
+
+def snapshot_dates(origin: date, cfg: EngineConfig) -> tuple[date, date]:
+    """(asof, known_until) exactly as ``load_origin_inputs`` uses them."""
+    return origin - timedelta(days=1), origin - timedelta(days=cfg.pregnancy_check_lag_days)
+
+
+class SnapshotSource:
+    """Wraps a source and serves the five as-of snapshots from frames loaded in one go.
+
+    Each snapshot is keyed by the exact arguments of the per-origin call, so a call that
+    was not prefetched (other dates or lag) falls through to the wrapped source.
+    Everything else is delegated unchanged.
+    """
+
+    def __init__(self, source, snapshots: dict[tuple, pd.DataFrame]):
+        self._source = source
+        self._snaps = snapshots
+
+    def __getattr__(self, name):
+        return getattr(self._source, name)
+
+    def _get(self, key: tuple, fallback):
+        frame = self._snaps.get(key)
+        return frame.copy() if frame is not None else fallback()
+
+    def cells_on(self, asof):
+        return self._get(("cells_on", asof), lambda: self._source.cells_on(asof))
+
+    def milking_clock(self, asof, known_until):
+        return self._get(("milking_clock", asof, known_until),
+                         lambda: self._source.milking_clock(asof, known_until))
+
+    def dry_clock(self, asof, known_until):
+        return self._get(("dry_clock", asof, known_until),
+                         lambda: self._source.dry_clock(asof, known_until))
+
+    def heifer_clock(self, asof, known_until, lag_days):
+        return self._get(("heifer_clock", asof, known_until, lag_days),
+                         lambda: self._source.heifer_clock(asof, known_until, lag_days))
+
+    def calf_sex_on(self, asof):
+        return self._get(("calf_sex_on", asof), lambda: self._source.calf_sex_on(asof))
+
+
+def frames_match(a: pd.DataFrame, b: pd.DataFrame) -> bool:
+    """Same aggregate rows regardless of row order (floats compared with a tolerance)."""
+    if list(a.columns) != list(b.columns) or len(a) != len(b):
+        return False
+    if not len(a):
+        return True
+    by = [c for c in a.columns if c != "n"]  # the GROUP BY keys (plus max_date)
+    key = lambda f: f[by].astype(object).where(f[by].notna(), None).astype(str)  # noqa: E731
+    sa = a.loc[key(a).sort_values(by).index].reset_index(drop=True)
+    sb = b.loc[key(b).sort_values(by).index].reset_index(drop=True)
+    try:
+        pd.testing.assert_frame_equal(sa, sb, check_dtype=False, check_exact=False, rtol=1e-9)
+    except AssertionError:
+        return False
+    return True
+
+
+def _split_by_asof(frame: pd.DataFrame, asofs: list[date]) -> dict[date, pd.DataFrame]:
+    """One frame per as-of date (empty, with the same columns, where nothing matched)."""
+    frame = frame.copy()
+    frame["asof"] = pd.to_datetime(frame["asof"]).dt.date
+    cols = [c for c in frame.columns if c != "asof"]
+    groups = {k: g[cols].reset_index(drop=True) for k, g in frame.groupby("asof", sort=False)}
+    return {a: groups.get(a, frame.iloc[0:0][cols].reset_index(drop=True)) for a in asofs}
+
+
+def prefetch_snapshots(source, origins: list[date], cfg: EngineConfig,
+                       chunk: int = 60) -> dict[tuple, pd.DataFrame]:
+    """Load the five snapshots for every origin with a few batched queries.
+
+    Uses ``source.snapshots_batch`` when the source has it (SQL), otherwise returns {}
+    and the per-origin calls are used as before.
+    """
+    batch = getattr(source, "snapshots_batch", None)
+    if batch is None:
+        return {}
+    lag = cfg.pregnancy_check_lag_days
+    pairs = sorted({snapshot_dates(o, cfg) for o in origins})
+    out: dict[tuple, pd.DataFrame] = {}
+    for i in range(0, len(pairs), chunk):
+        part = pairs[i:i + chunk]
+        asofs = [a for a, _ in part]
+        ku = dict(part)
+        for name, frame in batch(asofs, [k for _, k in part], lag).items():
+            for asof, f in _split_by_asof(frame, asofs).items():
+                if name in ("cells_on", "calf_sex_on"):
+                    out[(name, asof)] = f
+                elif name == "heifer_clock":
+                    out[(name, asof, ku[asof], lag)] = f
+                else:
+                    out[(name, asof, ku[asof])] = f
+    return out
+
+
 # --------------------------------------------------------------------------- SQL
 
 _IDENT = re.compile(r"^[a-z_][a-z0-9_]*$")
@@ -191,6 +293,36 @@ def _lac_cte(core: str) -> str:
         LEFT JOIN {core}.animal a ON a.animal_key = l.animal_key
         WHERE COALESCE(l.is_bad_date, false) = false
     )"""
+
+
+def _lac_base_cte(core: str) -> str:
+    """``_lac_cte`` without the ``known_until`` cut: ``conc_raw`` is the raw conception
+    date, cut per origin by the batched queries (same rule as ``conc``)."""
+    return f"""
+    lac AS (
+        SELECT l.animal_key,
+               l.calving_date,
+               l.dry_off_date,
+               l.cycle_end_date,
+               a.exit_date,
+               {_PARITY} AS parity_group,
+               {_GENERATION} AS generation_group,
+               LEAST(COALESCE(l.dry_off_date, 'infinity'::date),
+                     COALESCE(l.end_date, 'infinity'::date),
+                     COALESCE(a.exit_date, 'infinity'::date)) AS milk_end,
+               l.conception_date AS conc_raw
+        FROM {core}.lactation l
+        LEFT JOIN {core}.animal a ON a.animal_key = l.animal_key
+        WHERE COALESCE(l.is_bad_date, false) = false
+    )"""
+
+
+# one row per requested origin: (asof, known_until)
+_ORIGINS_CTE = ("o AS (SELECT * FROM unnest(CAST(:asofs AS date[]), CAST(:kus AS date[])) "
+                "AS o(asof, known_until))")
+# conception known at this origin (same rule as ``conc`` in ``_lac_cte``)
+_CONC_AT_O = ("CASE WHEN lac.conc_raw > lac.calving_date AND lac.conc_raw < o.known_until "
+              "THEN lac.conc_raw END")
 
 
 class SqlHerdSource:
@@ -461,6 +593,104 @@ class SqlHerdSource:
                 GROUP BY 1, 2""",
             asof=asof,
         )
+
+    # batched as-of snapshots (same aggregates as the per-origin methods above,
+    # with an ``asof`` column; one query per snapshot for many origins) --------
+    def snapshots_batch(self, asofs: list[date], known_untils: list[date],
+                        lag_days: int) -> dict[str, pd.DataFrame]:
+        p = dict(asofs=list(asofs), kus=list(known_untils))
+        cells = self._q(
+            f"""SELECT date AS asof, state, parity_group, dim_band, generation_group,
+                       SUM(n_animals)::float AS n, MAX(date) AS max_date
+                FROM {self.mi}.day_cell WHERE date = ANY(CAST(:asofs AS date[]))
+                GROUP BY 1, 2, 3, 4, 5""",
+            **p,
+        )
+        milking = self._q(
+            f"""WITH {_ORIGINS_CTE}, {_lac_base_cte(self.core)},
+                cur AS (
+                    SELECT o.asof, lac.parity_group, lac.generation_group, lac.calving_date,
+                           {_CONC_AT_O} AS conc,
+                           (SELECT MAX(i.insemination_date)
+                            FROM {self.core}.insemination i
+                            WHERE i.animal_key = lac.animal_key
+                              AND i.insemination_date > lac.calving_date
+                              AND i.insemination_date >= o.known_until
+                              AND i.insemination_date <= o.asof
+                              AND COALESCE(i.is_bad_date, false) = false) AS recent_ai
+                    FROM o JOIN lac
+                      ON lac.calving_date <= o.asof AND lac.milk_end > o.asof
+                )
+                SELECT asof, parity_group, generation_group,
+                       (asof - calving_date) AS dim,
+                       CASE WHEN conc <= asof THEN (asof - conc) END AS gest,
+                       CASE WHEN conc IS NULL AND recent_ai IS NOT NULL
+                            THEN (asof - recent_ai) END AS recent_ai_gest,
+                       COUNT(*)::float AS n,
+                       MAX(GREATEST(calving_date, conc, recent_ai)) AS max_date
+                FROM cur
+                GROUP BY 1, 2, 3, 4, 5, 6""",
+            **p,
+        )
+        dry = self._q(
+            f"""WITH {_ORIGINS_CTE}, {_lac_base_cte(self.core)},
+                cur AS (
+                    SELECT o.asof, lac.parity_group, lac.generation_group, lac.dry_off_date,
+                           {_CONC_AT_O} AS conc
+                    FROM o JOIN lac
+                      ON lac.dry_off_date <= o.asof
+                     AND COALESCE(lac.cycle_end_date, 'infinity'::date) > o.asof
+                     AND COALESCE(lac.exit_date, 'infinity'::date) > o.asof
+                )
+                SELECT asof, parity_group, generation_group,
+                       CASE WHEN conc <= asof THEN (asof - conc) END AS gest,
+                       COUNT(*)::float AS n,
+                       MAX(GREATEST(dry_off_date, conc)) AS max_date
+                FROM cur
+                GROUP BY 1, 2, 3, 4""",
+            **p,
+        )
+        # The last insemination before known_until only matters when it is within 300
+        # days of asof, so earlier ones are dropped before the MAX (same result).
+        heifer = self._q(
+            f"""WITH {_ORIGINS_CTE},
+                last_ai AS (
+                    SELECT o.asof, i.animal_key, MAX(i.insemination_date) AS ai_date
+                    FROM o JOIN {self.core}.insemination i
+                      ON i.insemination_date < o.known_until
+                     AND i.insemination_date >= o.asof - 300
+                    WHERE COALESCE(i.is_bad_date, false) = false
+                    GROUP BY o.asof, i.animal_key
+                )
+                SELECT la.asof, {_GENERATION} AS generation_group,
+                       (la.asof - la.ai_date) AS gest,
+                       COUNT(*)::float AS n, MAX(la.ai_date) AS max_date
+                FROM last_ai la
+                JOIN {self.core}.animal a ON a.animal_key = la.animal_key
+                WHERE COALESCE(a.exit_date, 'infinity'::date) > la.asof
+                  AND NOT EXISTS (
+                      SELECT 1 FROM {self.core}.lactation l
+                      WHERE l.animal_key = la.animal_key
+                        AND l.calving_date <= la.asof)
+                  AND (la.asof - la.ai_date) BETWEEN :lag AND 300
+                GROUP BY 1, 2, 3""",
+            **p, lag=lag_days,
+        )
+        calf = self._q(
+            f"""WITH {_ORIGINS_CTE}
+                SELECT o.asof, a.sex, {_GENERATION} AS generation_group, COUNT(*)::float AS n,
+                       MAX(a.birth_date) AS max_date
+                FROM o JOIN {self.core}.animal a
+                  ON a.birth_date <= o.asof
+                 AND a.birth_date > o.asof - 365
+                 AND COALESCE(a.exit_date, 'infinity'::date) > o.asof
+                WHERE a.sex IN ('female', 'male')
+                  AND COALESCE(a.is_placeholder, false) = false
+                GROUP BY 1, 2, 3""",
+            **p,
+        )
+        return dict(cells_on=cells, milking_clock=milking, dry_clock=dry,
+                    heifer_clock=heifer, calf_sex_on=calf)
 
     # milk model -------------------------------------------------------------
     def cow_curve_stats(self, start: date, end: date) -> pd.DataFrame:

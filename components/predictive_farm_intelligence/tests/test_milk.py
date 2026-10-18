@@ -108,8 +108,9 @@ def test_prepare_milk_recovers_k_with_the_true_shape():
     scale = cd["parity_group"].map({"1": 1.0, "2": 1.1, "3+": 1.15})
     expected = 1.05 * base.sum() / (base * scale).sum()
     assert setup.k == pytest.approx(expected, rel=1e-3)
-    early = prepare_milk(src, date(2019, 6, 1), MilkConfig(), _hist(src))
+    early = prepare_milk(src, date(2019, 6, 1), MilkConfig(curve_mode="published"), _hist(src))
     assert early.curve.source == "published" and early.k_source == "shipment"
+    assert MilkConfig().curve_mode == "herd_fitted"  # development decision
     herd = prepare_milk(src, date(2019, 6, 1), MilkConfig(curve_mode="herd_fitted"), _hist(src))
     assert herd.curve.source == "herd_fitted"
 
@@ -179,3 +180,105 @@ def test_milk_backtest_monthly_and_weekly():
 def test_backtest_refuses_test_block():
     with pytest.raises(ValueError):
         run_milk_backtest(FakeHerdSource(), "monthly", origins=[date(2024, 2, 1)])
+
+
+def test_anchored_k_uses_recent_days_and_starting_herd():
+    from components.predictive_farm_intelligence.pfoi.milk_baseline import anchor_k
+    from components.predictive_farm_intelligence.pfoi.config import EngineConfig
+    from components.predictive_farm_intelligence.pfoi.data import load_origin_inputs
+
+    src = FakeHerdSource()
+    origin = date(2021, 10, 4)
+    hist = _hist(src)
+    setup = prepare_milk(src, origin, MilkConfig(), hist)
+    state = load_origin_inputs(src, origin, EngineConfig()).state
+    th = hist.target_before(origin)
+    anchor_k(setup, th, state, MilkConfig())
+    recent = th[pd.to_datetime(th["date"]).dt.date < origin].tail(14)["target_litres"].mean()
+    assert setup.k == pytest.approx(recent / setup.arrays.litres(state))
+    assert setup.k_source == "anchored:delpro" and "k_window" not in setup.flags
+    # window mode leaves k alone
+    w = prepare_milk(src, origin, MilkConfig(k_mode="window"), hist)
+    k0 = w.k
+    anchor_k(w, th, state, MilkConfig(k_mode="window"))
+    assert w.k == k0
+    # a gap in the last 4 weeks: fall back to the 12-month k and flag it
+    gap = th.copy()
+    gap.loc[pd.to_datetime(gap["date"]).dt.date >= origin - timedelta(days=28), "is_scoreable"] = False
+    g = prepare_milk(src, origin, MilkConfig(), hist)
+    kg = g.k
+    anchor_k(g, gap, state, MilkConfig())
+    assert g.k == kg and "k_window" in g.flags
+
+
+# ------------------------------------------------- batched snapshots and --jobs
+
+from components.predictive_farm_intelligence.pfoi.config import EngineConfig  # noqa: E402
+from components.predictive_farm_intelligence.pfoi.data import (  # noqa: E402
+    SnapshotSource, frames_match, prefetch_snapshots, snapshot_dates,
+)
+
+
+class BatchFakeSource(FakeHerdSource):
+    """Synthetic source with a ``snapshots_batch`` built from the per-origin methods."""
+
+    def snapshots_batch(self, asofs, known_untils, lag_days):
+        self.calls.append(("snapshots_batch", len(asofs)))
+        out = {}
+        for name in ("cells_on", "milking_clock", "dry_clock", "heifer_clock", "calf_sex_on"):
+            parts = []
+            for a, k in zip(asofs, known_untils):
+                args = {"cells_on": (a,), "calf_sex_on": (a,),
+                        "heifer_clock": (a, k, lag_days)}.get(name, (a, k))
+                parts.append(getattr(FakeHerdSource, name)(self, *args).assign(asof=a))
+            out[name] = pd.concat(parts, ignore_index=True)
+        return out
+
+
+_ORIGINS = [date(2021, 7, 1), date(2021, 8, 1), date(2021, 9, 1)]
+
+
+def test_prefetch_serves_same_snapshots_as_per_origin_calls():
+    src = BatchFakeSource()
+    cfg = EngineConfig()
+    snaps = prefetch_snapshots(src, _ORIGINS, cfg, chunk=2)
+    wrapped = SnapshotSource(src, snaps)
+    for o in _ORIGINS:
+        asof, ku = snapshot_dates(o, cfg)
+        assert frames_match(wrapped.cells_on(asof), src.cells_on(asof))
+        assert frames_match(wrapped.milking_clock(asof, ku), src.milking_clock(asof, ku))
+        assert frames_match(wrapped.heifer_clock(asof, ku, cfg.pregnancy_check_lag_days),
+                            src.heifer_clock(asof, ku, cfg.pregnancy_check_lag_days))
+    assert prefetch_snapshots(FakeHerdSource(), _ORIGINS, cfg) == {}  # no batch method
+
+
+def test_frames_match_ignores_row_order_only():
+    a = pd.DataFrame({"g": ["x", "y"], "n": [1.0, 2.0]})
+    assert frames_match(a, a.iloc[::-1].reset_index(drop=True))
+    assert not frames_match(a, a.assign(n=[1.0, 2.5]))
+
+
+def test_batched_and_parallel_backtests_match_serial():
+    base = run_milk_backtest(FakeHerdSource(), "monthly", origins=_ORIGINS).errors
+    batched = run_milk_backtest(BatchFakeSource(), "monthly", origins=_ORIGINS).errors
+    par = run_milk_backtest(BatchFakeSource(), "monthly", origins=_ORIGINS,
+                            jobs=2, source_factory=BatchFakeSource).errors
+    assert len(base) > 0
+    pd.testing.assert_frame_equal(base, batched)
+    pd.testing.assert_frame_equal(base, par)
+
+
+def test_jobs_needs_a_source_factory():
+    with pytest.raises(ValueError):
+        run_milk_backtest(FakeHerdSource(), "monthly", origins=_ORIGINS, jobs=2)
+
+
+def test_common_periods_keeps_only_shared_forecasts():
+    from components.predictive_farm_intelligence.pfoi.backtest_milk import common_periods
+    rows = [("monthly", 1, date(2019, 1, 1), date(2019, 1, 1), m, 1.0)
+            for m in ("milk_baseline", "persistence", "sarima")]
+    rows += [("monthly", 1, date(2019, 2, 1), date(2019, 2, 1), m, 1.0)
+             for m in ("milk_baseline", "persistence")]  # no SARIMA for this origin
+    e = pd.DataFrame(rows, columns=["grain", "horizon", "origin", "period_start", "model", "error"])
+    assert len(common_periods(e)) == 3
+    assert len(common_periods(e, ["milk_baseline", "persistence"])) == 4

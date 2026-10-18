@@ -1,21 +1,14 @@
 /**
- * Component 2 — reusable presentation primitives.
+ * Component 1 (PFOI) — reusable presentation primitives.
  *
  * Keeping confidence, evidence, ranges, drawers and empty states in one place
  * is what stops the vocabulary drifting between workspaces.
  */
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import {
-  CONFIDENCE_META,
-  EVIDENCE_META,
-  fmtInt,
-  fmtLKR,
-  type Confidence,
-  type EvidenceSource,
-} from '../../data/component2';
+import { CONFIDENCE_META, fmtInt, type Confidence } from '../../data/pfoi';
 import { Icon, type IconName } from './icons';
-import { useC2 } from './state';
+import { usePfoi } from './state';
 
 /* ---------------- badges ---------------- */
 
@@ -25,16 +18,6 @@ export function ConfidenceBadge({ level, hint = true }: { level: Confidence; hin
     <span className={`pfie-badge conf-${level}`} title={hint ? m.blurb : undefined}>
       <span className="dots" aria-hidden>{m.mark}</span>
       {level} confidence
-    </span>
-  );
-}
-
-export function EvidenceBadge({ source }: { source: EvidenceSource }) {
-  const m = EVIDENCE_META[source];
-  return (
-    <span className="pfie-badge ev" title={m.blurb}>
-      <span aria-hidden>{m.mark}</span>
-      {source}
     </span>
   );
 }
@@ -77,8 +60,6 @@ export const LikelyRange = ({ range, unit = 'L' }: { range: [number, number]; un
     {fmtInt(range[0])}–{fmtInt(range[1])} {unit}
   </span>
 );
-
-export const Money = ({ k }: { k: number }) => <span>{fmtLKR(k)}</span>;
 
 /* ---------------- layout ---------------- */
 
@@ -170,7 +151,7 @@ export function Note({
   );
 }
 
-/** Designed empty / disabled-model state (§22, §32). */
+/** Designed empty / not-forecast state. */
 export function EmptyState({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="pfie-empty">
@@ -180,29 +161,12 @@ export function EmptyState({ title, children }: { title: string; children: React
   );
 }
 
-/** Placeholder hand-off. Component 2 never reproduces a DelPro record page. */
-export function DelProLink({ id }: { id: string }) {
-  const [clicked, setClicked] = useState(false);
-  useEffect(() => {
-    if (!clicked) return;
-    const t = setTimeout(() => setClicked(false), 2600);
-    return () => clearTimeout(t);
-  }, [clicked]);
-  return (
-    <button className="pfie-btn ghost" onClick={() => setClicked(true)}>
-      {clicked ? `Would open ${id} in DelPro ↗` : 'Open full record in DelPro ↗'}
-    </button>
-  );
-}
-
 /* ---------------- detail view ---------------- */
 
 const WORKSPACE_LABEL: Record<string, string> = {
-  future: 'Farm Outlook',
-  capacity: 'Herd & Production',
-  commerce: 'Products & Income',
-  evidence: 'Forecast Confidence',
-  operations: 'Daily Operations',
+  outlook: 'Farm Outlook',
+  herd: 'Herd & Production',
+  confidence: 'Forecast Confidence',
 };
 
 /**
@@ -232,7 +196,7 @@ export function Drawer({
   wide?: boolean;
   children: ReactNode;
 }) {
-  const { workspace, detailDepth, popDrawer } = useC2();
+  const { workspace, detailDepth, popDrawer } = usePfoi();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -571,4 +535,9 @@ export function KpiTile({
 /** Row of KPI tiles. Wraps into a grid rather than scrolling sideways. */
 export function KpiStrip({ children, className = '' }: { children: ReactNode; className?: string }) {
   return <div className={`pfie-kpistrip ${className}`.trim()}>{children}</div>;
+}
+
+/** Says whether a value is measured, derived by the model, or assumed. */
+export function KindTag({ kind }: { kind: 'measured' | 'derived' | 'assumed' }) {
+  return <span className={`pfie-kind-tag ${kind}`}>{kind}</span>;
 }

@@ -2446,3 +2446,60 @@ main:has(> .pfie) {
 .pfie-lanes.forecast p { border-style:dashed; }.pfie-impact-controls { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px; color:var(--muted); font-size:12px; font-weight:700; }.pfie-impact { display:grid; grid-template-columns:1.65fr repeat(4,1fr); gap:1px; overflow:hidden; border:1px solid var(--line); border-radius:var(--r-sm); background:var(--line); }.pfie-impact > div { min-height:112px; padding:15px; background:var(--paper); }.pfie-impact.positive > div:first-child { background:var(--brand-soft); }.pfie-impact.negative > div:first-child { background:var(--concern-soft); }.pfie-impact-summary > span { display:block; font-size:10.5px; font-weight:700; letter-spacing:.4px; text-transform:uppercase; }.pfie-impact.positive .pfie-impact-summary > span { color:var(--brand-2); }.pfie-impact.negative .pfie-impact-summary > span { color:var(--concern); }.pfie-impact h4 { margin-top:5px; font-size:14px; }.pfie-impact p { margin-top:5px; color:var(--muted); font-size:11.5px; line-height:1.4; }.pfie-impact > div:not(:first-child) span { display:block; min-height:32px; color:var(--muted); font-size:10.5px; line-height:1.3; }.pfie-impact > div:not(:first-child) b { display:block; margin-top:8px; font-size:15px; line-height:1.25; font-variant-numeric:tabular-nums; }.pfie-impact.positive > div:not(:first-child) b { color:var(--brand-2); }.pfie-impact.negative > div:not(:first-child) b { color:var(--concern); }
 .pfie-shifts { display:grid; gap:7px; }.pfie-shifts > div { display:grid; grid-template-columns:1.1fr 1fr 1.3fr 1.3fr; gap:8px; padding:11px; border:1px solid var(--line-2); border-radius:7px; font-size:11.5px; }.pfie-shifts span { color:var(--muted); }.pfie-association { display:grid; grid-template-columns:1fr 1fr; gap:1px; overflow:hidden; border-radius:8px; background:var(--line); }.pfie-association div { padding:16px; background:var(--paper); }.pfie-association b { display:block; color:var(--brand-2); font-size:28px; }.pfie-association span { display:block; margin-top:4px; color:var(--muted); font-size:11.5px; line-height:1.4; }
 @media (max-width:1050px) { .pfie-ops-tabs { grid-template-columns:repeat(3,minmax(170px,1fr)); }.pfie-ops-kpis { grid-template-columns:repeat(3,1fr); }.pfie-checklist { grid-template-columns:repeat(3,1fr); }.pfie-impact { grid-template-columns:1.5fr repeat(2,1fr); }.pfie-impact-summary { grid-row:span 2; } } @media (max-width:700px) { .pfie-ops-tabs { grid-template-columns:repeat(2,minmax(150px,1fr)); }.pfie-ops-kpis { grid-template-columns:repeat(2,1fr); }.pfie-ops-issue { grid-template-columns:9px minmax(0,1fr); }.pfie-ops-issue > span:last-child { display:none; }.pfie-checklist { grid-template-columns:1fr 1fr; }.pfie-lanes section { grid-template-columns:1fr; }.pfie-lanes header { border-right:0; border-bottom:1px solid var(--line); }.pfie-shifts > div { grid-template-columns:1fr 1fr; }.pfie-ops-detail dl,.pfie-case dl { grid-template-columns:1fr; }.pfie-impact { grid-template-columns:1fr 1fr; }.pfie-impact-summary { grid-column:span 2; grid-row:auto; } }
+
+/* ==================================================================
+   Component 1 (PFOI) additions
+   ================================================================== */
+
+.pfie-live.demo { color: var(--caution); border-color: #ecd9a8; background: var(--caution-soft); }
+.pfie-live.demo i { background: var(--caution); box-shadow: 0 0 0 3px var(--caution-tint); animation: none; }
+
+.pfie-demo-banner {
+  margin-bottom: 16px;
+  padding: 10px 16px;
+  border: 1px solid #ecd9a8;
+  border-radius: var(--r-sm);
+  background: var(--caution-soft);
+  color: #6b4d08;
+  font-size: 12.5px;
+}
+
+.pfie-horizon { flex-wrap: nowrap; }
+
+.pfie-kind-tag { padding: 1px 6px; border-radius: 4px; font-size: 9.5px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.pfie-kind-tag.measured { color: #2f6b4c; border-color: #cfe3d7; background: #eef6f1; }
+.pfie-kind-tag.derived { color: var(--predicted); border-color: #cfdbe8; background: var(--predicted-soft); }
+.pfie-kind-tag.assumed { color: #8a6414; border-color: #ecd9a8; background: var(--caution-soft); }
+
+.pfie-chart-note { font-size: 11.5px; color: var(--muted); margin-top: 8px; }
+
+.pfie-flowmap { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; align-items: stretch; }
+.pfie-flowmap .node { border: 1.5px solid var(--line); border-radius: var(--r-sm); padding: 12px; background: var(--paper); }
+.pfie-flowmap .node .nm { font-size: 11.5px; font-weight: 700; color: var(--ink-2); }
+.pfie-flowmap .node .ct { font-size: 24px; font-weight: 700; letter-spacing: -.6px; font-variant-numeric: tabular-nums; }
+.pfie-flowmap .node .rg { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pfie-flowmap .node .now { font-size: 11px; color: var(--muted); }
+.pfie-flowlinks { display: grid; gap: 8px; margin-top: 14px; }
+.pfie-flowlink { display: grid; grid-template-columns: 210px minmax(0, 1fr) 90px; gap: 12px; align-items: center; font-size: 12.5px; }
+.pfie-flowlink .bar { display: flex; height: 18px; border-radius: 4px; overflow: hidden; background: var(--ground); }
+.pfie-flowlink .bar i { display: block; height: 100%; }
+.pfie-flowlink .bar i.det { background: var(--brand); }
+.pfie-flowlink .bar i.rate { background-color: var(--predicted-soft); background-image: repeating-linear-gradient(45deg, rgba(91,127,166,.35) 0 3px, transparent 3px 7px); }
+.pfie-flowlink .v { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+
+.pfie-wf .step { grid-template-columns: minmax(110px, 0.9fr) minmax(70px, 1.3fr) auto; }
+.pfie-wf .v { white-space: nowrap; }
+.pfie-card select { max-width: 100%; min-width: 118px; }
+
+.pfie-table td.num, .pfie-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.pfie-table td.best { font-weight: 700; color: var(--brand-2); }
+
+@media (max-width: 1180px) {
+  .pfie-grid.c2, .pfie-grid.side { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 900px) {
+  .pfie-flowmap { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pfie-flowlink { grid-template-columns: 1fr; }
+  .pfie-horizon { flex-wrap: wrap; }
+}

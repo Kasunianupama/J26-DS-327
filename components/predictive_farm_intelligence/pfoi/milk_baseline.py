@@ -10,13 +10,18 @@
   has its own k. A forecast uses the k of the source current at the origin; if that
   source has fewer than 3 usable months, the other source's k is used and the run is
   flagged ``source_switch``.
+* Anchored k (default, ``k_mode="anchored"``): k = mean recorded litres over the last
+  14 scoreable days before the origin (current source, within the last 28 days) divided
+  by the curve litres of the starting herd (the herd on the day before the origin). Both
+  are known at the origin. With fewer than 7 such days, the 12-month k is kept and the
+  run is flagged ``k_window``. ``k_mode="window"`` always uses the 12-month k.
 * Days that are not scoreable (gaps, suspect lows, no DelPro milk) are neither used for k
   nor scored, and never imputed.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -33,18 +38,23 @@ FITTED_EVERYWHERE_RANGE = (date(2020, 8, 1), date(2023, 1, 1))  # sensitivity on
 CURVE_MODES = ("published", "herd_fitted", "fitted_everywhere")
 MIN_K_MONTHS = 3
 MIN_SCOREABLE_SHARE = 0.8
+K_MODES = ("anchored", "window")
+ANCHOR_DAYS = 14
+ANCHOR_LOOKBACK_DAYS = 28
+ANCHOR_MIN_DAYS = 7
 
 
 @dataclass(frozen=True)
 class MilkConfig:
-    curve_mode: str = "published"  # shape before 2020-09: published | herd_fitted
+    curve_mode: str = "herd_fitted"  # shape before 2020-09 (decision: docs/milk_model.md)
     pregnancy_factor: bool = True
     generation_factor: bool = False
     k_months: int = 12
+    k_mode: str = "anchored"  # anchored | window
 
     def tag(self) -> str:
         return (f"{self.curve_mode}_p{int(self.pregnancy_factor)}"
-                f"_g{int(self.generation_factor)}")
+                f"_g{int(self.generation_factor)}_k{self.k_mode[0]}")
 
 
 def calibration_window(origin: date, months: int = 12) -> tuple[date, date]:
@@ -204,3 +214,28 @@ def prepare_milk(source, origin: date, cfg: MilkConfig, hist: MilkHistory,
     notes.append(f"k: {k:.3f} from {k_source} ({ks[k_source][1]} months)")
     return MilkSetup(origin=origin, curve=curve, arrays=arrays, k=k, k_source=k_source,
                      target_source=src, flags=flags, notes=notes)
+
+
+def anchor_k(setup: MilkSetup, target_hist: pd.DataFrame, start_state, cfg: MilkConfig) -> MilkSetup:
+    """Replace k by the anchored k (see module docstring); modifies and returns ``setup``."""
+    if cfg.k_mode != "anchored":
+        return setup
+    origin = setup.origin
+    t = target_hist.copy()
+    t["date"] = pd.to_datetime(t["date"]).dt.date
+    ok = (t["is_scoreable"].fillna(False).astype(bool) & t["target_litres"].notna()
+          & (t["date"] < origin) & (t["date"] >= origin - timedelta(days=ANCHOR_LOOKBACK_DAYS)))
+    if setup.target_source is not None:
+        ok &= t["target_source"] == setup.target_source
+    recent = t[ok].sort_values("date").tail(ANCHOR_DAYS)
+    start_litres = setup.arrays.litres(start_state)
+    if len(recent) < ANCHOR_MIN_DAYS or start_litres <= 0:
+        setup.flags.append("k_window")
+        setup.notes.append("k: anchoring not possible (too few recent scoreable days), 12-month k kept")
+        return setup
+    window_k = setup.k
+    setup.k = float(recent["target_litres"].mean() / start_litres)
+    setup.k_source = f"anchored:{setup.target_source}"
+    setup.notes.append(f"k: anchored {setup.k:.3f} on {len(recent)} recent days "
+                       f"(12-month k was {window_k:.3f})")
+    return setup

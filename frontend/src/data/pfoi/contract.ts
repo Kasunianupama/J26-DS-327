@@ -228,3 +228,8 @@ export const MODEL_LABEL: Record<BenchmarkModel, string> = {
   seasonal_naive: 'Seasonal naive',
   sarima: 'SARIMA',
 };
+
+export const SEVERITY_META: Record<'attention' | 'routine', { label: string; color: string; mark: string }> = {
+  attention: { label: 'Worth attention', color: '#8a6414', mark: '◆' },
+  routine: { label: 'For information', color: '#4a6a5c', mark: '●' },
+};

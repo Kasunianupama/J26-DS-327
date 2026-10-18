@@ -12,6 +12,9 @@ Outputs are herd-level aggregates only.
 """
 from __future__ import annotations
 
+import multiprocessing as mp
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Callable
@@ -23,10 +26,10 @@ from . import MODEL_VERSION
 from .backtest_herd import TEST_START, development_origins
 from .benchmarks import ets_forecast, persistence_value, sarima_forecast
 from .config import EngineConfig
-from .data import DATA_START, add_months, load_origin_inputs
+from .data import DATA_START, SnapshotSource, add_months, load_origin_inputs, prefetch_snapshots
 from .error_tools import add_intervals, bias_corrected
 from .herd_engine import project
-from .milk_baseline import MilkConfig, MilkHistory, prepare_milk
+from .milk_baseline import MilkConfig, MilkHistory, anchor_k, prepare_milk
 from .periods import HORIZONS, horizon_days, period_bounds
 from .rates import estimate_rates
 
@@ -124,6 +127,77 @@ def benchmark_forecasts(t: pd.DataFrame, origin: date, grain: str,
     return out
 
 
+@dataclass
+class _Ctx:
+    """Everything one origin needs; built once per process."""
+    source: object
+    cfg: EngineConfig
+    milk_cfg: MilkConfig
+    hist: MilkHistory
+    t: pd.DataFrame
+    grains: tuple[str, ...]
+    score_until: date
+    cache: dict
+
+
+def _score_origin(c: _Ctx, origin: date) -> tuple[list[dict], list[str]]:
+    """Error rows and note keys for one origin (origins are independent of each other)."""
+    try:
+        setup = prepare_milk(c.source, origin, c.milk_cfg, c.hist, c.cache)
+    except ValueError:  # no calibration data yet (e.g. first months): skip, but count it
+        return [], ["skipped (no usable months for k)"]
+    inputs = load_origin_inputs(c.source, origin, c.cfg)
+    anchor_k(setup, c.hist.target_before(origin), inputs.state, c.milk_cfg)
+    rates = estimate_rates(inputs.rate_inputs, c.cfg)
+    H = max(horizon_days(origin, g, max(HORIZONS[g])) for g in c.grains)
+    proj = project(inputs.state, rates, H, milk_curve=setup.arrays)
+    daily = proj.daily.assign(litres=setup.k * proj.daily["curve_litres"])
+    ddates = pd.to_datetime(daily["date"]).dt.date
+    notes = [note.split(":")[0] for note in (*setup.notes, *setup.flags)]
+    meta = dict(k_source=setup.k_source, curve_source=setup.curve.source,
+                flags=";".join(setup.flags))
+    rows = []
+    for grain in c.grains:
+        horizons = HORIZONS[grain]
+        preds = {(BASELINE, h): float(daily.loc[(ddates >= s) & (ddates < e), "litres"].sum())
+                 for h in horizons for s, e in [period_bounds(origin, grain, h)]}
+        for model, h, v in benchmark_forecasts(c.t, origin, grain, horizons):
+            preds[(model, h)] = v
+        for h in horizons:
+            s, e = period_bounds(origin, grain, h)
+            if e > c.score_until:
+                continue
+            act = period_actual(c.t, s, e)
+            if act is None:
+                continue
+            for (model, hh), v in preds.items():
+                if hh == h:
+                    rows.append(dict(origin=origin, grain=grain, horizon=h, period_start=s,
+                                     period_end=e, series=SERIES, model=model, forecast=v,
+                                     actual=act[0], source=act[1], **meta))
+    return rows, notes
+
+
+_WORKER: _Ctx | None = None
+
+
+def _init_worker(source_factory, snapshots, cfg, milk_cfg, hist, t, grains, score_until):
+    global _WORKER
+    _WORKER = _Ctx(SnapshotSource(source_factory(), snapshots), cfg, milk_cfg, hist, t,
+                   grains, score_until, {})
+
+
+def _score_block(block: list[tuple[int, date]]) -> list[tuple[int, list[dict], list[str]]]:
+    return [(i, *_score_origin(_WORKER, o)) for i, o in block]
+
+
+def _blocks(origins: list[date], n: int) -> list[list[tuple[int, date]]]:
+    """Contiguous blocks, so origins in the same month share a worker's curve cache."""
+    items = list(enumerate(origins))
+    size = max(1, -(-len(items) // n))
+    return [items[i:i + size] for i in range(0, len(items), size)]
+
+
 def run_milk_backtest(
     source,
     origin_grain: str,
@@ -132,56 +206,59 @@ def run_milk_backtest(
     origins: list[date] | None = None,
     score_until: date = TEST_START,
     progress: Callable[[int, int, date], None] | None = None,
+    jobs: int = 1,
+    source_factory: Callable[[], object] | None = None,
 ) -> MilkBacktestResult:
-    """``origin_grain`` = "monthly" (scores monthly) or "weekly" (scores weekly and daily)."""
+    """``origin_grain`` = "monthly" (scores monthly) or "weekly" (scores weekly and daily).
+
+    The as-of snapshots for all origins are prefetched in a few batched queries.
+    ``jobs`` > 1 scores origins in that many processes; each opens its own source with
+    ``source_factory`` (a picklable callable, e.g. ``SqlHerdSource.from_env``). Results
+    are the same as ``jobs=1`` and in the same order.
+    """
     cfg = cfg or EngineConfig()
     milk_cfg = milk_cfg or MilkConfig()
     origins = origins if origins is not None else development_origins(origin_grain)
     if score_until > TEST_START or any(o >= TEST_START for o in origins):
         raise ValueError("the final test block (2024-01 onward) is not scored in development")
+    if jobs > 1 and source_factory is None:
+        raise ValueError("jobs > 1 needs a source_factory so each process opens its own source")
     hist = MilkHistory(cowdays=source.milking_cowdays(DATA_START, score_until),
                        target=source.target_daily(DATA_START, score_until))
     t = _target_frame(hist.target)
     grains = GRAINS_BY_ORIGIN[origin_grain]
-    rows, note_counts, cache = [], {}, {}
-    for i, origin in enumerate(origins):
-        if progress:
-            progress(i, len(origins), origin)
-        try:
-            setup = prepare_milk(source, origin, milk_cfg, hist, cache)
-        except ValueError:  # no calibration data yet (e.g. first months): skip, but count it
-            key = "skipped (no usable months for k)"
+    snapshots = prefetch_snapshots(source, origins, cfg)
+    results: dict[int, tuple[list[dict], list[str]]] = {}
+    if jobs <= 1:
+        ctx = _Ctx(SnapshotSource(source, snapshots), cfg, milk_cfg, hist, t, grains,
+                   score_until, {})
+        for i, origin in enumerate(origins):
+            if progress:
+                progress(i, len(origins), origin)
+            results[i] = _score_origin(ctx, origin)
+    else:
+        # one BLAS thread per process, so N processes do not fight over the cores
+        for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                    "VECLIB_MAXIMUM_THREADS"):
+            os.environ.setdefault(var, "1")
+        blocks = _blocks(origins, jobs * 4)
+        done = 0
+        with ProcessPoolExecutor(
+            max_workers=jobs, mp_context=mp.get_context("spawn"), initializer=_init_worker,
+            initargs=(source_factory, snapshots, cfg, milk_cfg, hist, t, grains, score_until),
+        ) as pool:
+            for fut in as_completed([pool.submit(_score_block, b) for b in blocks]):
+                for i, rows, notes in fut.result():
+                    results[i] = (rows, notes)
+                    if progress:
+                        progress(done, len(origins), origins[i])
+                    done += 1
+    rows, note_counts = [], {}
+    for i in sorted(results):
+        r, notes = results[i]
+        rows += r
+        for key in notes:
             note_counts[key] = note_counts.get(key, 0) + 1
-            continue
-        inputs = load_origin_inputs(source, origin, cfg)
-        rates = estimate_rates(inputs.rate_inputs, cfg)
-        H = max(horizon_days(origin, g, max(HORIZONS[g])) for g in grains)
-        proj = project(inputs.state, rates, H, milk_curve=setup.arrays)
-        daily = proj.daily.assign(litres=setup.k * proj.daily["curve_litres"])
-        ddates = pd.to_datetime(daily["date"]).dt.date
-        for note in (*setup.notes, *setup.flags):
-            key = note.split(":")[0]
-            note_counts[key] = note_counts.get(key, 0) + 1
-        meta = dict(k_source=setup.k_source, curve_source=setup.curve.source,
-                    flags=";".join(setup.flags))
-        for grain in grains:
-            horizons = HORIZONS[grain]
-            preds = {(BASELINE, h): float(daily.loc[(ddates >= s) & (ddates < e), "litres"].sum())
-                     for h in horizons for s, e in [period_bounds(origin, grain, h)]}
-            for model, h, v in benchmark_forecasts(t, origin, grain, horizons):
-                preds[(model, h)] = v
-            for h in horizons:
-                s, e = period_bounds(origin, grain, h)
-                if e > score_until:
-                    continue
-                act = period_actual(t, s, e)
-                if act is None:
-                    continue
-                for (model, hh), v in preds.items():
-                    if hh == h:
-                        rows.append(dict(origin=origin, grain=grain, horizon=h, period_start=s,
-                                         period_end=e, series=SERIES, model=model, forecast=v,
-                                         actual=act[0], source=act[1], **meta))
     errors = pd.DataFrame(rows)
     if len(errors):
         errors["error"] = errors["forecast"] - errors["actual"]
@@ -212,3 +289,15 @@ def summarise_milk(errors: pd.DataFrame, by_source: bool = False) -> pd.DataFram
         "rel_width": g["width"].mean(),
     }).reset_index()
     return out
+
+
+def common_periods(errors: pd.DataFrame, models: list[str] | None = None) -> pd.DataFrame:
+    """Rows of ``models`` (default: all) restricted to forecasts (grain, horizon, origin,
+    period) that every one of those models made, so MAEs compare the same periods."""
+    if not len(errors):
+        return errors
+    models = sorted(set(errors["model"])) if models is None else models
+    e = errors[errors["model"].isin(models)]
+    keys = ["grain", "horizon", "origin", "period_start"]
+    n_models = e.groupby(keys)["model"].transform("nunique")
+    return e[n_models == len(models)]
