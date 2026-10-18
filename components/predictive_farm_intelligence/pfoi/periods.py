@@ -2,7 +2,8 @@
 
 Stocks are period means of daily values and events are period sums, matching
 `model_input.period_panel`. Monthly origins are the 1st of a month (horizon 1 = that
-month); weekly origins are Mondays (horizon 1 = the week starting at the origin).
+month); weekly origins are Mondays (horizon 1 = the week starting at the origin); daily
+horizons count days from the origin (horizon 1 = the origin day).
 """
 from __future__ import annotations
 
@@ -10,8 +11,8 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-GRAINS = ("monthly", "weekly")
-HORIZONS = {"monthly": (1, 3, 6, 12), "weekly": (1, 4, 8, 13)}
+GRAINS = ("monthly", "weekly", "daily")
+HORIZONS = {"monthly": (1, 3, 6, 12), "weekly": (1, 4, 8, 13), "daily": (1, 7, 14)}
 
 
 def _add_months(d: date, months: int) -> date:
@@ -35,6 +36,9 @@ def period_bounds(origin: date, grain: str, horizon: int) -> tuple[date, date]:
         raise ValueError("horizon starts at 1")
     if grain == "monthly":
         return _add_months(origin, horizon - 1), _add_months(origin, horizon)
+    if grain == "daily":
+        start = origin + timedelta(days=horizon - 1)
+        return start, start + timedelta(days=1)
     start = origin + timedelta(days=7 * (horizon - 1))
     return start, start + timedelta(days=7)
 

@@ -403,10 +403,37 @@ def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
     return ev
 
 
+@dataclass
+class MilkCurveArrays:
+    """Expected litres per cow-day for the engine's milking compartments."""
+
+    open_: np.ndarray  # (N_PAR, N_GEN, N_DIM)
+    preg: np.ndarray  # (N_PAR, N_GEN, N_CB * N_GEST)
+
+    @classmethod
+    def from_yield(cls, yield_pgd: np.ndarray, preg_multiplier: np.ndarray | None = None
+                   ) -> "MilkCurveArrays":
+        """``yield_pgd``: (parity, generation, DIM >= N_DIM); ``preg_multiplier``: (N_GEST,)."""
+        y = np.asarray(yield_pgd, dtype=float)[:, :, :N_DIM]
+        mult = np.ones(N_GEST) if preg_multiplier is None else np.asarray(preg_multiplier)[:N_GEST]
+        gest_of_flat = np.tile(np.arange(N_GEST), N_CB)
+        preg = y[:, :, _DIM_OF_PREG_FLAT] * mult[gest_of_flat][None, None, :]
+        return cls(open_=y, preg=preg)
+
+    def litres(self, s: "OriginState") -> float:
+        return float((s.milk_open * self.open_).sum()
+                     + (s.milk_preg.reshape(N_PAR, N_GEN, -1) * self.preg).sum())
+
+
 def project(
-    start: OriginState, rates: RateSet, horizon_days: int, record_cells: bool = False
+    start: OriginState, rates: RateSet, horizon_days: int, record_cells: bool = False,
+    milk_curve: MilkCurveArrays | None = None,
 ) -> Projection:
-    """Project ``horizon_days`` days from ``start.origin`` (day 1 = the origin date)."""
+    """Project ``horizon_days`` days from ``start.origin`` (day 1 = the origin date).
+
+    With ``milk_curve``, the daily frame also has ``curve_litres`` = sum over milking
+    compartments of cows x expected yield (before the calibration factor k).
+    """
     if horizon_days < 1:
         raise ValueError("horizon_days must be at least 1")
     s = start.copy()
@@ -422,6 +449,8 @@ def project(
         row["n_herd"] = sum(totals.values())
         row["calves_female"] = float(s.calf[0].sum())
         row["calves_male"] = float(s.calf[1].sum())
+        if milk_curve is not None:
+            row["curve_litres"] = milk_curve.litres(s)
         row.update(events)
         rows.append(row)
         if record_cells:

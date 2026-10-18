@@ -2,6 +2,9 @@
 
     python -m components.predictive_farm_intelligence.pfoi.cli herd-rates --origin 2020-01-01
     python -m components.predictive_farm_intelligence.pfoi.cli backtest-herd --grain monthly
+    python -m components.predictive_farm_intelligence.pfoi.cli milk-curve --origin 2021-06-01
+    python -m components.predictive_farm_intelligence.pfoi.cli backtest-milk --grain both
+    python -m components.predictive_farm_intelligence.pfoi.cli milk-report
 
 Database settings come from the root .env (APP_DB_* and APP_DB_PFOI_USER/PASSWORD). Output is aggregate only:
 herd-level rates, totals and error metrics. Files go to logs/pfoi/ (gitignored).
@@ -18,9 +21,12 @@ import pandas as pd
 from .backtest_herd import KEY_SERIES, development_origins, run_backtest, summarise
 from .categories import STATE_TO_STOCK
 from .config import EngineConfig
-from .data import SqlHerdSource, load_origin_inputs
+from .data import DATA_START, SqlHerdSource, load_origin_inputs
 from .periods import HORIZONS
 from .rates import conception_per_ai, estimate_rates, max_live_gestation, rate_summary
+from .backtest_milk import run_milk_backtest, summarise_milk
+from .lactation_curve import curve_summary
+from .milk_baseline import CURVE_MODES, MilkConfig, MilkHistory, prepare_milk
 
 
 def _window(value: str) -> int | None:
@@ -108,6 +114,81 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _milk_cfg(args: argparse.Namespace) -> MilkConfig:
+    return MilkConfig(curve_mode=args.curve, pregnancy_factor=args.pregnancy_factor == "on",
+                      generation_factor=args.generation_factor == "on")
+
+
+def _cmd_milk_curve(args: argparse.Namespace) -> int:
+    source = SqlHerdSource.from_env()
+    origin = date.fromisoformat(args.origin)
+    mcfg = _milk_cfg(args)
+    hist = MilkHistory(cowdays=source.milking_cowdays(DATA_START, origin),
+                       target=source.target_daily(DATA_START, origin))
+    setup = prepare_milk(source, origin, mcfg, hist)
+    print(f"Origin {origin}  curve source: {setup.curve.source}  ({mcfg.tag()})")
+    print(curve_summary(setup.curve).round(4).to_string(index=False))
+    if setup.curve.preg_factor:
+        print("pregnancy factor (days pregnant >= band):", {k: round(v, 3) for k, v in setup.curve.preg_factor.items()})
+    if mcfg.generation_factor:
+        print("generation factor:", setup.curve.gen_factor.round(3).tolist())
+    print(f"k = {setup.k:.3f} ({setup.k_source}); current target source: {setup.target_source}")
+    for note in (*setup.notes, *setup.flags):
+        print("NOTE:", note)
+    return 0
+
+
+def _cmd_backtest_milk(args: argparse.Namespace) -> int:
+    cfg = EngineConfig(window_months=_window(args.window))
+    mcfg = _milk_cfg(args)
+    source = SqlHerdSource.from_env()
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    origin_grains = ("monthly", "weekly") if args.grain == "both" else (args.grain,)
+    for og in origin_grains:
+        origins = development_origins(og, every=args.every)
+
+        def progress(i: int, n: int, origin: date) -> None:
+            if i % 10 == 0:
+                print(f"  {og}: origin {i + 1}/{n} ({origin})", file=sys.stderr)
+
+        res = run_milk_backtest(source, og, cfg, mcfg, origins=origins, progress=progress)
+        tag = f"{og}_{mcfg.tag()}_w{args.window}"
+        res.errors.to_csv(out / f"milk_backtest_errors_{tag}.csv", index=False)
+        summarise_milk(res.errors).to_csv(out / f"milk_backtest_summary_{tag}.csv", index=False)
+        summarise_milk(res.errors, by_source=True).to_csv(
+            out / f"milk_backtest_summary_by_source_{tag}.csv", index=False)
+        if len(res.notes):
+            print(f"\nNotes ({og} origins, number of origins):")
+            print(res.notes.to_string(index=False))
+    print(f"\nDone. Run milk-report with the same options to see the H1 table. Files in {out}/.")
+    return 0
+
+
+def _cmd_milk_report(args: argparse.Namespace) -> int:
+    mcfg = _milk_cfg(args)
+    out = Path(args.out)
+    for og in ("monthly", "weekly"):
+        path = out / f"milk_backtest_summary_{og}_{mcfg.tag()}_w{args.window}.csv"
+        if not path.exists():
+            print(f"(no {path.name}; run backtest-milk first)")
+            continue
+        s = pd.read_csv(path)
+        for grain, g in s.groupby("grain", sort=False):
+            mae = g.pivot_table(index="horizon", columns="model", values="mae")
+            ratio = mae.div(mae["persistence"], axis=0) if "persistence" in mae else mae
+            print(f"\n=== {grain} ({mcfg.tag()}, window {args.window}) — litres per period ===")
+            print("MAE:")
+            print(mae.round(0).to_string())
+            print("MAE ratio vs persistence (< 1 = better):")
+            print(ratio.round(2).to_string())
+            for col, label in (("bias", "bias (forecast - actual)"), ("mape_pct", "MAPE %"),
+                               ("coverage_pct", "90% interval coverage %"), ("n", "n periods scored")):
+                print(f"{label}:")
+                print(g.pivot_table(index="horizon", columns="model", values=col).round(1).to_string())
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pfoi")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -128,6 +209,30 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--window", default="12", choices=["12", "24", "36", "expanding"])
     p.add_argument("--out", default="logs/pfoi")
     p.set_defaults(func=_cmd_report)
+
+    def milk_opts(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--curve", default="published", choices=list(CURVE_MODES),
+                       help="shape before 2020-09 (fitted_everywhere = sensitivity only)")
+        p.add_argument("--pregnancy-factor", default="on", choices=["on", "off"])
+        p.add_argument("--generation-factor", default="off", choices=["on", "off"])
+        p.add_argument("--window", default="12", choices=["12", "24", "36", "expanding"])
+        p.add_argument("--out", default="logs/pfoi")
+
+    p = sub.add_parser("milk-curve", help="lactation curve and k at one origin")
+    p.add_argument("--origin", required=True, help="YYYY-MM-DD")
+    milk_opts(p)
+    p.set_defaults(func=_cmd_milk_curve)
+
+    p = sub.add_parser("backtest-milk", help="rolling-origin milk backtest, development block")
+    p.add_argument("--grain", default="both", choices=["monthly", "weekly", "both"],
+                   help="origin grain; weekly origins also score daily horizons")
+    p.add_argument("--every", type=int, default=1)
+    milk_opts(p)
+    p.set_defaults(func=_cmd_backtest_milk)
+
+    p = sub.add_parser("milk-report", help="H1 table from a finished milk backtest")
+    milk_opts(p)
+    p.set_defaults(func=_cmd_milk_report)
 
     args = parser.parse_args(argv)
     return args.func(args)

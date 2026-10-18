@@ -38,6 +38,19 @@ BASE_CELLS = (
     ("bull", "unknown", "na", "unknown", 2.0),
     ("unknown", "unknown", "na", "unknown", 1.0),
 )
+# Milking cells for the synthetic milk tables: parity, DIM range, generation, cows
+MILK_CELLS = (("1", (0, 60), "0", 10.0), ("1", (61, 150), "1", 12.0),
+              ("2", (151, 300), "1", 8.0), ("3+", (310, 400), "0", 4.0))
+TRUE_WOOD = (12.0, 0.25, 0.004)
+K_TRUE = {"shipment": 0.9, "delpro": 1.05}
+
+
+def wood_true(dim):
+    d = np.maximum(np.asarray(dim, dtype=float), 1.0)
+    a, b, c = TRUE_WOOD
+    return a * d ** b * np.exp(-c * d)
+
+
 DAILY_EVENTS = {
     "calvings": 0.12, "dry_offs": 0.10, "ais": 0.30, "real_abortions": 0.01,
     "deaths": 0.01, "culls": 0.02, "sales": 0.03, "births": 0.06, "external_entries": 0.005,
@@ -247,6 +260,67 @@ class FakeHerdSource:
                             "generation_group": ["0", "0", "1"], "n": [9.0, 3.0, 6.0],
                             "max_date": [asof] * 3})
         return self._leaky("calf_sex_on", out, asof + timedelta(days=1))
+
+    # ---- milk (SYNTHETIC): known curve and k so tests can check recovery ----------
+    def _milk_tables(self):
+        if hasattr(self, "_cowdays"):
+            return
+        months = []
+        d = SYNTHETIC_START
+        while d < SYNTHETIC_END:
+            months.append(d)
+            d = (d.replace(day=28) + timedelta(days=4)).replace(day=1)
+        rows = []
+        for i, m in enumerate(months):
+            ndays = ((m.replace(day=28) + timedelta(days=4)).replace(day=1) - m).days
+            for par, (lo, hi), gen, n in MILK_CELLS:
+                bins = list(range(lo, hi + 1, 10))
+                for j, b in enumerate(bins):
+                    w = 1 + 0.6 * sin(2 * pi * i / 12 + j)  # DIM mix moves through the year
+                    rows.append((m, par, gen, b, -1, n * ndays * w / len(bins)))
+        cd = pd.DataFrame(rows, columns=["month", "parity_group", "generation_group", "dim_bin",
+                                         "preg_band", "cow_days"])
+        cd["max_date"] = [(m.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+                          for m in cd["month"]]
+        self._cowdays = cd
+        lit = (cd["cow_days"] * wood_true(cd["dim_bin"] + 5)).groupby(cd["month"]).sum()
+        days = []
+        for m in months:
+            nd = ((m.replace(day=28) + timedelta(days=4)).replace(day=1) - m).days
+            for k in range(nd):
+                day = m + timedelta(days=k)
+                src = "shipment" if day < date(2020, 8, 1) else "delpro"
+                ok = not (date(2018, 5, 1) <= day < date(2018, 6, 1))  # a synthetic gap month
+                days.append((day, src, K_TRUE[src] * lit[m] / nd, ok, None, not ok))
+        self._target = pd.DataFrame(days, columns=["date", "target_source", "target_litres",
+                                                   "is_scoreable", "identified_share", "data_gap"])
+
+    def cow_curve_stats(self, start, end):
+        self.calls.append(("cow_curve_stats", start, end))
+        cols = ["parity_group", "generation_group", "dim", "preg_band", "n", "sum_yield", "max_date"]
+        if end <= date(2020, 8, 1):
+            return pd.DataFrame(columns=cols)
+        rows = []
+        for par, scale in (("1", 1.0), ("2", 1.1), ("3+", 1.15)):
+            for gen in ("0", "1"):
+                for dim in range(1, 401):
+                    band = -1 if dim < 120 else 0 if dim < 250 else 150 if dim < 330 else 200
+                    m = {150: 0.95, 200: 0.9}.get(band, 1.0)
+                    rows.append((par, gen, dim, band, 20.0, 20.0 * float(wood_true(dim)) * scale * m,
+                                 end - timedelta(days=1)))
+        return self._leaky("cow_curve_stats", pd.DataFrame(rows, columns=cols), end)
+
+    def milking_cowdays(self, start, end):
+        self.calls.append(("milking_cowdays", start, end))
+        self._milk_tables()
+        cd = self._cowdays
+        return cd[(cd["month"] >= start) & (cd["month"] < end)].reset_index(drop=True)
+
+    def target_daily(self, start, end):
+        self.calls.append(("target_daily", start, end))
+        self._milk_tables()
+        t = self._target
+        return t[(t["date"] >= start) & (t["date"] < end)].reset_index(drop=True)
 
     def panel_daily(self, start, end):
         self.calls.append(("panel_daily", start, end))

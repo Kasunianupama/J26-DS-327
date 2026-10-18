@@ -22,6 +22,8 @@ from .config import EngineConfig
 from .data import DATA_START, HerdSource, load_origin_inputs, month_start
 from .herd_engine import project
 from .periods import HORIZONS, aggregate, check_origin, horizon_days, period_bounds
+from .benchmarks import ets_forecast, sarima_forecast
+from .error_tools import bias_corrected as _bias_corrected
 from .rates import estimate_rates
 
 DEV_FIRST_ORIGIN = date(2017, 1, 1)
@@ -38,8 +40,34 @@ KEY_SERIES = ("milking", "n_herd", "calvings", "real_abortions")
 # Scored at monthly grain only, against core.state_transition_month (diagnostic).
 HEIFER_CALVINGS = "calvings_heifer"
 CORRECTED = "herd_engine_corrected"
-CORRECTION_LOOKBACK_DAYS = 730
-CORRECTION_MIN_ERRORS = 6
+# Monthly series also benchmarked with ETS and SARIMA (statsmodels).
+TS_BENCHMARK_SERIES = ("n_herd", "milking", "calvings")
+
+
+def bias_corrected(errors: pd.DataFrame, **kw) -> pd.DataFrame:
+    return _bias_corrected(errors, base_model="herd_engine", new_model=CORRECTED, **kw)
+
+
+def ts_benchmarks(past: pd.DataFrame, origin: date, horizons: tuple[int, ...]) -> pd.DataFrame:
+    """ETS and SARIMA on monthly means (stocks) or daily rates (events) before the origin."""
+    p = past.copy()
+    p["month"] = [d.replace(day=1) for d in pd.to_datetime(p["date"]).dt.date]
+    months = p.groupby("month")
+    rows = []
+    steps = max(horizons)
+    for col in TS_BENCHMARK_SERIES:
+        series = months[col].mean()  # stock: mean animals; event: mean per day
+        series = series[series.index < origin]
+        for model, fn in (("ets", lambda y: ets_forecast(y, steps, 12)),
+                          ("sarima", lambda y: sarima_forecast(y, steps, 12))):
+            fc = fn(series)
+            if fc is None:
+                continue
+            for h in horizons:
+                start, end = period_bounds(origin, "monthly", h)
+                v = fc[h - 1] * ((end - start).days if col in EVENT_SERIES else 1)
+                rows.append((h, start, col, float(v), model))
+    return pd.DataFrame(rows, columns=["horizon", "period_start", "series", "value", "model"])
 
 
 def development_origins(grain: str, every: int = 1) -> list[date]:
@@ -131,10 +159,12 @@ def run_backtest(
         pers = persistence(past, origin, grain, horizons)
         if heifer_calvings is not None:
             act, pers = _add_heifer_calvings(act, pers, heifer_calvings, origin)
-        for model, pred in (
-            ("herd_engine", fc[["horizon", "period_start", "series", "value"]]),
-            ("persistence", pers),
-        ):
+        preds = [("herd_engine", fc[["horizon", "period_start", "series", "value"]]),
+                 ("persistence", pers)]
+        if grain == "monthly":
+            ts = ts_benchmarks(past, origin, horizons)
+            preds += [(m, g.drop(columns="model")) for m, g in ts.groupby("model")]
+        for model, pred in preds:
             m = act.merge(pred.rename(columns={"value": "forecast"}),
                           on=["horizon", "period_start", "series"])
             m["origin"] = origin
@@ -168,36 +198,6 @@ def _add_heifer_calvings(act: pd.DataFrame, pers: pd.DataFrame, monthly: pd.Seri
                 for h, ps in pers[["horizon", "period_start"]].drop_duplicates().itertuples(index=False)]
         pers = pd.concat([pers, pd.DataFrame(prow, columns=pers.columns)], ignore_index=True)
     return act, pers
-
-
-def bias_corrected(errors: pd.DataFrame,
-                   lookback_days: int = CORRECTION_LOOKBACK_DAYS,
-                   min_errors: int = CORRECTION_MIN_ERRORS) -> pd.DataFrame:
-    """Engine forecasts minus the engine's own mean past error (same grain, series, horizon).
-
-    Only errors whose target period had ended by the origin, from origins in the
-    previous ``lookback_days``, are used, so nothing after the origin is seen. With
-    fewer than ``min_errors`` such errors the raw forecast is kept.
-    """
-    eng = errors[errors["model"] == "herd_engine"]
-    out = []
-    for _, g in eng.groupby(["grain", "series", "horizon"]):
-        g = g.sort_values("origin")
-        origins = pd.to_datetime(g["origin"]).to_numpy()
-        ends = pd.to_datetime(g["period_end"]).to_numpy()
-        err = g["error"].to_numpy(dtype=float)
-        corr = np.zeros(len(g))
-        lookback = np.timedelta64(lookback_days, "D")
-        for i, o in enumerate(origins):
-            mask = (ends <= o) & (origins >= o - lookback)
-            if mask.sum() >= min_errors:
-                corr[i] = err[mask].mean()
-        c = g.copy()
-        c["forecast"] = g["forecast"] - corr
-        c["error"] = c["forecast"] - c["actual"]
-        c["model"] = CORRECTED
-        out.append(c)
-    return pd.concat(out, ignore_index=True) if out else eng.iloc[0:0]
 
 
 def summarise(errors: pd.DataFrame) -> pd.DataFrame:

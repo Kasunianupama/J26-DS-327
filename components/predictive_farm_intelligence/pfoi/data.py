@@ -88,6 +88,14 @@ class HerdSource(Protocol):
     def panel_daily(self, start: date, end: date) -> pd.DataFrame: ...
 
 
+class MilkSource(HerdSource, Protocol):
+    """Extra aggregates for the milk model."""
+
+    def cow_curve_stats(self, start: date, end: date) -> pd.DataFrame: ...
+    def milking_cowdays(self, start: date, end: date) -> pd.DataFrame: ...
+    def target_daily(self, start: date, end: date) -> pd.DataFrame: ...
+
+
 @dataclass
 class OriginInputs:
     origin: date
@@ -453,6 +461,71 @@ class SqlHerdSource:
                 GROUP BY 1, 2""",
             asof=asof,
         )
+
+    # milk model -------------------------------------------------------------
+    def cow_curve_stats(self, start: date, end: date) -> pd.DataFrame:
+        """Reliable cow-days in [start, end) by parity, generation, DIM and pregnancy band."""
+        return self._q(
+            f"""SELECT CASE WHEN d.lactation_no = 1 THEN '1' WHEN d.lactation_no = 2 THEN '2'
+                            WHEN d.lactation_no >= 3 THEN '3+' ELSE 'unknown' END AS parity_group,
+                       {_GENERATION} AS generation_group,
+                       d.dim::int AS dim,
+                       CASE WHEN d.days_pregnant IS NULL OR d.days_pregnant < 0 THEN -1
+                            WHEN d.days_pregnant < 150 THEN 0
+                            WHEN d.days_pregnant < 200 THEN 150 ELSE 200 END AS preg_band,
+                       COUNT(*)::float AS n, SUM(d.yield_litres)::float AS sum_yield,
+                       MAX(d.milk_date) AS max_date
+                FROM {self.core}.cow_day d
+                LEFT JOIN {self.core}.animal a ON a.animal_key = d.animal_key
+                WHERE d.milk_date >= CAST(:start AS date) AND d.milk_date < CAST(:end AS date)
+                  AND d.is_reliable
+                  AND NOT COALESCE(d.is_spike, false)
+                  AND NOT COALESCE(d.is_missing_yield, false)
+                  AND NOT COALESCE(d.is_placeholder, false)
+                  AND d.yield_litres > 0 AND d.dim BETWEEN 1 AND 400
+                GROUP BY 1, 2, 3, 4""",
+            start=start, end=end,
+        )
+
+    def milking_cowdays(self, start: date, end: date) -> pd.DataFrame:
+        """Milking cow-days per month in [start, end), by parity, generation, 10-day DIM
+        bin and pregnancy band, rebuilt from lactation intervals (matches day_cell ~1%)."""
+        return self._q(
+            f"""WITH {_lac_cte(self.core)},
+                days AS (
+                    SELECT lac.parity_group, lac.generation_group, g.d::date AS day,
+                           (g.d::date - lac.calving_date) AS dim,
+                           CASE WHEN lac.conc IS NOT NULL AND lac.conc <= g.d::date
+                                THEN (g.d::date - lac.conc) END AS gest
+                    FROM lac
+                    CROSS JOIN LATERAL generate_series(
+                        GREATEST(lac.calving_date, CAST(:start AS date)),
+                        LEAST(lac.milk_end, CAST(:end AS date)) - 1,
+                        interval '1 day') AS g(d)
+                    WHERE lac.calving_date < CAST(:end AS date)
+                      AND lac.milk_end > CAST(:start AS date)
+                )
+                SELECT date_trunc('month', day)::date AS month, parity_group, generation_group,
+                       LEAST((dim / 10) * 10, 990) AS dim_bin,
+                       CASE WHEN gest IS NULL THEN -1 WHEN gest < 150 THEN 0
+                            WHEN gest < 200 THEN 150 ELSE 200 END AS preg_band,
+                       COUNT(*)::float AS cow_days, MAX(day) AS max_date
+                FROM days GROUP BY 1, 2, 3, 4, 5""",
+            start=start, end=end, known_until=end,
+        )
+
+    def target_daily(self, start: date, end: date) -> pd.DataFrame:
+        """Herd milk target per day (herd level): source, litres, scoreable flag."""
+        frame = self._q(
+            f"""SELECT date, target_source, target_litres, is_scoreable, identified_share,
+                       data_gap
+                FROM {self.mi}.day_panel
+                WHERE date >= CAST(:start AS date) AND date < CAST(:end AS date)
+                ORDER BY date""",
+            start=start, end=end,
+        )
+        frame["date"] = pd.to_datetime(frame["date"]).dt.date
+        return frame
 
     # actuals for scoring (herd-level daily panel, never fed to the model) --
     def panel_daily(self, start: date, end: date) -> pd.DataFrame:

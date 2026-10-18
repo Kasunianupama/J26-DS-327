@@ -85,7 +85,7 @@ def test_backtest_monthly_runs_and_scores_both_models():
     origins = [date(2019, 1, 1), date(2019, 6, 1), date(2023, 6, 1)]
     res = run_backtest(src, "monthly", origins=origins)
     e = res.errors
-    assert set(e["model"]) == {"herd_engine", "persistence", "herd_engine_corrected"}
+    assert {"herd_engine", "persistence", "herd_engine_corrected", "ets", "sarima"} <= set(e["model"])
     assert set(KEY_SERIES) <= set(e["series"])
     late = e[e["origin"] == date(2023, 6, 1)]
     assert late["horizon"].max() == 6  # 12-month horizon would reach the test block
