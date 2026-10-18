@@ -2,7 +2,7 @@
 
 The service deliberately sits behind an API boundary: replacing this class with
 a DelPro/database/model implementation does not require changing the frontend
-contracts.  Values remain fictional and must not be treated as NLDB records.
+contracts.  Values remain fictional and must not be treated as real farm records.
 """
 from __future__ import annotations
 
@@ -35,9 +35,9 @@ HORIZON_LABELS = {
 }
 
 FARMS = (
-    {"id": "FARM_01", "name": "Ruhunu Farm", "populated": True},
-    {"id": "FARM_02", "name": "Bopaththalawa Farm", "populated": False},
-    {"id": "FARM_03", "name": "Ambewela Livestock", "populated": False},
+    {"id": "FARM_01", "name": "Farm X", "populated": True},
+    {"id": "FARM_02", "name": "Farm Y", "populated": False},
+    {"id": "FARM_03", "name": "Farm Z", "populated": False},
 )
 
 

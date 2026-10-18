@@ -1,7 +1,7 @@
 /**
  * Component 2 — Predictive Farm Intelligence mock-data layer.
  *
- * All data is fictional synthetic scaffold data. It is not NLDB data, not
+ * All data is fictional synthetic scaffold data. It is not real farm data, not
  * DelPro data, and does not represent research findings.
  */
 
@@ -20,8 +20,8 @@ export * from './profiles';
 
 /** Farms offered by the persistent farm selector. Only one is populated. */
 export const FARMS = [
-  { id: 'FARM_01', name: 'Ruhunu Farm', populated: true },
-  { id: 'FARM_02', name: 'Bopaththalawa Farm', populated: false },
-  { id: 'FARM_03', name: 'Ambewela Livestock', populated: false },
+  { id: 'FARM_01', name: 'Farm X', populated: true },
+  { id: 'FARM_02', name: 'Farm Y', populated: false },
+  { id: 'FARM_03', name: 'Farm Z', populated: false },
 ] as const;
 export type FarmId = (typeof FARMS)[number]['id'];

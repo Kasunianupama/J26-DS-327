@@ -137,7 +137,7 @@ export function HerdFlow() {
   const exitRows = [
     { label: 'Deaths', sub: 'mortality, all causes', n: snap.exits.deaths },
     { label: 'Sales', sub: 'cull and surplus stock', n: snap.exits.sales },
-    { label: 'Transfers out', sub: 'to other NLDB farms', n: snap.exits.transfers },
+    { label: 'Transfers out', sub: 'to other farms', n: snap.exits.transfers },
   ];
   const maxExit = Math.max(...exitRows.map((r) => r.n), 1);
 

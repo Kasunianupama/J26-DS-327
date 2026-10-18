@@ -212,7 +212,7 @@ function Shell() {
         )}
 
         {!detailOpen && <p className="pfie-disclaimer">
-          All figures are fictional sample prototype data. They are not NLDB records, not DelPro data, and do
+          All figures are fictional sample prototype data. They are not real farm records, not DelPro data, and do
           not represent research findings. Component 2 is a predictive layer — animal records, event entry,
           treatments and operational reporting remain in DelPro. The Operations workspace demonstrates how
           acknowledgement, action and outcome evidence can be monitored without replacing those source systems.

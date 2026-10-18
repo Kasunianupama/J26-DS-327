@@ -2,7 +2,7 @@
  * Component 2 — Predictive Farm Intelligence
  * Shared vocabulary, deterministic RNG, calendar and lactation maths.
  *
- * All data in this folder is fictional synthetic scaffold data. It is not NLDB
+ * All data in this folder is fictional synthetic scaffold data. It is not real farm
  * data, not DelPro data, and does not represent research findings.
  */
 
