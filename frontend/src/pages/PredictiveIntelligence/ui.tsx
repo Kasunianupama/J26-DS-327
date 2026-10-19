@@ -26,6 +26,13 @@ export function Pill({ children, tone = 'plain', title }: { children: ReactNode;
   return <span className={`pfie-badge ${tone}`} title={title}>{children}</span>;
 }
 
+/** Marks a panel the model computes by month only, while Day or Week is selected. */
+export function MonthlyOnly() {
+  const { grain } = usePfoi();
+  if (grain === 'month') return null;
+  return <Pill title="The model computes this monthly only; it does not change with Day or Week.">Monthly only</Pill>;
+}
+
 /* ---------------- values ---------------- */
 
 export function ForecastValue({

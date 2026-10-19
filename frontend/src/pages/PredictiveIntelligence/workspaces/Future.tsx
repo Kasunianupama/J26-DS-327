@@ -9,10 +9,13 @@
 
 import {
   GRAIN_LABEL,
+  actualRow,
+  addPeriods,
   confidenceOf,
   flowTotals,
   fmt1,
   fmtInt,
+  forecastRow,
   headline,
   milkBreakdown,
   periodLabel,
@@ -21,7 +24,7 @@ import {
 } from '../../../data/pfoi';
 import { usePfoi } from '../state';
 import { useRun } from '../source';
-import { Card, Gauge, Note } from '../ui';
+import { Card, MonthlyOnly, Gauge, Note } from '../ui';
 import { Icon } from '../icons';
 import { MasterTimeline } from '../panels/MasterTimeline';
 import { ContributionChart } from '../panels/ContributionChart';
@@ -39,6 +42,12 @@ export function FutureWorkspace() {
   const reach = `${horizon} ${horizon === 1 ? GRAIN_LABEL[grain].one : GRAIN_LABEL[grain].many}`;
   const month = milk ? periodStart(milk.period, 'month') : null;
   const breakdown = month ? milkBreakdown(run, month) : null;
+  const prevMonth = month ? addPeriods(month, 'month', -1) : null;
+  /* Milking cows in the month vs the month before, to put the herd-size part in head. */
+  const cowsAt = (m: string) => forecastRow(run, 'month', m, 'milking')?.forecast ?? actualRow(run, 'month', m, 'milking')?.value ?? null;
+  const cowsNow = month ? cowsAt(month) : null;
+  const cowsBefore = prevMonth ? cowsAt(prevMonth) : null;
+  const cowDelta = cowsNow !== null && cowsBefore !== null ? Math.round(cowsNow - cowsBefore) : null;
   const conf = confidenceOf(milk?.quality);
 
   return (
@@ -79,16 +88,20 @@ export function FutureWorkspace() {
 
       {breakdown && month && (
         <Card
-          icon="trendDown"
-          title={`What moves milk into ${periodLabel(month, 'month')}`}
-          sub={breakdown.isPast ? 'Recorded month, explained by the model' : 'Change from the previous month, split exactly across the model factors'}
+          icon={breakdown.end >= breakdown.start ? 'trendUp' : 'trendDown'}
+          title={<>Why milk changes into {periodLabel(month, 'month')} <MonthlyOnly /></>}
+          sub={`Compared with ${periodLabel(prevMonth!, 'month')}, average litres per day`}
           actions={
             <button className="pfie-btn primary" onClick={() => { setBreakdownMonth(month); go('herd', 'milk'); }}>
               Open the full breakdown
             </button>
           }
         >
-          <ContributionChart parts={breakdown.parts.filter((p) => breakdown.isPast || p.factor !== 'residual')} />
+          <ContributionChart
+            parts={breakdown.parts.filter((p) => breakdown.isPast || p.factor !== 'residual')}
+            summary={{ fromLabel: periodLabel(prevMonth!, 'month'), toLabel: periodLabel(month, 'month'), start: breakdown.start, end: breakdown.end, isPast: breakdown.isPast }}
+            facts={cowDelta ? { herd_size: `About ${Math.abs(cowDelta)} ${cowDelta > 0 ? 'more' : 'fewer'} cows in milk than in ${periodLabel(prevMonth!, 'month')}` } : undefined}
+          />
           <div className="pfie-row tight">
             <button className="pfie-btn" onClick={() => openDrawer({ kind: 'point', period: milk!.period, grain })}>
               Explain {periodLabel(milk!.period, grain)} <Icon name="arrowRight" size={13} />

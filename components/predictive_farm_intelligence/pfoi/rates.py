@@ -11,7 +11,7 @@ backtest can report which origins used assumed rather than measured rates.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -111,15 +111,39 @@ def _normal_pmf(mean: float, sd: float) -> np.ndarray:
     return pmf / pmf.sum()
 
 
-def conception_per_ai(inp: RateInputs, default: float = 0.25) -> float:
+def conception_cut_month(inp: RateInputs, cfg: EngineConfig | None) -> date | None:
+    """First month whose conception outcomes are not yet known, or None (no cut).
+
+    With ``cfg.conception_cut == "known"``: the month of origin - pregnancy-check lag;
+    transition months from it onward are left out of conception and pregnancy-loss rates.
+    """
+    if cfg is None or cfg.conception_cut == "origin":
+        return None
+    if cfg.conception_cut != "known":
+        raise ValueError(f"unknown conception_cut {cfg.conception_cut!r}")
+    return (inp.origin - timedelta(days=cfg.pregnancy_check_lag_days)).replace(day=1)
+
+
+def _before_month(frame: pd.DataFrame, cut: date | None) -> pd.DataFrame:
+    if cut is None or not len(frame):
+        return frame
+    return frame[pd.to_datetime(frame["month"]).dt.date < cut]
+
+
+def conception_per_ai(inp: RateInputs, default: float = 0.25,
+                      cfg: EngineConfig | None = None) -> float:
     """Share of inseminations that become a pregnancy in the window (herd level).
 
     Conceptions = cow conceptions while milking + heifer and dry-cow conceptions from
-    the transition table; inseminations = day_panel.ais. Clipped to [0.05, 0.9].
+    the transition table; inseminations = day_panel.ais. Clipped to [0.05, 0.9]. With
+    a conception cut (``conception_cut_month``), transitions and inseminations both stop
+    at the cut month.
     """
-    ais = float(inp.panel["ais"].sum()) if len(inp.panel) else 0.0
+    cut = conception_cut_month(inp, cfg)
+    panel = _before_month(inp.panel, cut)
+    ais = float(panel["ais"].sum()) if len(panel) else 0.0
     conc = float(inp.cow_open["conceptions"].sum()) if len(inp.cow_open) else 0.0
-    tr = inp.transitions
+    tr = _before_month(inp.transitions, cut)
     if len(tr):
         mask = ((tr["from_state"] == "heifer_open") & (tr["to_state"] == "heifer_pregnant")) | (
             (tr["from_state"] == "dry_open") & (tr["to_state"] == "dry_pregnant"))
@@ -216,6 +240,29 @@ def estimate_rates(inp: RateInputs, cfg: EngineConfig | None = None) -> RateSet:
             return DEFAULTS[key]
         return moved(src, dst) / E_tr[src]
 
+    # Conceptions and pregnancy losses are known only after a pregnancy check, so with
+    # conception_cut="known" they use only transition months (and their exposure) that
+    # ended before origin - lag.
+    cut = conception_cut_month(inp, cfg)
+    tr_p = _before_month(tr, cut)
+    E_p = (
+        exp[exp["month"].isin(set(tr_p["month"]))].groupby("state")["animal_days"].sum()
+        .reindex(STATES, fill_value=0.0)
+    ) if cut is not None and len(tr_p) else (E_tr if cut is None else E_tr * 0.0)
+    if cut is not None:
+        notes.append(f"conception cut: heifer/dry conceptions and losses from months before {cut}")
+
+    def moved_p(src: str, dst: str) -> float:
+        if not len(tr_p):
+            return 0.0
+        return float(tr_p.loc[(tr_p["from_state"] == src) & (tr_p["to_state"] == dst), "n_moved"].sum())
+
+    def preg_rate(src: str, dst: str, key: str) -> float:
+        if not len(tr_p) or E_p[src] <= 0:
+            notes.append(f"{key}: no transitions/exposure in window, assumed {DEFAULTS[key]:.5f}/day")
+            return DEFAULTS[key]
+        return moved_p(src, dst) / E_p[src]
+
     # exits
     exit_rates: dict[str, dict[str, float]] = {s: {} for s in STATES}
     tr_exit = tr[tr["to_state"].isin(EXIT_TO_STATES)] if len(tr) else tr
@@ -280,9 +327,9 @@ def estimate_rates(inp: RateInputs, cfg: EngineConfig | None = None) -> RateSet:
     # Pregnancy losses beyond real abortions (e.g. pregnancies not confirmed at a later
     # check), from the transition table: pregnant -> open for heifers and dry cows.
     def extra_loss(src: str, dst: str) -> float:
-        if not len(tr) or E_tr[src] <= 0:
+        if not len(tr_p) or E_p[src] <= 0:
             return 0.0
-        return max(0.0, moved(src, dst) / E_tr[src] - abortion)
+        return max(0.0, moved_p(src, dst) / E_p[src] - abortion)
 
     heifer_loss = extra_loss("heifer_pregnant", "heifer_open")
     dry_loss = extra_loss("dry_pregnant", "dry_open")
@@ -364,8 +411,8 @@ def estimate_rates(inp: RateInputs, cfg: EngineConfig | None = None) -> RateSet:
         exit=exit_rates,
         **calf_kwargs,
         early_deaths_per_calving=early_deaths_per_calving,
-        conc_heifer=trans_rate("heifer_open", "heifer_pregnant", "conc_heifer"),
-        conc_dry=trans_rate("dry_open", "dry_pregnant", "conc_dry"),
+        conc_heifer=preg_rate("heifer_open", "heifer_pregnant", "conc_heifer"),
+        conc_dry=preg_rate("dry_open", "dry_pregnant", "conc_dry"),
         conc_cow=conc_cow,
         dry_open_cow=dry_open_cow,
         dry_preg_by_gest=dry_preg,

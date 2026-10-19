@@ -86,3 +86,8 @@ the published-shape sensitivity. On the 24 months where SARIMA could run, SARIMA
 Daily horizons tie with persistence (1.14 / 1.03 / 0.94). Remaining limits: upward bias
 (≈ +52k litres at month 6, from the milking-cow over-forecast in Step 3) and 90 %
 intervals that cover only 60–77 % monthly (H3).
+
+**Known limitation (2025–26 records).** The rebuilt milking cow-days used for the
+12-month k are 8.6 % higher than `day_cell` in 2025–26, so the 12-month k (used only when
+anchoring is not possible, flag `k_window`) is about 8 % too low in those years. The
+default anchored k uses the `day_cell` starting herd and is not affected.

@@ -107,6 +107,7 @@ class FakeHerdSource:
     def __init__(self, leak: str | None = None, cutoff: date | None = None,
                  future_scale: float = 1.0):
         self.leak = leak
+        self.cutoff, self.future_scale = cutoff, future_scale
         self.calls: list[tuple] = []
         days = pd.date_range(SYNTHETIC_START, SYNTHETIC_END - timedelta(days=1)).date
         rows = []
@@ -207,7 +208,7 @@ class FakeHerdSource:
                                                     max_date=("date", "max"), **agg)
         return self._leaky("panel_months", out, origin)
 
-    def cow_open(self, start, known_until):
+    def cow_open(self, start, known_until, origin=None):
         self.calls.append(("cow_open", start, known_until))
         rows = []
         for p in ("1", "2", "3+"):
@@ -247,6 +248,20 @@ class FakeHerdSource:
                             "exit_type": ["died", "died", "sold"], "exits": [2.0, 8.0, 6.0],
                             "max_date": [origin - timedelta(days=1)] * 3})
         return self._leaky("young_exits", out, origin)
+
+    def daily_moves(self, start, end):
+        self.calls.append(("daily_moves", start, end))
+        p = self.panel[(self.panel["date"] >= start) & (self.panel["date"] < end)]
+        rows = []
+        for r in p.itertuples(index=False):
+            for frm, to, n in (("heifers", "milking", r.calvings * 0.3), ("dry", "milking", r.calvings * 0.7),
+                               ("milking", "dry", r.dry_offs), ("born", "calves", r.births),
+                               ("milking", "dead", r.deaths), ("dry", "culled", r.culls), ("dry", "sold", r.sales),
+                               ("calves", "heifers", 0.1)):
+                if n > 0:
+                    rows.append((r.date, frm, to, float(n), r.date))
+        out = pd.DataFrame(rows, columns=["date", "from_group", "to_group", "n", "max_date"])
+        return self._leaky("daily_moves", out, end)
 
     def births_by_sex(self, start, origin):
         self.calls.append(("births_by_sex", start, origin))
@@ -291,7 +306,8 @@ class FakeHerdSource:
                 day = m + timedelta(days=k)
                 src = "shipment" if day < date(2020, 8, 1) else "delpro"
                 ok = not (date(2018, 5, 1) <= day < date(2018, 6, 1))  # a synthetic gap month
-                days.append((day, src, K_TRUE[src] * lit[m] / nd, ok, None, not ok))
+                f = self.future_scale if self.cutoff and day >= self.cutoff else 1.0
+                days.append((day, src, f * K_TRUE[src] * lit[m] / nd, ok, None, not ok))
         self._target = pd.DataFrame(days, columns=["date", "target_source", "target_litres",
                                                    "is_scoreable", "identified_share", "data_gap"])
 
@@ -321,6 +337,25 @@ class FakeHerdSource:
         self._milk_tables()
         t = self._target
         return t[(t["date"] >= start) & (t["date"] < end)].reset_index(drop=True)
+
+    def health_months(self, start, end):
+        self.calls.append(("health_months", start, end))
+        p = self.panel[(self.panel["date"] >= start) & (self.panel["date"] < end)]
+        out = p.groupby("month", as_index=False).agg(max_date=("date", "max"))
+        out["mastitis_episodes"] = [3.0 if m < date(2019, 1, 1) else 0.5 for m in out["month"]]
+        out["udder_teat_episodes"] = 1.0
+        return self._leaky("health_months", out, end)
+
+    def data_coverage(self, end):
+        years = range(2016, end.year + 1)
+        return pd.DataFrame({"year": list(years), "reliable_cow_days": [0] * 4 + [1000] * (len(years) - 4),
+                             "milk_days_scoreable_pct": 0.95, "weather_complete_pct": 0.9,
+                             "health_records": 10, "max_date": end - timedelta(days=1)})
+
+    def generation_fertility(self):
+        return pd.DataFrame({"generation_group": ["0", "1"], "calving_period": ["2020-2022"] * 2,
+                             "lactations": [100, 80], "conceptions": [70, 50],
+                             "services_per_conception": [3.5, 4.2], "pct_aborted": [3.0, 4.0]})
 
     def panel_daily(self, start, end):
         self.calls.append(("panel_daily", start, end))

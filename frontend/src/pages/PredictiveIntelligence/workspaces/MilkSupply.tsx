@@ -29,7 +29,7 @@ import {
 } from '../../../data/pfoi';
 import { usePfoi } from '../state';
 import { useRun } from '../source';
-import { Card, KindTag, Note, TipShell, type TipRow } from '../ui';
+import { Card, MonthlyOnly, KindTag, Note, TipShell, type TipRow } from '../ui';
 import { MasterTimeline } from '../panels/MasterTimeline';
 import { Waterfall } from '../panels/Waterfall';
 
@@ -40,6 +40,8 @@ const FACTOR_COLORS: Record<string, string> = {
   thi: '#a8770a',
   mastitis: '#a44b3c',
   residual: '#b9c7c0',
+  pregnancy_mix: '#8b6aa8',
+  yield_level: '#b5893a',
 };
 
 export function MilkSupply() {
@@ -66,6 +68,10 @@ export function MilkSupply() {
     return row;
   }), [run, months, origin]);
 
+  // factors this run reports (the model run has no THI or mastitis factor yet)
+  const factors = useMemo(() => MILK_FACTORS.filter((f) => run.attribution.some(
+    (r) => r.series === 'milk_litres' && r.factor === f)), [run]);
+
   const picker = (value: string | undefined, options: string[], onChange: (m: string) => void) => (
     <select value={value} onChange={(e) => onChange(e.target.value)}>
       {options.map((m) => <option key={m} value={m}>{periodLabel(m, 'month')}</option>)}
@@ -74,18 +80,18 @@ export function MilkSupply() {
 
   return (
     <div className="pfie-stack" style={{ gap: 20 }}>
-      <MasterTimeline bands={['milk']} />
+      <MasterTimeline bands={['milk', 'cows']} />
 
       <div className="pfie-grid c2">
-        <Card title="A past month" sub="Recorded change, explained by the model, with what it could not explain" actions={picker(pastMonth, past, setPastMonth)}>
+        <Card title={<>A past month <MonthlyOnly /></>} sub="Recorded change, explained by the model, with what it could not explain" actions={picker(pastMonth, past, setPastMonth)}>
           {pastBd ? <Waterfall breakdown={pastBd} /> : <p className="pfie-chart-note">No breakdown for this month.</p>}
         </Card>
-        <Card title="A future month" sub="Forecast change, fully explained by construction" actions={picker(futureMonth, future, setFutureMonth)}>
+        <Card title={<>A future month <MonthlyOnly /></>} sub="Forecast change, fully explained by construction" actions={picker(futureMonth, future, setFutureMonth)}>
           {futureBd ? <Waterfall breakdown={futureBd} /> : <p className="pfie-chart-note">No breakdown for this month.</p>}
         </Card>
       </div>
 
-      <Card title="Month-by-month change, by factor" sub="Each bar is one month's change from the month before (L/day); the line is the total change">
+      <Card title={<>Month-by-month change, by factor <MonthlyOnly /></>} sub="Each bar is one month's change from the month before (L/day); the line is the total change">
         <ResponsiveContainer width="100%" height={260}>
           <ComposedChart data={river} stackOffset="sign" margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
             <CartesianGrid stroke="#eef2f0" vertical={false} />
@@ -93,7 +99,7 @@ export function MilkSupply() {
             <YAxis tick={{ fontSize: 11, fill: '#70827a' }} width={48} />
             <ReferenceLine y={0} stroke="#93a29b" />
             <ReferenceLine x={periodLabel(origin, 'month', true)} stroke="#5b7fa6" strokeDasharray="4 3" label={{ value: 'Origin', position: 'insideTopRight', fontSize: 10, fill: '#5b7fa6' }} />
-            {MILK_FACTORS.map((f) => (
+            {factors.map((f) => (
               <Bar key={f} dataKey={f} stackId="s" fill={FACTOR_COLORS[f]} isAnimationActive={false} />
             ))}
             <Line dataKey="total" stroke="#17231f" strokeWidth={1.5} dot={{ r: 2 }} isAnimationActive={false} />
@@ -101,7 +107,7 @@ export function MilkSupply() {
               content={({ active, payload }) => {
                 const p = payload?.[0]?.payload as Record<string, number | string | boolean> | undefined;
                 if (!active || !p) return null;
-                const rows: TipRow[] = MILK_FACTORS
+                const rows: TipRow[] = factors
                   .filter((f) => p.future !== true || f !== 'residual')
                   .map((f) => [FACTOR_META[f].label, fmtSigned(Number(p[f] ?? 0), 1), FACTOR_COLORS[f]]);
                 rows.push(['Total change', fmtSigned(Number(p.total), 1)]);
@@ -111,7 +117,7 @@ export function MilkSupply() {
           </ComposedChart>
         </ResponsiveContainer>
         <div className="pfie-legend">
-          {MILK_FACTORS.map((f) => (
+          {factors.map((f) => (
             <span key={f}><i style={{ background: FACTOR_COLORS[f] }} />{FACTOR_META[f].label} <KindTag kind={FACTOR_META[f].kind} /></span>
           ))}
         </div>

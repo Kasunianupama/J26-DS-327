@@ -21,7 +21,7 @@ import { usePfoi } from '../state';
 import { useRun } from '../source';
 import { Card, EmptyState, KindTag } from '../ui';
 
-const NODES: SeriesId[] = ['calves', 'heifers', 'milking', 'dry', 'total_herd'];
+const NODES: SeriesId[] = ['calves', 'heifers', 'milking', 'dry', 'other', 'total_herd'];
 const FLOWS: { series: SeriesId; route: string }[] = [
   { series: 'entries', route: 'Births and entries → calves' },
   { series: 'calvings', route: 'Heifers and dry cows → milking' },

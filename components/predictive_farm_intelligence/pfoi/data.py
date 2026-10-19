@@ -74,7 +74,7 @@ class HerdSource(Protocol):
     def exposure(self, start: date, origin: date) -> pd.DataFrame: ...
     def transitions(self, start: date, month_end: date) -> pd.DataFrame: ...
     def panel_months(self, start: date, origin: date) -> pd.DataFrame: ...
-    def cow_open(self, start: date, known_until: date) -> pd.DataFrame: ...
+    def cow_open(self, start: date, known_until: date, origin: date | None = None) -> pd.DataFrame: ...
     def preg_milking_days(self, start: date, known_until: date, origin: date) -> pd.DataFrame: ...
     def dryoff_gest(self, start: date, known_until: date, origin: date) -> pd.DataFrame: ...
     def gestation(self, start: date, origin: date) -> pd.DataFrame: ...
@@ -94,6 +94,11 @@ class MilkSource(HerdSource, Protocol):
     def cow_curve_stats(self, start: date, end: date) -> pd.DataFrame: ...
     def milking_cowdays(self, start: date, end: date) -> pd.DataFrame: ...
     def target_daily(self, start: date, end: date) -> pd.DataFrame: ...
+    def driver_daily(self, start: date, end: date) -> pd.DataFrame: ...
+    def health_months(self, start: date, end: date) -> pd.DataFrame: ...
+    def data_coverage(self, end: date) -> pd.DataFrame: ...
+    def generation_fertility(self) -> pd.DataFrame: ...
+    def daily_moves(self, start: date, end: date) -> pd.DataFrame: ...
 
 
 @dataclass
@@ -108,6 +113,12 @@ def load_origin_inputs(source: HerdSource, origin: date, cfg: EngineConfig) -> O
     """Everything the engine needs at ``origin``, with the leakage guard applied."""
     if origin <= DATA_START + timedelta(days=31):
         raise ValueError("origin too early: no history before it")
+    if getattr(source, "conception_known", "lag") != cfg.conception_known:
+        raise ValueError(f"source uses conception_known={getattr(source, 'conception_known', 'lag')!r} "
+                         f"but the configuration asks for {cfg.conception_known!r}")
+    if getattr(source, "cell_table", "day_cell") != cfg.cell_table:
+        raise ValueError(f"source reads {getattr(source, 'cell_table', 'day_cell')!r} but the "
+                         f"configuration asks for {cfg.cell_table!r}")
     asof = origin - timedelta(days=1)
     known_until = origin - timedelta(days=cfg.pregnancy_check_lag_days)
     ws = window_start(origin, cfg.window_months)
@@ -120,7 +131,7 @@ def load_origin_inputs(source: HerdSource, origin: date, cfg: EngineConfig) -> O
         exposure=check_before(source.exposure(ws, origin), origin, "exposure"),
         transitions=check_before(source.transitions(ws, tr_end), origin, "transitions"),
         panel=check_before(source.panel_months(ws, origin), origin, "panel_months"),
-        cow_open=check_before(source.cow_open(ws, known_until), known_until, "cow_open"),
+        cow_open=check_before(source.cow_open(ws, known_until, origin=origin), known_until, "cow_open"),
         preg_milking_days=float(preg["preg_milking_days"].fillna(0).sum()) if len(preg) else 0.0,
         dryoff_gest=check_before(source.dryoff_gest(ws, known_until, origin), origin, "dryoff_gest"),
         gestation=check_before(source.gestation(ws, origin), origin, "gestation"),
@@ -143,7 +154,7 @@ def load_origin_inputs(source: HerdSource, origin: date, cfg: EngineConfig) -> O
         origin, cells, milking_clock, dry_clock, heifer_clock, cfg.pregnancy_check_lag_days,
         calf_sex=calf_sex,
         max_live_gest=max_live_gestation(rate_inputs.gestation),
-        conception_per_ai=conception_per_ai(rate_inputs),
+        conception_per_ai=conception_per_ai(rate_inputs, cfg=cfg),
     )
     return OriginInputs(origin=origin, state=state, rate_inputs=rate_inputs, notes=notes)
 
@@ -253,6 +264,7 @@ def prefetch_snapshots(source, origins: list[date], cfg: EngineConfig,
 # --------------------------------------------------------------------------- SQL
 
 _IDENT = re.compile(r"^[a-z_][a-z0-9_]*$")
+CELL_TABLES = ("day_cell", "day_cell_known")
 
 _PARITY = (
     "CASE WHEN l.lactation_no = 1 THEN '1' WHEN l.lactation_no = 2 THEN '2' "
@@ -268,12 +280,15 @@ _BANDS = (
 )
 
 
-def _lac_cte(core: str) -> str:
+def _lac_cte(core: str, recorded: bool = False) -> str:
     """One row per lactation, with dates needed by the cow statistics.
 
-    ``conc`` is the conception after this calving, kept only if dated before
-    ``known_until``; ``milk_end`` is the first of dry-off, lactation end and exit.
+    ``conc`` is the conception after this calving, kept only if known: dated before
+    ``known_until`` (lag rule), or with ``recorded`` confirmed (``conception_known_date``)
+    before ``:origin``. ``milk_end`` is the first of dry-off, lactation end and exit.
     """
+    known = ("l.conception_known_date < CAST(:origin AS date)" if recorded
+             else "l.conception_date < CAST(:known_until AS date)")
     return f"""
     lac AS (
         SELECT l.animal_key,
@@ -287,7 +302,7 @@ def _lac_cte(core: str) -> str:
                      COALESCE(l.end_date, 'infinity'::date),
                      COALESCE(a.exit_date, 'infinity'::date)) AS milk_end,
                CASE WHEN l.conception_date > l.calving_date
-                         AND l.conception_date < CAST(:known_until AS date)
+                         AND {known}
                     THEN l.conception_date END AS conc
         FROM {core}.lactation l
         LEFT JOIN {core}.animal a ON a.animal_key = l.animal_key
@@ -295,7 +310,7 @@ def _lac_cte(core: str) -> str:
     )"""
 
 
-def _lac_base_cte(core: str) -> str:
+def _lac_base_cte(core: str, recorded: bool = False) -> str:
     """``_lac_cte`` without the ``known_until`` cut: ``conc_raw`` is the raw conception
     date, cut per origin by the batched queries (same rule as ``conc``)."""
     return f"""
@@ -310,7 +325,7 @@ def _lac_base_cte(core: str) -> str:
                LEAST(COALESCE(l.dry_off_date, 'infinity'::date),
                      COALESCE(l.end_date, 'infinity'::date),
                      COALESCE(a.exit_date, 'infinity'::date)) AS milk_end,
-               l.conception_date AS conc_raw
+               l.conception_date AS conc_raw{", l.conception_known_date AS conc_known" if recorded else ""}
         FROM {core}.lactation l
         LEFT JOIN {core}.animal a ON a.animal_key = l.animal_key
         WHERE COALESCE(l.is_bad_date, false) = false
@@ -323,12 +338,24 @@ _ORIGINS_CTE = ("o AS (SELECT * FROM unnest(CAST(:asofs AS date[]), CAST(:kus AS
 # conception known at this origin (same rule as ``conc`` in ``_lac_cte``)
 _CONC_AT_O = ("CASE WHEN lac.conc_raw > lac.calving_date AND lac.conc_raw < o.known_until "
               "THEN lac.conc_raw END")
+# with conception_known="recorded": confirmed on or before the snapshot day
+_CONC_AT_O_RECORDED = ("CASE WHEN lac.conc_raw > lac.calving_date AND lac.conc_known <= o.asof "
+                       "THEN lac.conc_raw END")
+CONCEPTION_KNOWN = ("lag", "recorded")
 
 
 class SqlHerdSource:
     """``HerdSource`` backed by PostgreSQL ``farmx_app`` (read-only sessions)."""
 
-    def __init__(self, engine: Engine, settings: DatabaseSettings):
+    def __init__(self, engine: Engine, settings: DatabaseSettings, cell_table: str = "day_cell",
+                 conception_known: str = "lag"):
+        if cell_table not in CELL_TABLES:
+            raise ValueError(f"cell_table must be one of {CELL_TABLES}, not {cell_table!r}")
+        if conception_known not in CONCEPTION_KNOWN:
+            raise ValueError(f"conception_known must be one of {CONCEPTION_KNOWN}")
+        self.cell_table = cell_table
+        self.conception_known = conception_known
+        self._rec = conception_known == "recorded"
         for schema in (settings.core_schema, settings.model_input_schema):
             if not _IDENT.match(schema):
                 raise ValueError(f"invalid schema name: {schema!r}")
@@ -337,14 +364,14 @@ class SqlHerdSource:
         self.mi = settings.model_input_schema
 
     @classmethod
-    def from_env(cls) -> "SqlHerdSource":
+    def from_env(cls, cell_table: str = "day_cell", conception_known: str = "lag") -> "SqlHerdSource":
         settings = DatabaseSettings.from_env()
         engine = create_engine(
             settings.url,
             connect_args={"options": "-c default_transaction_read_only=on"},
             pool_pre_ping=True,
         )
-        return cls(engine, settings)
+        return cls(engine, settings, cell_table, conception_known)
 
     def _q(self, sql: str, **params) -> pd.DataFrame:
         with self.engine.connect() as conn:
@@ -355,17 +382,20 @@ class SqlHerdSource:
         return self._q(
             f"""SELECT state, parity_group, dim_band, generation_group,
                        SUM(n_animals)::float AS n, MAX(date) AS max_date
-                FROM {self.mi}.day_cell WHERE date = CAST(:asof AS date)
+                FROM {self.mi}.{self.cell_table} WHERE date = CAST(:asof AS date)
                 GROUP BY 1, 2, 3, 4""",
             asof=asof,
         )
+
+    def _origin_param(self, asof: date) -> dict:
+        return {"origin": asof + timedelta(days=1)} if self._rec else {}
 
     def milking_clock(self, asof: date, known_until: date) -> pd.DataFrame:
         # recent_ai_gest: days since the last insemination after calving, for cows with
         # no conception known yet whose last service falls within the pregnancy-check
         # lag. Insemination dates are known at once, so this carries no hindsight.
         return self._q(
-            f"""WITH {_lac_cte(self.core)},
+            f"""WITH {_lac_cte(self.core, self._rec)},
                 cur AS (
                     SELECT lac.*,
                            (SELECT MAX(i.insemination_date)
@@ -389,12 +419,12 @@ class SqlHerdSource:
                        MAX(GREATEST(calving_date, conc, recent_ai)) AS max_date
                 FROM cur
                 GROUP BY 1, 2, 3, 4, 5""",
-            asof=asof, known_until=known_until,
+            asof=asof, known_until=known_until, **self._origin_param(asof),
         )
 
     def dry_clock(self, asof: date, known_until: date) -> pd.DataFrame:
         return self._q(
-            f"""WITH {_lac_cte(self.core)}
+            f"""WITH {_lac_cte(self.core, self._rec)}
                 SELECT parity_group, generation_group,
                        CASE WHEN conc <= CAST(:asof AS date)
                             THEN (CAST(:asof AS date) - conc) END AS gest,
@@ -405,7 +435,7 @@ class SqlHerdSource:
                   AND COALESCE(cycle_end_date, 'infinity'::date) > CAST(:asof AS date)
                   AND COALESCE(exit_date, 'infinity'::date) > CAST(:asof AS date)
                 GROUP BY 1, 2, 3""",
-            asof=asof, known_until=known_until,
+            asof=asof, known_until=known_until, **self._origin_param(asof),
         )
 
     def heifer_clock(self, asof: date, known_until: date, lag_days: int) -> pd.DataFrame:
@@ -440,7 +470,7 @@ class SqlHerdSource:
             f"""SELECT date_trunc('month', date)::date AS month, state, parity_group,
                        dim_band, generation_group,
                        SUM(n_animals)::float AS animal_days, MAX(date) AS max_date
-                FROM {self.mi}.day_cell
+                FROM {self.mi}.{self.cell_table}
                 WHERE date >= CAST(:start AS date) AND date < CAST(:origin AS date)
                 GROUP BY 1, 2, 3, 4, 5""",
             start=start, origin=origin,
@@ -466,9 +496,9 @@ class SqlHerdSource:
             start=start, origin=origin,
         )
 
-    def cow_open(self, start: date, known_until: date) -> pd.DataFrame:
+    def cow_open(self, start: date, known_until: date, origin: date | None = None) -> pd.DataFrame:
         return self._q(
-            f"""WITH {_lac_cte(self.core)}, {_BANDS},
+            f"""WITH {_lac_cte(self.core, self._rec)}, {_BANDS},
                 iv AS (
                     SELECT *, GREATEST(calving_date, CAST(:start AS date)) AS s,
                            LEAST(milk_end, COALESCE(conc, 'infinity'::date),
@@ -480,6 +510,7 @@ class SqlHerdSource:
                        SUM(GREATEST(0, LEAST(iv.e, iv.calving_date + b.hi + 1)
                                        - GREATEST(iv.s, iv.calving_date + b.lo)))::float AS open_days,
                        SUM(CASE WHEN iv.conc >= CAST(:start AS date) AND iv.conc < iv.milk_end
+                                 AND iv.conc < CAST(:known_until AS date)
                                  AND (iv.conc - iv.calving_date) BETWEEN b.lo AND b.hi
                                 THEN 1 ELSE 0 END)::float AS conceptions,
                        SUM(CASE WHEN iv.dry_off_date >= CAST(:start AS date)
@@ -487,17 +518,20 @@ class SqlHerdSource:
                                  AND (iv.conc IS NULL OR iv.conc >= iv.dry_off_date)
                                  AND (iv.dry_off_date - iv.calving_date) BETWEEN b.lo AND b.hi
                                 THEN 1 ELSE 0 END)::float AS open_dry_offs,
-                       MAX(GREATEST(iv.calving_date, iv.conc,
+                       MAX(GREATEST(iv.calving_date,
+                           CASE WHEN iv.conc < CAST(:known_until AS date)
+                                THEN iv.conc END,
                            CASE WHEN iv.dry_off_date < CAST(:known_until AS date)
                                 THEN iv.dry_off_date END)) AS max_date
                 FROM iv CROSS JOIN bands b
                 GROUP BY 1, 2""",
             start=start, known_until=known_until,
+            **({"origin": origin or known_until} if self._rec else {}),
         )
 
     def preg_milking_days(self, start: date, known_until: date, origin: date) -> pd.DataFrame:
         return self._q(
-            f"""WITH {_lac_cte(self.core)}
+            f"""WITH {_lac_cte(self.core, self._rec)}
                 SELECT SUM(GREATEST(0, LEAST(milk_end, CAST(:origin AS date))
                                        - GREATEST(conc, CAST(:start AS date))))::float
                            AS preg_milking_days,
@@ -516,6 +550,7 @@ class SqlHerdSource:
                   AND l.conception_date > l.calving_date
                   AND l.conception_date < l.dry_off_date
                   AND l.conception_date < CAST(:known_until AS date)
+                  {"AND l.conception_known_date < CAST(:origin AS date)" if self._rec else ""}
                   AND COALESCE(l.is_bad_date, false) = false
                 GROUP BY 1""",
             start=start, known_until=known_until, origin=origin,
@@ -566,6 +601,71 @@ class SqlHerdSource:
             start=start, origin=origin,
         )
 
+    def daily_moves(self, start: date, end: date) -> pd.DataFrame:
+        """Dated moves between page groups in [start, end), counted (no animal keys out).
+
+        Groups follow the record dates: a calving with lactation 1 moves a heifer into
+        milking, a later one a dry cow; a dry-off moves milking -> dry; a live birth adds
+        a calf; an animal leaves from the group it was in on its exit date (milking or dry
+        by its latest calving and dry-off, otherwise calf under one year, bull if male,
+        heifer if female); a calf turns heifer (female) or bull (male) at one year.
+        ``to_group`` of an exit is the raw ``exit_type``, mapped by the caller.
+        """
+        return self._q(
+            f"""WITH lac AS (
+                    SELECT l.animal_key, l.calving_date, l.lactation_no, l.dry_off_date
+                    FROM {self.core}.lactation l
+                    WHERE COALESCE(l.is_bad_date, false) = false
+                ),
+                ev AS (
+                    SELECT calving_date AS d,
+                           CASE WHEN lactation_no = 1 THEN 'heifers' ELSE 'dry' END AS from_group,
+                           'milking' AS to_group
+                    FROM lac
+                    WHERE calving_date >= CAST(:start AS date) AND calving_date < CAST(:end AS date)
+                    UNION ALL
+                    SELECT dry_off_date, 'milking', 'dry'
+                    FROM lac
+                    WHERE dry_off_date >= CAST(:start AS date) AND dry_off_date < CAST(:end AS date)
+                    UNION ALL
+                    SELECT birth_date, 'born', 'calves'
+                    FROM {self.core}.calf
+                    WHERE birth_date >= CAST(:start AS date) AND birth_date < CAST(:end AS date)
+                      AND NOT COALESCE(born_dead, false)
+                    UNION ALL
+                    SELECT a.exit_date,
+                           CASE WHEN x.calving_date IS NOT NULL THEN
+                                     CASE WHEN x.dry_off_date IS NOT NULL AND a.exit_date >= x.dry_off_date
+                                          THEN 'dry' ELSE 'milking' END
+                                WHEN a.exit_date < a.birth_date + 365 THEN 'calves'
+                                WHEN a.sex = 'male' THEN 'other'
+                                ELSE 'heifers' END,
+                           LOWER(COALESCE(a.exit_type, 'unknown'))
+                    FROM {self.core}.animal a
+                    LEFT JOIN LATERAL (
+                        SELECT lac.calving_date, lac.dry_off_date
+                        FROM lac
+                        WHERE lac.animal_key = a.animal_key AND lac.calving_date <= a.exit_date
+                        ORDER BY lac.calving_date DESC
+                        LIMIT 1
+                    ) x ON true
+                    WHERE a.exit_date >= CAST(:start AS date) AND a.exit_date < CAST(:end AS date)
+                      AND COALESCE(a.is_placeholder, false) = false
+                    UNION ALL
+                    SELECT a.birth_date + 365, 'calves',
+                           CASE WHEN a.sex = 'male' THEN 'other' ELSE 'heifers' END
+                    FROM {self.core}.animal a
+                    WHERE a.birth_date + 365 >= CAST(:start AS date)
+                      AND a.birth_date + 365 < CAST(:end AS date)
+                      AND (a.exit_date IS NULL OR a.exit_date > a.birth_date + 365)
+                      AND COALESCE(a.is_placeholder, false) = false
+                )
+                SELECT d AS date, from_group, to_group, COUNT(*)::float AS n, MAX(d) AS max_date
+                FROM ev
+                GROUP BY 1, 2, 3""",
+            start=start, end=end,
+        )
+
     def births_by_sex(self, start: date, origin: date) -> pd.DataFrame:
         """Live-born calves in [start, origin), by sex."""
         return self._q(
@@ -602,15 +702,15 @@ class SqlHerdSource:
         cells = self._q(
             f"""SELECT date AS asof, state, parity_group, dim_band, generation_group,
                        SUM(n_animals)::float AS n, MAX(date) AS max_date
-                FROM {self.mi}.day_cell WHERE date = ANY(CAST(:asofs AS date[]))
+                FROM {self.mi}.{self.cell_table} WHERE date = ANY(CAST(:asofs AS date[]))
                 GROUP BY 1, 2, 3, 4, 5""",
             **p,
         )
         milking = self._q(
-            f"""WITH {_ORIGINS_CTE}, {_lac_base_cte(self.core)},
+            f"""WITH {_ORIGINS_CTE}, {_lac_base_cte(self.core, self._rec)},
                 cur AS (
                     SELECT o.asof, lac.parity_group, lac.generation_group, lac.calving_date,
-                           {_CONC_AT_O} AS conc,
+                           {_CONC_AT_O_RECORDED if self._rec else _CONC_AT_O} AS conc,
                            (SELECT MAX(i.insemination_date)
                             FROM {self.core}.insemination i
                             WHERE i.animal_key = lac.animal_key
@@ -633,10 +733,10 @@ class SqlHerdSource:
             **p,
         )
         dry = self._q(
-            f"""WITH {_ORIGINS_CTE}, {_lac_base_cte(self.core)},
+            f"""WITH {_ORIGINS_CTE}, {_lac_base_cte(self.core, self._rec)},
                 cur AS (
                     SELECT o.asof, lac.parity_group, lac.generation_group, lac.dry_off_date,
-                           {_CONC_AT_O} AS conc
+                           {_CONC_AT_O_RECORDED if self._rec else _CONC_AT_O} AS conc
                     FROM o JOIN lac
                       ON lac.dry_off_date <= o.asof
                      AND COALESCE(lac.cycle_end_date, 'infinity'::date) > o.asof
@@ -756,6 +856,85 @@ class SqlHerdSource:
         )
         frame["date"] = pd.to_datetime(frame["date"]).dt.date
         return frame
+
+    # explanation (Step 5) ----------------------------------------------------
+    def driver_daily(self, start: date, end: date) -> pd.DataFrame:
+        """Herd-level daily drivers for the deviation layer (weather, health, sensors)."""
+        frame = self._q(
+            f"""SELECT date, milking, weather_is_complete, thi_mean, thi_max, hours_thi_above,
+                       rain_total_mm, mastitis_episodes, udder_teat_episodes, n_sessions,
+                       n_blood_alarms, n_conductivity_alarms, identified_share,
+                       real_abortions, deaths, target_litres, is_scoreable
+                FROM {self.mi}.day_panel
+                WHERE date >= CAST(:start AS date) AND date < CAST(:end AS date)
+                ORDER BY date""",
+            start=start, end=end,
+        )
+        frame["date"] = pd.to_datetime(frame["date"]).dt.date
+        return frame
+
+    def health_months(self, start: date, end: date) -> pd.DataFrame:
+        """Herd-level mastitis and udder/teat episodes per month in [start, end)."""
+        return self._q(
+            f"""SELECT month, SUM(mastitis_episodes)::float AS mastitis_episodes,
+                       SUM(udder_teat_episodes)::float AS udder_teat_episodes,
+                       MAX(date) AS max_date
+                FROM {self.mi}.day_panel
+                WHERE date >= CAST(:start AS date) AND date < CAST(:end AS date)
+                GROUP BY month ORDER BY month""",
+            start=start, end=end,
+        )
+
+    def generation_fertility(self) -> pd.DataFrame:
+        """Descriptive fertility by generation within calving period (aggregates only)."""
+        return self._q(
+            f"""SELECT {_GENERATION} AS generation_group,
+                       CASE WHEN l.calving_date < DATE '2020-01-01' THEN '2015-2019'
+                            WHEN l.calving_date < DATE '2023-01-01' THEN '2020-2022'
+                            ELSE '2023-2026' END AS calving_period,
+                       COUNT(*) AS lactations,
+                       COUNT(l.conception_date) AS conceptions,
+                       ROUND((SUM(l.n_services) FILTER (WHERE l.conception_date IS NOT NULL))::numeric
+                             / NULLIF(COUNT(l.conception_date), 0), 2) AS services_per_conception,
+                       ROUND(100.0 * AVG(CASE WHEN l.aborted THEN 1 ELSE 0 END), 1) AS pct_aborted
+                FROM {self.core}.lactation l
+                LEFT JOIN {self.core}.animal a ON a.animal_key = l.animal_key
+                WHERE COALESCE(l.is_bad_date, false) = false
+                GROUP BY 1, 2 ORDER BY 2, 1""",
+        )
+
+    def data_coverage(self, end: date) -> pd.DataFrame:
+        """Per year before ``end``: reliable cow-days, scoreable milk days, complete weather
+        days, health records (aggregates only)."""
+        return self._q(
+            f"""WITH p AS (
+                    SELECT EXTRACT(year FROM date)::int AS year, COUNT(*)::float AS days,
+                           SUM(CASE WHEN is_scoreable THEN 1 ELSE 0 END)::float AS scoreable,
+                           SUM(CASE WHEN weather_is_complete THEN 1 ELSE 0 END)::float AS weather,
+                           SUM(COALESCE(mastitis_episodes, 0) + COALESCE(udder_teat_episodes, 0)
+                               + COALESCE(preventive_episodes, 0)
+                               + COALESCE(other_health_episodes, 0))::float AS health,
+                           MAX(date) AS max_date
+                    FROM {self.mi}.day_panel WHERE date < CAST(:end AS date) GROUP BY 1),
+                c AS (
+                    SELECT EXTRACT(year FROM milk_date)::int AS year, COUNT(*)::float AS reliable
+                    FROM {self.core}.cow_day
+                    WHERE is_reliable AND milk_date < CAST(:end AS date) GROUP BY 1)
+                SELECT p.year, COALESCE(c.reliable, 0) AS reliable_cow_days,
+                       p.scoreable / p.days AS milk_days_scoreable_pct,
+                       p.weather / p.days AS weather_complete_pct,
+                       p.health AS health_records, p.max_date
+                FROM p LEFT JOIN c USING (year) ORDER BY p.year""",
+            end=end,
+        )
+
+    def core_version(self) -> str | None:
+        """Latest published core version (publish.publish_log.version), or None."""
+        try:
+            v = self._q("SELECT MAX(version)::text AS v FROM publish.publish_log")
+            return None if v.empty or pd.isna(v["v"].iloc[0]) else str(v["v"].iloc[0])
+        except Exception:  # noqa: BLE001 - table not present on this machine
+            return None
 
     # actuals for scoring (herd-level daily panel, never fed to the model) --
     def panel_daily(self, start: date, end: date) -> pd.DataFrame:

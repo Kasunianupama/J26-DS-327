@@ -1,5 +1,5 @@
 /**
- * Component 1 (PFOI): Herd & Production → Herd flow & reproduction.
+ * Component 1 (PFOI): Herd & Production → Herd count & movement.
  *
  * Reproduction shown as what feeds future milking capacity: head by state,
  * the flows between states, and how much of the coming calvings and dry-offs
@@ -21,6 +21,7 @@ import { useRun } from '../source';
 import { Card, EmptyState, TipShell } from '../ui';
 import { HerdStrip } from '../panels/HerdFlow';
 import { MasterTimeline } from '../panels/MasterTimeline';
+import { HerdMovement } from '../panels/HerdMovement';
 
 const PIPELINE: SeriesId[] = ['calvings', 'dry_offs'];
 
@@ -42,8 +43,9 @@ export function Reproduction() {
 
   return (
     <div className="pfie-stack" style={{ gap: 20 }}>
+      <HerdMovement />
+      <MasterTimeline bands={['cows', 'herd']} player={false} />
       <HerdStrip />
-      <MasterTimeline bands={['herd']} />
 
       <Card
         title="Calvings and dry-offs ahead"

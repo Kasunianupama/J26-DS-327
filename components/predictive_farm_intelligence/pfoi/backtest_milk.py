@@ -12,9 +12,6 @@ Outputs are herd-level aggregates only.
 """
 from __future__ import annotations
 
-import multiprocessing as mp
-import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Callable
@@ -23,12 +20,13 @@ import numpy as np
 import pandas as pd
 
 from . import MODEL_VERSION
-from .backtest_herd import TEST_START, development_origins
+from .backtest_herd import TEST_START, check_block, development_origins
 from .benchmarks import ets_forecast, persistence_value, sarima_forecast
 from .config import EngineConfig
 from .data import DATA_START, SnapshotSource, add_months, load_origin_inputs, prefetch_snapshots
 from .error_tools import add_intervals, bias_corrected
 from .herd_engine import project
+from .parallel import map_origins
 from .milk_baseline import MilkConfig, MilkHistory, anchor_k, prepare_milk
 from .periods import HORIZONS, horizon_days, period_bounds
 from .rates import estimate_rates
@@ -178,24 +176,9 @@ def _score_origin(c: _Ctx, origin: date) -> tuple[list[dict], list[str]]:
     return rows, notes
 
 
-_WORKER: _Ctx | None = None
-
-
-def _init_worker(source_factory, snapshots, cfg, milk_cfg, hist, t, grains, score_until):
-    global _WORKER
-    _WORKER = _Ctx(SnapshotSource(source_factory(), snapshots), cfg, milk_cfg, hist, t,
-                   grains, score_until, {})
-
-
-def _score_block(block: list[tuple[int, date]]) -> list[tuple[int, list[dict], list[str]]]:
-    return [(i, *_score_origin(_WORKER, o)) for i, o in block]
-
-
-def _blocks(origins: list[date], n: int) -> list[list[tuple[int, date]]]:
-    """Contiguous blocks, so origins in the same month share a worker's curve cache."""
-    items = list(enumerate(origins))
-    size = max(1, -(-len(items) // n))
-    return [items[i:i + size] for i in range(0, len(items), size)]
+def _milk_ctx(source_factory, snapshots, cfg, milk_cfg, hist, t, grains, score_until) -> _Ctx:
+    return _Ctx(SnapshotSource(source_factory(), snapshots), cfg, milk_cfg, hist, t,
+                grains, score_until, {})
 
 
 def run_milk_backtest(
@@ -208,6 +191,8 @@ def run_milk_backtest(
     progress: Callable[[int, int, date], None] | None = None,
     jobs: int = 1,
     source_factory: Callable[[], object] | None = None,
+    block: str = "development",
+    prior_errors: pd.DataFrame | None = None,
 ) -> MilkBacktestResult:
     """``origin_grain`` = "monthly" (scores monthly) or "weekly" (scores weekly and daily).
 
@@ -219,8 +204,7 @@ def run_milk_backtest(
     cfg = cfg or EngineConfig()
     milk_cfg = milk_cfg or MilkConfig()
     origins = origins if origins is not None else development_origins(origin_grain)
-    if score_until > TEST_START or any(o >= TEST_START for o in origins):
-        raise ValueError("the final test block (2024-01 onward) is not scored in development")
+    check_block(origins, score_until, block)
     if jobs > 1 and source_factory is None:
         raise ValueError("jobs > 1 needs a source_factory so each process opens its own source")
     hist = MilkHistory(cowdays=source.milking_cowdays(DATA_START, score_until),
@@ -228,46 +212,41 @@ def run_milk_backtest(
     t = _target_frame(hist.target)
     grains = GRAINS_BY_ORIGIN[origin_grain]
     snapshots = prefetch_snapshots(source, origins, cfg)
-    results: dict[int, tuple[list[dict], list[str]]] = {}
-    if jobs <= 1:
-        ctx = _Ctx(SnapshotSource(source, snapshots), cfg, milk_cfg, hist, t, grains,
-                   score_until, {})
-        for i, origin in enumerate(origins):
-            if progress:
-                progress(i, len(origins), origin)
-            results[i] = _score_origin(ctx, origin)
-    else:
-        # one BLAS thread per process, so N processes do not fight over the cores
-        for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
-                    "VECLIB_MAXIMUM_THREADS"):
-            os.environ.setdefault(var, "1")
-        blocks = _blocks(origins, jobs * 4)
-        done = 0
-        with ProcessPoolExecutor(
-            max_workers=jobs, mp_context=mp.get_context("spawn"), initializer=_init_worker,
-            initargs=(source_factory, snapshots, cfg, milk_cfg, hist, t, grains, score_until),
-        ) as pool:
-            for fut in as_completed([pool.submit(_score_block, b) for b in blocks]):
-                for i, rows, notes in fut.result():
-                    results[i] = (rows, notes)
-                    if progress:
-                        progress(done, len(origins), origins[i])
-                    done += 1
+    serial = (_Ctx(SnapshotSource(source, snapshots), cfg, milk_cfg, hist, t, grains,
+                   score_until, {}) if jobs <= 1 else None)
+    results = map_origins(origins, _score_origin, _milk_ctx,
+                          (source_factory, snapshots, cfg, milk_cfg, hist, t, grains, score_until),
+                          jobs=jobs, progress=progress, serial_ctx=serial)
     rows, note_counts = [], {}
-    for i in sorted(results):
-        r, notes = results[i]
+    for r, notes in results:
         rows += r
         for key in notes:
             note_counts[key] = note_counts.get(key, 0) + 1
     errors = pd.DataFrame(rows)
     if len(errors):
         errors["error"] = errors["forecast"] - errors["actual"]
-        corr = bias_corrected(errors, base_model=BASELINE, new_model=CORRECTED)
-        errors = add_intervals(pd.concat([errors, corr], ignore_index=True))
+        errors = _correct_and_interval(errors, prior_errors)
         errors["model_version"] = MODEL_VERSION
         errors["milk_config"] = milk_cfg.tag()
     notes = pd.DataFrame(sorted(note_counts.items()), columns=["note", "n_origins"])
     return MilkBacktestResult(errors=errors, notes=notes)
+
+
+def _correct_and_interval(errors: pd.DataFrame, prior: pd.DataFrame | None) -> pd.DataFrame:
+    """Bias correction and intervals; ``prior`` (development errors) may supply the
+    past errors that a test-block origin is allowed to know."""
+    cols = [c for c in errors.columns]
+    if prior is not None and len(prior):
+        p = prior[prior["model"].isin(errors["model"].unique()) & (prior["model"] != CORRECTED)]
+        p = p[[c for c in cols if c in p.columns]].copy()
+        for col in ("origin", "period_start", "period_end"):
+            p[col] = pd.to_datetime(p[col]).dt.date
+        work = pd.concat([p.assign(_prior=True), errors.assign(_prior=False)], ignore_index=True)
+    else:
+        work = errors.assign(_prior=False)
+    corr = bias_corrected(work, base_model=BASELINE, new_model=CORRECTED)
+    out = add_intervals(pd.concat([work, corr], ignore_index=True))
+    return out[~out["_prior"].astype(bool)].drop(columns="_prior").reset_index(drop=True)
 
 
 def summarise_milk(errors: pd.DataFrame, by_source: bool = False) -> pd.DataFrame:

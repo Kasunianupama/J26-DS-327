@@ -32,3 +32,28 @@ export function RunStatus() {
     </>
   );
 }
+
+/** Metadata belongs to the displayed run, including while another date loads. */
+export function ForecastInfo() {
+  const run = useRun();
+  const generated = new Date(run.generated_at);
+  const generatedLabel = Number.isNaN(generated.getTime()) ? 'Not supplied' : generated.toLocaleString('en-GB', {
+    timeZone: 'Asia/Colombo', dateStyle: 'medium', timeStyle: 'short',
+  }) + ' (Sri Lanka time)';
+  return (
+    <section className="pfie-forecast-info" aria-label="Displayed forecast information">
+      <b>{run.source === 'demo' ? 'Synthetic demo' : run.model_version === 'pfoi-1.0.0' ? 'Published baseline' : 'Published model output'}</b>
+      <dl>
+        <div><dt>Model</dt><dd>{run.model_version}</dd></div>
+        <div><dt>Forecast as of</dt><dd>{longDate(run.origin_date)}</dd></div>
+        <div><dt>Data through</dt><dd>{longDate(run.data_through)}</dd></div>
+        <div><dt>Generated</dt><dd>{generatedLabel}</dd></div>
+        <div><dt>Published</dt><dd>Not supplied</dd></div>
+      </dl>
+      <p>
+        {run.source === 'demo' ? 'This synthetic preview is not evidence of forecast accuracy.' : <>This outlook uses {run.model_version}.</>}
+        {' '}The candidate evaluation covers 2019–2023 and does not establish the accuracy of this outlook.
+      </p>
+    </section>
+  );
+}

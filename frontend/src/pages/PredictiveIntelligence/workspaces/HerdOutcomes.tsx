@@ -31,7 +31,7 @@ import {
 } from '../../../data/pfoi';
 import { usePfoi } from '../state';
 import { useRun } from '../source';
-import { Card, EmptyState, KindTag, Note, TipShell } from '../ui';
+import { Card, MonthlyOnly, EmptyState, KindTag, Note, TipShell } from '../ui';
 import { MasterTimeline } from '../panels/MasterTimeline';
 
 export function HerdOutcomes() {
@@ -98,7 +98,7 @@ export function HerdOutcomes() {
       </Card>
 
       <Card
-        title="Mastitis: expected vs recorded"
+        title={<>Mastitis: expected vs recorded <MonthlyOnly /></>}
         sub={<>Expected episodes = cows at risk × rate from {run.mastitis_rate_period} <KindTag kind="derived" /> · recorded = diagnoses in the records <KindTag kind="measured" /></>}
       >
         <ResponsiveContainer width="100%" height={230}>

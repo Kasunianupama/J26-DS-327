@@ -29,6 +29,21 @@ class EngineConfig:
     # (typical pregnancy-diagnosis delay). Conceptions newer than this at the
     # origin are not known and are projected by the conception hazard instead.
     pregnancy_check_lag_days: int = 35
+    # Months of the transition table used for heifer and dry-cow conceptions and
+    # pregnancy losses (and for conceptions per AI). "origin" (pfoi-1.0.0): every complete
+    # month before the origin, although conceptions in the last month or two could not yet
+    # be confirmed (leakage audit L2). "known": only months that ended before
+    # origin - pregnancy_check_lag_days.
+    conception_cut: str = "origin"
+    # Herd cells the starting herd and exposures come from. "day_cell" (pfoi-1.0.0):
+    # pregnancy states use later calvings (leakage audit L3). "day_cell_known": an animal
+    # is pregnant only once its conception was confirmed (ETL item E1).
+    cell_table: str = "day_cell"
+    # When a cow's conception counts as known. "lag" (pfoi-1.0.0): its date is more than
+    # pregnancy_check_lag_days before the origin. "recorded": its conception_known_date
+    # (positive pregnancy check, ETL item E1) is before the origin; checks take a median
+    # 41-85 days, so pair it with pregnancy_check_lag_days ~90 for the rate window.
+    conception_known: str = "lag"
     # Pseudo-exposure used for shrinkage when the method-of-moments estimate fails.
     default_prior_days: float = 3650.0
     # Where external entries go when the transition table does not say.

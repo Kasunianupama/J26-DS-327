@@ -81,6 +81,21 @@ _BAND_MASK_PREG = np.eye(N_BAND)[BAND_OF_DIM[_DIM_OF_PREG_FLAT]]  # (N_CB*N_GEST
 _BAND_MASK_OPEN = np.eye(N_BAND)[BAND_OF_DIM]  # (N_DIM, N_BAND)
 
 
+# Milking-cow mix for attribution: 10-day DIM bins x pregnancy band
+# (band index 0 = open, 1 = < 150 days pregnant, 2 = 150-199, 3 = 200+).
+PREG_BAND_VALUES = (-1, 0, 150, 200)
+N_DIM_BIN = N_DIM // 10
+_PREG_DIMBIN = np.minimum(_DIM_OF_PREG_FLAT // 10, N_DIM_BIN - 1)
+_PREG_BAND = 1 + np.digitize(np.tile(np.arange(N_GEST), N_CB), [150, 200])
+_PREG_MIX_INDEX = _PREG_DIMBIN * 4 + _PREG_BAND
+
+
+def _flow(ev: dict, state: str, name: str, value: float) -> None:
+    """Record a signed flow into or out of ``state`` (keys ``flow|state|name``)."""
+    key = f"flow|{state}|{name}"
+    ev[key] = ev.get(key, 0.0) + float(value)
+
+
 @dataclass
 class OriginState:
     """Herd at the end of the day before the origin, as expected counts."""
@@ -207,6 +222,7 @@ class Projection:
     daily: pd.DataFrame  # one row per projected day: stocks and events
     cells: pd.DataFrame | None  # optional daily day_cell-style rows
     final_state: OriginState
+    milk_mix: np.ndarray | None = None  # optional (days, N_PAR, N_DIM_BIN, 4) milking mix
 
 
 def _shift(arr: np.ndarray) -> np.ndarray:
@@ -257,6 +273,7 @@ def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
                 s.calf[i] *= 1.0 - stotal
                 for k, h in sparts.items():
                     ev[k] += ns * h
+                    _flow(ev, "calf", k, -ns * h)
             continue
         parts, total = _exit_fraction(r.exit[state])
         if total <= 0:
@@ -280,6 +297,7 @@ def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
                 arr *= 1.0 - total
         for k, h in parts.items():
             ev[k] += n * h
+            _flow(ev, state, k, -n * h)
     ev["exits"] = ev["deaths"] + ev["culls"] + ev["sales"]
 
     # 3. real abortion
@@ -289,10 +307,14 @@ def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
         s.heifer_preg -= flow
         s.heifer_open += flow.sum(-1)
         ev["real_abortions"] += float(flow.sum())
+        _flow(ev, "heifer_pregnant", "abortion", -flow.sum())
+        _flow(ev, "heifer_open", "abortion", flow.sum())
         flow = s.dry_preg * a
         s.dry_preg -= flow
         s.dry_open += flow.sum(-1)
         ev["real_abortions"] += float(flow.sum())
+        _flow(ev, "dry_pregnant", "abortion", -flow.sum())
+        _flow(ev, "dry_open", "abortion", flow.sum())
         flow = s.milk_preg * a
         s.milk_preg -= flow
         s.milk_open += _preg_to_open_dim(flow)
@@ -302,11 +324,15 @@ def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
         s.heifer_preg -= flow
         s.heifer_open += flow.sum(-1)
         ev["pregnancy_losses"] += float(flow.sum())
+        _flow(ev, "heifer_pregnant", "pregnancy_loss", -flow.sum())
+        _flow(ev, "heifer_open", "pregnancy_loss", flow.sum())
     if r.dry_loss > 0:
         flow = s.dry_preg * min(r.dry_loss, 1.0)
         s.dry_preg -= flow
         s.dry_open += flow.sum(-1)
         ev["pregnancy_losses"] += float(flow.sum())
+        _flow(ev, "dry_pregnant", "pregnancy_loss", -flow.sum())
+        _flow(ev, "dry_open", "pregnancy_loss", flow.sum())
 
     # 4. calving
     h = r.calve_by_gest
@@ -316,12 +342,16 @@ def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
     c = flow.sum(-1)
     calved_by_gen += c
     ev["calvings_heifer"] = float(c.sum())
+    _flow(ev, "heifer_pregnant", "calving", -c.sum())
+    _flow(ev, "milking", "calving", c.sum())
     fresh = np.zeros((N_PAR, N_GEN))
     fresh[FIRST_PARITY] += c
     flow = s.dry_preg * h
     s.dry_preg -= flow
     c = flow.sum(-1)  # (P, G)
     calved_by_gen += c.sum(0)
+    _flow(ev, "dry_pregnant", "calving", -c.sum())
+    _flow(ev, "milking", "calving", c.sum())
     for p in range(N_PAR):
         fresh[NEXT_PARITY[p]] += c[p]
     flow = s.milk_preg * h
@@ -340,6 +370,7 @@ def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
         s.calf[0, CHILD_GENERATION[g]] += kept[g] * fs
         s.calf[1, CHILD_GENERATION[g]] += kept[g] * (1.0 - fs)
     ev["births"] = float(born.sum())
+    _flow(ev, "calf", "births", kept.sum())
     ev["deaths"] += float(early.sum())
     ev["exits"] += float(early.sum())
 
@@ -348,10 +379,14 @@ def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
     s.milk_open -= flow
     s.dry_open += flow.sum(-1)
     ev["dry_offs"] += float(flow.sum())
+    _flow(ev, "milking", "dry_off", -flow.sum())
+    _flow(ev, "dry_open", "dry_off", flow.sum())
     flow = s.milk_preg * r.dry_preg_by_gest
     s.milk_preg -= flow
     s.dry_preg += flow.sum(2)
     ev["dry_offs"] += float(flow.sum())
+    _flow(ev, "milking", "dry_off", -flow.sum())
+    _flow(ev, "dry_pregnant", "dry_off", flow.sum())
 
     # 6. inseminations (events only), conception, calf -> heifer
     open_animals = s.heifer_open.sum() + s.milk_open.sum() + s.dry_open.sum()
@@ -360,6 +395,8 @@ def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
     s.heifer_open -= flow
     s.heifer_preg[:, 0] += flow
     ev["conceptions"] += float(flow.sum())
+    _flow(ev, "heifer_open", "conception", -flow.sum())
+    _flow(ev, "heifer_pregnant", "conception", flow.sum())
     flow = s.milk_open * r.conc_cow[:, BAND_OF_DIM][:, None, :]
     s.milk_open -= flow
     s.milk_preg[:, :, :, 0] += flow.reshape(N_PAR, N_GEN, N_CB, CB_WIDTH).sum(-1)
@@ -368,12 +405,18 @@ def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
     s.dry_open -= flow
     s.dry_preg[:, :, 0] += flow
     ev["conceptions"] += float(flow.sum())
+    _flow(ev, "dry_open", "conception", -flow.sum())
+    _flow(ev, "dry_pregnant", "conception", flow.sum())
     flow = s.calf[0] * r.calf_to_heifer
     s.calf[0] -= flow
     s.heifer_open += flow
+    _flow(ev, "calf", "to_heifer", -flow.sum())
+    _flow(ev, "heifer_open", "to_heifer", flow.sum())
     flow = s.calf[1] * r.calf_to_bull
     s.calf[1] -= flow
     s.bull += float(flow.sum())
+    _flow(ev, "calf", "to_bull", -flow.sum())
+    _flow(ev, "bull", "to_bull", flow.sum())
 
     # 7. external entries (generation 0 = purchased; cow parity unknown)
     e = r.entry_per_day
@@ -383,6 +426,7 @@ def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
         gest = min(max(r.entry_gestation, 0), N_GEST - 2)
         for state, share in r.entry_shares.items():
             n = e * share
+            _flow(ev, state if state in STATES else "unknown", "entries", n)
             if state == "calf":
                 s.calf[0, 0] += n
             elif state == "heifer_open":
@@ -427,7 +471,7 @@ class MilkCurveArrays:
 
 def project(
     start: OriginState, rates: RateSet, horizon_days: int, record_cells: bool = False,
-    milk_curve: MilkCurveArrays | None = None,
+    milk_curve: MilkCurveArrays | None = None, record_milk_mix: bool = False,
 ) -> Projection:
     """Project ``horizon_days`` days from ``start.origin`` (day 1 = the origin date).
 
@@ -439,6 +483,7 @@ def project(
     s = start.copy()
     rows: list[dict] = []
     cell_frames: list[pd.DataFrame] = []
+    mixes: list[np.ndarray] = []
     for t in range(horizon_days):
         day = start.origin + timedelta(days=t)
         events = step_day(s, rates)
@@ -451,6 +496,8 @@ def project(
         row["calves_male"] = float(s.calf[1].sum())
         if milk_curve is not None:
             row["curve_litres"] = milk_curve.litres(s)
+        if record_milk_mix:
+            mixes.append(milking_mix(s))
         row.update(events)
         rows.append(row)
         if record_cells:
@@ -459,4 +506,17 @@ def project(
             cell_frames.append(cells)
     daily = pd.DataFrame(rows)
     cells = pd.concat(cell_frames, ignore_index=True) if record_cells else None
-    return Projection(origin=start.origin, daily=daily, cells=cells, final_state=s)
+    mix = np.stack(mixes) if record_milk_mix else None
+    return Projection(origin=start.origin, daily=daily.fillna(0.0), cells=cells, final_state=s,
+                      milk_mix=mix)
+
+
+def milking_mix(s: OriginState) -> np.ndarray:
+    """Milking cows by parity x 10-day DIM bin x pregnancy band, shape (N_PAR, N_DIM_BIN, 4)."""
+    out = np.zeros((N_PAR, N_DIM_BIN, 4))
+    out[:, :, 0] = s.milk_open.sum(1).reshape(N_PAR, N_DIM_BIN, 10).sum(-1)
+    preg = s.milk_preg.sum(1).reshape(N_PAR, -1)
+    for p in range(N_PAR):
+        out[p] += np.bincount(_PREG_MIX_INDEX, weights=preg[p],
+                              minlength=N_DIM_BIN * 4).reshape(N_DIM_BIN, 4)
+    return out

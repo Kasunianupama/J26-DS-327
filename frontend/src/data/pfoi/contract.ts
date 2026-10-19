@@ -16,6 +16,7 @@ export type SeriesId =
   | 'dry'
   | 'heifers'
   | 'calves'
+  | 'other'
   | 'total_herd'
   | 'calvings'
   | 'dry_offs'
@@ -45,7 +46,8 @@ export interface OutlookRow {
   core_version: string;
 }
 
-export type MilkFactor = 'herd_size' | 'stage_mix' | 'parity_mix' | 'thi' | 'mastitis' | 'residual';
+export type MilkFactor =
+  | 'herd_size' | 'stage_mix' | 'parity_mix' | 'pregnancy_mix' | 'yield_level' | 'thi' | 'mastitis' | 'residual';
 export type FlowFactor = 'determined' | 'rate_driven';
 export type Factor = MilkFactor | FlowFactor;
 
@@ -126,6 +128,30 @@ export interface CoverageRow {
   health_records: number;
 }
 
+/** Herd groups an animal can move between, plus where animals come from and go to. */
+export type MoveGroup =
+  | 'born' | 'arrived' | 'calves' | 'heifers' | 'milking' | 'dry' | 'other' | 'died' | 'culled_sold'
+  /** the group is not recorded (arrivals and pregnancies lost on recorded days and weeks) */
+  | 'herd'
+  /** a pregnancy lost (abortion); the animal stays in its group */
+  | 'lost_pregnancy';
+
+/**
+ * Animals that moved from one group to another during a period. Recorded months come
+ * from the state-transition table; recorded days and weeks from dated calving, dry-off,
+ * birth and exit records; forecasts (week and month) from the herd engine. Heifers →
+ * milking are first calvings; dry → milking are cows calving again. Not in older runs,
+ * so optional.
+ */
+export interface MoveRow {
+  period: string;
+  grain: Grain;
+  from: MoveGroup;
+  to: MoveGroup;
+  value: number;
+  forecast: boolean;
+}
+
 /** Everything one model run publishes for the page. */
 export interface PfoiRun {
   source: RunSource;
@@ -138,6 +164,14 @@ export interface PfoiRun {
   outlook: OutlookRow[];
   attribution: AttributionRow[];
   actuals: ActualRow[];
+  /**
+   * What was recorded in the forecast periods (same shape as `actuals`), for runs at
+   * past forecast dates. Display and scoring only: the model never saw these values.
+   * Missing on older documents and empty for the live outlook.
+   */
+  realised?: ActualRow[];
+  /** Last data day whose outcomes `realised` holds, or null. */
+  realised_through?: string | null;
   /** Forecasts from earlier monthly origins (monthly milk), for the replay. */
   replay: OutlookRow[];
   /** Why the forecast for a target moved between consecutive origins. */
@@ -149,6 +183,8 @@ export interface PfoiRun {
   coverage: CoverageRow[];
   /** Period the mastitis rate was taken from, shown next to every expected-episode value. */
   mastitis_rate_period: string;
+  /** Moves between herd groups per period (see MoveRow). */
+  moves?: MoveRow[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -161,6 +197,18 @@ export const HORIZONS: Record<Grain, number[]> = {
   month: [1, 3, 6, 12],
 };
 
+/** Every step the model publishes (the quick buttons above are the backtested ones). */
+export const MAX_HORIZON: Record<Grain, number> = { day: 14, week: 13, month: 12 };
+
+/** History shown before the origin, in periods; -1 = all recorded history. */
+export const HISTORY_ALL = -1;
+export const HISTORY_OPTIONS: Record<Grain, number[]> = {
+  day: [30, 60, 90, 180, 365],
+  week: [13, 26, 52, 104, 156],
+  month: [12, 24, 36, 60, 120, HISTORY_ALL],
+};
+export const HISTORY_DEFAULT: Record<Grain, number> = { day: 60, week: 52, month: 36 };
+
 export const GRAIN_LABEL: Record<Grain, { one: string; many: string; short: string }> = {
   day: { one: 'day', many: 'days', short: 'd' },
   week: { one: 'week', many: 'weeks', short: 'w' },
@@ -170,21 +218,22 @@ export const GRAIN_LABEL: Record<Grain, { one: string; many: string; short: stri
 /** Series that are forecast at each grain. Daily horizons cover milk only. */
 export const FORECAST_SERIES: Record<Grain, SeriesId[]> = {
   day: ['milk_litres'],
-  week: ['milk_litres', 'milking', 'dry', 'heifers', 'calves', 'total_herd', 'calvings', 'dry_offs',
+  week: ['milk_litres', 'milking', 'dry', 'heifers', 'calves', 'other', 'total_herd', 'calvings', 'dry_offs',
     'abortions', 'deaths', 'culls_sales', 'entries', 'mastitis_episodes'],
-  month: ['milk_litres', 'milking', 'dry', 'heifers', 'calves', 'total_herd', 'calvings', 'dry_offs',
+  month: ['milk_litres', 'milking', 'dry', 'heifers', 'calves', 'other', 'total_herd', 'calvings', 'dry_offs',
     'abortions', 'deaths', 'culls_sales', 'entries', 'mastitis_episodes'],
 };
 
-export const STOCK_SERIES: SeriesId[] = ['milking', 'dry', 'heifers', 'calves', 'total_herd'];
+export const STOCK_SERIES: SeriesId[] = ['milking', 'dry', 'heifers', 'calves', 'other', 'total_herd'];
 export const EVENT_SERIES: SeriesId[] = ['calvings', 'dry_offs', 'abortions', 'deaths', 'culls_sales', 'entries'];
 
 export const SERIES_META: Record<SeriesId, { label: string; unit: string; color: string }> = {
   milk_litres: { label: 'Milk', unit: 'L/day', color: '#9a4f27' },
-  milking: { label: 'Milking cows', unit: 'head', color: '#9a4f27' },
+  milking: { label: 'Milking cows', unit: 'head', color: '#2f7f86' },
   dry: { label: 'Dry cows', unit: 'head', color: '#c99a77' },
   heifers: { label: 'Heifers', unit: 'head', color: '#5b7fa6' },
   calves: { label: 'Calves', unit: 'head', color: '#93aec9' },
+  other: { label: 'Bulls & other', unit: 'head', color: '#8a8f87' },
   total_herd: { label: 'Total herd', unit: 'head', color: '#34483f' },
   calvings: { label: 'Calvings', unit: 'events', color: '#3f8c62' },
   dry_offs: { label: 'Dry-offs', unit: 'events', color: '#c99a77' },
@@ -199,6 +248,8 @@ export const FACTOR_META: Record<Factor, { label: string; kind: 'measured' | 'de
   herd_size: { label: 'Herd size', kind: 'derived', blurb: 'More or fewer cows in milk, from the herd engine.' },
   stage_mix: { label: 'Lactation-stage mix', kind: 'derived', blurb: 'Share of cows early, mid or late in lactation, read off the lactation curve.' },
   parity_mix: { label: 'Parity mix', kind: 'derived', blurb: 'Share of first, second and later lactations, each with its own curve.' },
+  pregnancy_mix: { label: 'Pregnancy mix', kind: 'derived', blurb: 'Share of cows 150+ or 200+ days pregnant, who yield less (fitted factor).' },
+  yield_level: { label: 'Yield level', kind: 'measured', blurb: 'Per-cow level known at the start of the month (recorded milk ÷ curve milk); constant within a forecast.' },
   thi: { label: 'Heat (THI)', kind: 'assumed', blurb: 'Forecasts use the THI climatology of the training years; the past uses measured THI.' },
   mastitis: { label: 'Mastitis', kind: 'derived', blurb: 'Expected episodes = cows at risk × rate from the stated rate period.' },
   residual: { label: 'Unexplained', kind: 'measured', blurb: 'Actual minus model. Only past periods have one; a forecast is fully explained by construction.' },
@@ -206,7 +257,7 @@ export const FACTOR_META: Record<Factor, { label: string; kind: 'measured' | 'de
   rate_driven: { label: 'Rate-driven', kind: 'derived', blurb: 'Expected from trailing-window rates; the uncertain part.' },
 };
 
-export const MILK_FACTORS: MilkFactor[] = ['herd_size', 'stage_mix', 'parity_mix', 'thi', 'mastitis', 'residual'];
+export const MILK_FACTORS: MilkFactor[] = ['herd_size', 'stage_mix', 'parity_mix', 'pregnancy_mix', 'yield_level', 'thi', 'mastitis', 'residual'];
 
 export type Confidence = 'High' | 'Moderate' | 'Limited';
 
@@ -233,3 +284,13 @@ export const SEVERITY_META: Record<'attention' | 'routine', { label: string; col
   attention: { label: 'Worth attention', color: '#8a6414', mark: '◆' },
   routine: { label: 'For information', color: '#4a6a5c', mark: '●' },
 };
+
+/** One forecast date with a published run (`GET /predictive/pfoi/runs`). */
+export interface RunOrigin {
+  origin_date: string;
+  model_version: string;
+  realised_through: string | null;
+}
+
+/** First forecast date of the final test block (frozen model, run once). */
+export const TEST_BLOCK_START = '2024-01-01';

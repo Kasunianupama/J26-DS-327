@@ -30,6 +30,9 @@ interface Ctx {
   setGrain: (g: Grain) => void;
   horizon: number;
   setHorizon: (h: number) => void;
+  /** Show recorded history from this date (null = all recorded history). Kept across grains. */
+  historyFrom: string | null;
+  setHistoryFrom: (d: string | null) => void;
   workspace: Workspace;
   herdTab: HerdTab;
   go: (w: Workspace, tab?: HerdTab) => void;
@@ -57,6 +60,7 @@ const PfoiContext = createContext<Ctx | undefined>(undefined);
 export function PfoiProvider({ children }: { children: ReactNode }) {
   const [grain, setGrainState] = useState<Grain>('month');
   const [horizon, setHorizon] = useState<number>(6);
+  const [historyFrom, setHistoryFrom] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<Workspace>('outlook');
   const [herdTab, setHerdTab] = useState<HerdTab>('milk');
   const [selectedPeriod, setSelectedPeriod] = useState<string | null>(null);
@@ -106,6 +110,7 @@ export function PfoiProvider({ children }: { children: ReactNode }) {
     () => ({
       grain, setGrain,
       horizon, setHorizon,
+      historyFrom, setHistoryFrom,
       workspace, herdTab, go,
       selectedPeriod, setSelectedPeriod,
       breakdownMonth, setBreakdownMonth,
@@ -114,7 +119,7 @@ export function PfoiProvider({ children }: { children: ReactNode }) {
       acknowledge: (id) => setAcknowledged((s) => new Set(s).add(id)),
       restoreFindings: () => setAcknowledged(new Set()),
     }),
-    [grain, setGrain, horizon, workspace, herdTab, go, selectedPeriod, breakdownMonth,
+    [grain, setGrain, horizon, historyFrom, workspace, herdTab, go, selectedPeriod, breakdownMonth,
      drawer, detailDepth, openDrawer, popDrawer, closeDrawer, acknowledged],
   );
 

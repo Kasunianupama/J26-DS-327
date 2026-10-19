@@ -8,6 +8,8 @@
 import {
   EVENT_SERIES,
   FACTOR_META,
+  HISTORY_ALL,
+  HISTORY_DEFAULT,
   MILK_FACTORS,
   QUALITY_TO_CONFIDENCE,
   STOCK_SERIES,
@@ -28,7 +30,7 @@ import { addPeriods, fmt1, fmtInt, periodDays, periodLabel, periodStart } from '
 /* ------------------------------------------------------------------ */
 
 const key = (grain: Grain, period: string, series: SeriesId) => `${grain}|${period}|${series}`;
-const indexCache = new WeakMap<PfoiRun, { outlook: Map<string, OutlookRow>; actual: Map<string, ActualRow> }>();
+const indexCache = new WeakMap<PfoiRun, { outlook: Map<string, OutlookRow>; actual: Map<string, ActualRow>; realised: Map<string, ActualRow> }>();
 
 function indexFor(run: PfoiRun) {
   let idx = indexCache.get(run);
@@ -36,6 +38,7 @@ function indexFor(run: PfoiRun) {
     idx = {
       outlook: new Map(run.outlook.filter((r) => r.origin_date === run.origin_date).map((r) => [key(r.grain, r.target_period, r.series), r])),
       actual: new Map(run.actuals.map((r) => [key(r.grain, r.period, r.series), r])),
+      realised: new Map((run.realised ?? []).map((r) => [key(r.grain, r.period, r.series), r])),
     };
     indexCache.set(run, idx);
   }
@@ -47,6 +50,13 @@ export const forecastRow = (run: PfoiRun, grain: Grain, period: string, series: 
 
 export const actualRow = (run: PfoiRun, grain: Grain, period: string, series: SeriesId) =>
   indexFor(run).actual.get(key(grain, period, series));
+
+/** Recorded outcome of a forecast period (runs at past forecast dates only). */
+export const realisedRow = (run: PfoiRun, grain: Grain, period: string, series: SeriesId) =>
+  indexFor(run).realised.get(key(grain, period, series));
+
+/** True when the run holds recorded outcomes for its forecast periods. */
+export const hasRealised = (run: PfoiRun) => (run.realised?.length ?? 0) > 0;
 
 /** First period the forecast covers at this grain. */
 export function firstTarget(run: PfoiRun, grain: Grain) {
@@ -77,14 +87,28 @@ export interface TimelinePoint {
   milkSource: 'shipment' | 'delpro' | null;
   /** True where the milk record is missing or flagged, so the chart can shade it. */
   milkGap: boolean;
-  /** Per-series values: `x` actual, `x_f` forecast, `x_band` [lower, upper]. */
+  /** Per-series values: `x` actual, `x_f` forecast, `x_band` [lower, upper], `x_r` outcome after the forecast date. */
   [series: string]: unknown;
 }
 
-const HISTORY: Record<Grain, number> = { day: 60, week: 52, month: 36 };
+/** Earliest period with a recorded actual at this grain (or the first forecast period). */
+export function earliestActual(run: PfoiRun, grain: Grain) {
+  const ps = run.actuals.filter((a) => a.grain === grain).map((a) => a.period).sort();
+  return ps[0] ?? firstTarget(run, grain);
+}
 
-export function timeline(run: PfoiRun, grain: Grain, horizon: number, history = HISTORY[grain]): TimelinePoint[] {
+/** Number of periods from the period containing `from` up to the first forecast period. */
+export function periodsUntilOrigin(run: PfoiRun, grain: Grain, from: string) {
   const first = firstTarget(run, grain);
+  let p = periodStart(from, grain);
+  let n = 0;
+  while (p < first && n < 5000) { p = addPeriods(p, grain, 1); n++; }
+  return n;
+}
+
+export function timeline(run: PfoiRun, grain: Grain, horizon: number, history = HISTORY_DEFAULT[grain]): TimelinePoint[] {
+  const first = firstTarget(run, grain);
+  if (history === HISTORY_ALL) history = periodsUntilOrigin(run, grain, earliestActual(run, grain));
   const points: TimelinePoint[] = [];
   for (let i = -history; i < horizon; i++) {
     const period = addPeriods(first, grain, i);
@@ -112,6 +136,14 @@ export function timeline(run: PfoiRun, grain: Grain, horizon: number, history = 
         p[`${s}_band`] = [round2(perDay(s, f.lower, grain, period)), round2(perDay(s, f.upper, grain, period))];
         if (s === 'milk_litres' || p.quality === null) p.quality = f.quality_flag;
       }
+      if (future) {
+        const r = realisedRow(run, grain, period, s);
+        if (r && r.value !== null && r.scoreable) p[`${s}_r`] = round2(perDay(s, r.value, grain, period));
+        if (s === 'milk_litres' && r) {
+          p.milkSource = r.source;
+          p.milkGap = r.value === null || !r.scoreable;
+        }
+      }
     });
     /* Join the two lines: the last actual also carries the forecast value. */
     if (i === -1) {
@@ -132,6 +164,58 @@ export function sourceSwitch(points: TimelinePoint[]) {
     if (points[i - 1].milkSource && points[i].milkSource && points[i - 1].milkSource !== points[i].milkSource) return points[i].period;
   }
   return null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Forecast vs recorded outcome (runs at past forecast dates)          */
+/* ------------------------------------------------------------------ */
+
+export interface OutcomeScore {
+  series: SeriesId;
+  /** Forecast periods up to the horizon. */
+  periods: number;
+  /** Of those, periods with a scoreable recorded outcome. */
+  scored: number;
+  /** Mean absolute error, per day for milk, per period otherwise. */
+  mae: number | null;
+  /** Mean absolute error as a share of the mean outcome (robust to small counts). */
+  maeShare: number | null;
+  /** Mean of outcome − forecast: positive = the forecast was too low. */
+  bias: number | null;
+  inside: number;
+}
+
+/** How the forecasts for horizons 1..h compare with what was then recorded. */
+export function outcomeScore(run: PfoiRun, grain: Grain, horizon: number, series: SeriesId): OutcomeScore | null {
+  let periods = 0;
+  const errs: number[] = [];
+  const outs: number[] = [];
+  let inside = 0;
+  for (let h = 1; h <= horizon; h++) {
+    const period = targetPeriod(run, grain, h);
+    const f = forecastRow(run, grain, period, series);
+    if (!f) continue;
+    periods++;
+    const r = realisedRow(run, grain, period, series);
+    if (!r || r.value === null || !r.scoreable) continue;
+    const a = perDay(series, r.value, grain, period);
+    errs.push(a - perDay(series, f.forecast, grain, period));
+    outs.push(a);
+    if (r.value >= f.lower && r.value <= f.upper) inside++;
+  }
+  if (!periods) return null;
+  const n = errs.length;
+  const mae = n ? errs.reduce((s, e) => s + Math.abs(e), 0) / n : null;
+  const meanOut = n ? outs.reduce((s, x) => s + x, 0) / n : 0;
+  return {
+    series,
+    periods,
+    scored: n,
+    mae,
+    maeShare: mae !== null && meanOut > 0 ? mae / meanOut : null,
+    bias: n ? errs.reduce((s, e) => s + e, 0) / n : null,
+    inside,
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -216,7 +300,9 @@ export function milkBreakdown(run: PfoiRun, period: string): MilkBreakdown | nul
   const endValue = isPast ? (endRow as ActualRow | undefined)?.value : (endRow as OutlookRow | undefined)?.forecast;
   if (endValue === null || endValue === undefined) return null;
   const end = perDay('milk_litres', endValue, 'month', period);
-  const parts = MILK_FACTORS.map((factor) => ({ factor, value: rows.find((r) => r.factor === factor)?.contribution ?? 0 }));
+  // only the factors this run reports (the model run has no THI or mastitis factor yet)
+  const parts = MILK_FACTORS.filter((factor) => rows.some((r) => r.factor === factor))
+    .map((factor) => ({ factor, value: rows.find((r) => r.factor === factor)?.contribution ?? 0 }));
   const total = parts.reduce((s, p) => s + p.value, 0);
   return { period, isPast, start: end - total, end, parts };
 }

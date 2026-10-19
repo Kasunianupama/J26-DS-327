@@ -151,3 +151,16 @@ def test_backtest_monthly_scores_heifer_calvings_and_corrected_model():
     assert "calvings_heifer" in set(e["series"])
     assert "herd_engine_corrected" in set(e["model"])
     assert e["period_end"].notna().all()
+
+
+def test_herd_backtest_batched_and_parallel_match_serial():
+    from .test_milk import BatchFakeSource
+
+    origins = [date(2021, 7, 1), date(2021, 8, 1), date(2021, 9, 1)]
+    base = run_backtest(FakeHerdSource(), "monthly", origins=origins).errors
+    batched = run_backtest(BatchFakeSource(), "monthly", origins=origins).errors
+    par = run_backtest(BatchFakeSource(), "monthly", origins=origins,
+                       jobs=2, source_factory=BatchFakeSource).errors
+    assert len(base) > 0
+    pd.testing.assert_frame_equal(base, batched)
+    pd.testing.assert_frame_equal(base, par)

@@ -7,10 +7,14 @@
  * model writes `c1_output` that run is synthetic demo data and is labelled so.
  */
 
-import { GRAIN_LABEL, HORIZONS, SEVERITY_META, findings, type Grain } from '../../data/pfoi';
+import { useState } from 'react';
+import {
+  GRAIN_LABEL, HORIZONS, MAX_HORIZON, SEVERITY_META,
+  earliestActual, findings, firstTarget, periodLabel, type Grain,
+} from '../../data/pfoi';
 import { PfoiProvider, usePfoi, type HerdTab, type Workspace } from './state';
 import { RunProvider, useRun } from './source';
-import { RunStatus } from './RunStatus';
+import { ForecastInfo, RunStatus } from './RunStatus';
 import { FindingsDrawer, PointDrawer } from './panels/Drawers';
 import { FutureWorkspace } from './workspaces/Future';
 import { MilkSupply } from './workspaces/MilkSupply';
@@ -18,9 +22,11 @@ import { Reproduction } from './workspaces/Reproduction';
 import { HerdOutcomes } from './workspaces/HerdOutcomes';
 import { HerdGenetics } from './workspaces/HerdGenetics';
 import { Evidence } from './workspaces/Evidence';
+import { ModelEvaluation } from './workspaces/ModelEvaluation';
 import { Tabs } from './ui';
 import { Icon, type IconName } from './icons';
 import { MetricDeck } from './deck';
+import { OutcomeBar } from './panels/OutcomeBar';
 import './pfie.css';
 
 const WORKSPACES: { id: Workspace; label: string; icon: IconName }[] = [
@@ -31,7 +37,7 @@ const WORKSPACES: { id: Workspace; label: string; icon: IconName }[] = [
 
 const HERD_TABS: { id: HerdTab; label: string }[] = [
   { id: 'milk', label: 'Milk supply' },
-  { id: 'flow', label: 'Herd flow & reproduction' },
+  { id: 'flow', label: 'Herd count & movement' },
   { id: 'events', label: 'Herd events' },
   { id: 'generations', label: 'Generations' },
 ];
@@ -53,7 +59,8 @@ export default function PredictiveIntelligencePage() {
 }
 
 function Shell() {
-  const { grain, setGrain, horizon, setHorizon, workspace, herdTab, go, drawer, openDrawer, acknowledged } = usePfoi();
+  const [evaluation, setEvaluation] = useState(false);
+  const { grain, setGrain, horizon, setHorizon, historyFrom, setHistoryFrom, workspace, herdTab, go, drawer, openDrawer, acknowledged } = usePfoi();
   const run = useRun();
   const openFindings = findings(run).filter((f) => !acknowledged.has(f.id)).length;
   const detailOpen = drawer.kind !== 'none';
@@ -84,14 +91,17 @@ function Shell() {
         <nav className="pfie-nav" aria-label="Workspaces">
           <div className="pfie-nav-tabs">
             {WORKSPACES.map((w) => (
-              <button key={w.id} aria-current={workspace === w.id ? 'page' : undefined} onClick={() => go(w.id)}>
+              <button key={w.id} aria-current={!evaluation && workspace === w.id ? 'page' : undefined} onClick={() => { setEvaluation(false); go(w.id); }}>
                 <Icon name={w.icon} size={15} />
                 {w.label}
               </button>
             ))}
+            <button aria-current={evaluation ? 'page' : undefined} onClick={() => setEvaluation(true)}>
+              <Icon name="confidence" size={15} />Model evaluation
+            </button>
           </div>
 
-          <span className="pfie-row tight pfie-horizon">
+          {!evaluation && <span className="pfie-row tight pfie-horizon">
             <span className="pfie-seg compact" role="group" aria-label="Forecast grain">
               {GRAINS.map((g) => (
                 <button key={g.id} aria-pressed={grain === g.id} onClick={() => setGrain(g.id)}>{g.label}</button>
@@ -110,11 +120,19 @@ function Shell() {
                 </button>
               ))}
             </span>
-          </span>
+            <RangePickers
+              grain={grain}
+              horizon={horizon}
+              setHorizon={setHorizon}
+              historyFrom={historyFrom}
+              setHistoryFrom={setHistoryFrom}
+            />
+          </span>}
         </nav>
       </header>
 
       <div className="pfie-body">
+        <ForecastInfo />
         {detailOpen ? (
           <DetailPage />
         ) : (
@@ -126,6 +144,8 @@ function Shell() {
               </div>
             )}
 
+            {evaluation ? <ModelEvaluation /> : <>
+            <OutcomeBar />
             <MetricDeck />
             <SignalBand />
 
@@ -142,6 +162,7 @@ function Shell() {
               )}
               {workspace === 'confidence' && <Evidence />}
             </div>
+            </>}
           </>
         )}
 
@@ -214,5 +235,44 @@ function SignalBand() {
         })}
       </ul>
     </section>
+  );
+}
+
+
+/** Any published horizon, and recorded history from a chosen date (all history by default). */
+function RangePickers({ grain, horizon, setHorizon, historyFrom, setHistoryFrom }: {
+  grain: Grain; horizon: number; setHorizon: (h: number) => void;
+  historyFrom: string | null; setHistoryFrom: (d: string | null) => void;
+}) {
+  const run = useRun();
+  const unit = GRAIN_LABEL[grain];
+  const earliest = earliestActual(run, grain);
+  const first = firstTarget(run, grain);
+  return (
+    <span className="pfie-row tight pfie-pickers">
+      <label className="pfie-pick" title="Any step the model publishes; the buttons are the backtested ones">
+        Ahead
+        <select value={horizon} onChange={(e) => setHorizon(Number(e.target.value))}>
+          {Array.from({ length: MAX_HORIZON[grain] }, (_, i) => i + 1).map((h) => (
+            <option key={h} value={h}>{h} {h === 1 ? unit.one : unit.many}</option>
+          ))}
+        </select>
+      </label>
+      <label className="pfie-pick" title={`Show recorded history from this date (records start ${periodLabel(earliest, grain)})`}>
+        From
+        <input
+          type="date"
+          value={historyFrom ?? earliest}
+          min={earliest}
+          max={first}
+          onChange={(e) => setHistoryFrom(e.target.value && e.target.value > earliest ? e.target.value : null)}
+        />
+      </label>
+      {historyFrom && (
+        <button className="pfie-btn pfie-pick-reset" onClick={() => setHistoryFrom(null)} title="Show all recorded history">
+          All history
+        </button>
+      )}
+    </span>
   );
 }

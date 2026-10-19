@@ -19,7 +19,10 @@ import pandas as pd
 
 from . import MODEL_VERSION
 from .config import EngineConfig
-from .data import DATA_START, HerdSource, load_origin_inputs, month_start
+from .data import (
+    DATA_START, HerdSource, SnapshotSource, load_origin_inputs, month_start, prefetch_snapshots,
+)
+from .parallel import map_origins
 from .herd_engine import project
 from .periods import HORIZONS, aggregate, check_origin, horizon_days, period_bounds
 from .benchmarks import ets_forecast, sarima_forecast
@@ -70,6 +73,20 @@ def ts_benchmarks(past: pd.DataFrame, origin: date, horizons: tuple[int, ...]) -
     return pd.DataFrame(rows, columns=["horizon", "period_start", "series", "value", "model"])
 
 
+def check_block(origins: list[date], score_until: date, block: str) -> None:
+    """Development scores nothing from 2024-01; the test block scores only from 2024-01."""
+    from .freeze import DATA_END
+
+    if block == "development":
+        if score_until > TEST_START or any(o >= TEST_START for o in origins):
+            raise ValueError("the final test block (2024-01 onward) is not scored in development")
+    elif block == "test":
+        if any(o < TEST_START for o in origins) or score_until > DATA_END:
+            raise ValueError("test-block origins start at 2024-01 and targets end at the data end")
+    else:
+        raise ValueError(f"unknown block {block!r}")
+
+
 def development_origins(grain: str, every: int = 1) -> list[date]:
     if grain == "monthly":
         out, d = [], DEV_FIRST_ORIGIN
@@ -114,6 +131,61 @@ class BacktestResult:
     notes: pd.DataFrame  # note, n_origins
 
 
+@dataclass
+class _HerdCtx:
+    """Everything one origin needs; built once per process."""
+    source: object
+    grain: str
+    cfg: EngineConfig
+    actuals: pd.DataFrame
+    heifer_calvings: pd.Series | None
+    score_until: date
+
+    def __post_init__(self):
+        self.act_dates = pd.to_datetime(self.actuals["date"]).dt.date
+
+
+def _herd_ctx(source_factory, snapshots, grain, cfg, actuals, heifer_calvings,
+              score_until) -> _HerdCtx:
+    return _HerdCtx(SnapshotSource(source_factory(), snapshots), grain, cfg, actuals,
+                    heifer_calvings, score_until)
+
+
+def _score_herd_origin(c: _HerdCtx, origin: date) -> tuple[list[pd.DataFrame], list[str]]:
+    """Merged forecast/actual frames and note keys for one origin."""
+    grain, horizons = c.grain, HORIZONS[c.grain]
+    check_origin(origin, grain)
+    H = horizon_days(origin, grain, max(horizons))
+    inputs = load_origin_inputs(c.source, origin, c.cfg)
+    rates = estimate_rates(inputs.rate_inputs, c.cfg)
+    notes = [note.split(":")[0] for note in (*inputs.notes, *rates.notes)]
+    proj = project(inputs.state, rates, H)
+    fc = aggregate(proj.daily, origin, grain, horizons, STOCK_SERIES,
+                   EVENT_SERIES + ((HEIFER_CALVINGS,) if c.heifer_calvings is not None else ()))
+    future = c.actuals.loc[(c.act_dates >= origin) & (c.act_dates < c.score_until)]
+    act = aggregate(future, origin, grain, horizons, STOCK_SERIES, EVENT_SERIES)
+    if not len(act):
+        return [], notes
+    act = act.rename(columns={"value": "actual"})
+    past = c.actuals.loc[c.act_dates < origin]
+    pers = persistence(past, origin, grain, horizons)
+    if c.heifer_calvings is not None:
+        act, pers = _add_heifer_calvings(act, pers, c.heifer_calvings, origin)
+    preds = [("herd_engine", fc[["horizon", "period_start", "series", "value"]]),
+             ("persistence", pers)]
+    if grain == "monthly":
+        ts = ts_benchmarks(past, origin, horizons)
+        preds += [(m, g.drop(columns="model")) for m, g in ts.groupby("model")]
+    frames = []
+    for model, pred in preds:
+        m = act.merge(pred.rename(columns={"value": "forecast"}),
+                      on=["horizon", "period_start", "series"])
+        m["origin"] = origin
+        m["model"] = model
+        frames.append(m)
+    return frames, notes
+
+
 def run_backtest(
     source: HerdSource,
     grain: str,
@@ -121,14 +193,23 @@ def run_backtest(
     origins: list[date] | None = None,
     score_until: date = TEST_START,
     progress: Callable[[int, int, date], None] | None = None,
+    block: str = "development",
+    prior_errors: pd.DataFrame | None = None,
+    jobs: int = 1,
+    source_factory: Callable[[], HerdSource] | None = None,
 ) -> BacktestResult:
+    """The as-of snapshots for all origins are prefetched in a few batched queries.
+    ``jobs`` > 1 scores origins in that many processes; each opens its own source with
+    ``source_factory`` (picklable, e.g. ``SqlHerdSource.from_env``). Results are the
+    same as ``jobs=1`` and in the same order."""
     cfg = cfg or EngineConfig()
-    horizons = HORIZONS[grain]
     origins = origins if origins is not None else development_origins(grain)
-    if score_until > TEST_START or any(o >= TEST_START for o in origins):
-        raise ValueError("the final test block (2024-01 onward) is not scored in development")
+    check_block(origins, score_until, block)
+    for origin in origins:
+        check_origin(origin, grain)
+    if jobs > 1 and source_factory is None:
+        raise ValueError("jobs > 1 needs a source_factory so each process opens its own source")
     actuals = source.panel_daily(DATA_START, score_until)
-    act_dates = pd.to_datetime(actuals["date"]).dt.date
     heifer_calvings = None
     if grain == "monthly":
         tr = source.transitions(DATA_START, month_start(score_until))
@@ -136,52 +217,43 @@ def run_backtest(
         heifer_calvings = tr.groupby("month")["n_moved"].sum()
         heifer_calvings.index = [pd.Timestamp(m).date() for m in heifer_calvings.index]
 
+    snapshots = prefetch_snapshots(source, origins, cfg)
+    serial = (_HerdCtx(SnapshotSource(source, snapshots), grain, cfg, actuals, heifer_calvings,
+                       score_until) if jobs <= 1 else None)
+    results = map_origins(origins, _score_herd_origin, _herd_ctx,
+                          (source_factory, snapshots, grain, cfg, actuals, heifer_calvings,
+                           score_until),
+                          jobs=jobs, progress=progress, serial_ctx=serial)
     frames, note_counts = [], {}
-    for i, origin in enumerate(origins):
-        check_origin(origin, grain)
-        if progress:
-            progress(i, len(origins), origin)
-        H = horizon_days(origin, grain, max(horizons))
-        inputs = load_origin_inputs(source, origin, cfg)
-        rates = estimate_rates(inputs.rate_inputs, cfg)
-        for note in (*inputs.notes, *rates.notes):
-            key = note.split(":")[0]
+    for f, notes in results:
+        frames += f
+        for key in notes:
             note_counts[key] = note_counts.get(key, 0) + 1
-        proj = project(inputs.state, rates, H)
-        fc = aggregate(proj.daily, origin, grain, horizons, STOCK_SERIES,
-                       EVENT_SERIES + ((HEIFER_CALVINGS,) if heifer_calvings is not None else ()))
-        future = actuals.loc[(act_dates >= origin) & (act_dates < score_until)]
-        act = aggregate(future, origin, grain, horizons, STOCK_SERIES, EVENT_SERIES)
-        if not len(act):
-            continue
-        act = act.rename(columns={"value": "actual"})
-        past = actuals.loc[act_dates < origin]
-        pers = persistence(past, origin, grain, horizons)
-        if heifer_calvings is not None:
-            act, pers = _add_heifer_calvings(act, pers, heifer_calvings, origin)
-        preds = [("herd_engine", fc[["horizon", "period_start", "series", "value"]]),
-                 ("persistence", pers)]
-        if grain == "monthly":
-            ts = ts_benchmarks(past, origin, horizons)
-            preds += [(m, g.drop(columns="model")) for m, g in ts.groupby("model")]
-        for model, pred in preds:
-            m = act.merge(pred.rename(columns={"value": "forecast"}),
-                          on=["horizon", "period_start", "series"])
-            m["origin"] = origin
-            m["model"] = model
-            frames.append(m)
 
     errors = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
         columns=["horizon", "period_start", "period_end", "series", "actual", "forecast",
                  "origin", "model"])
     errors["grain"] = grain
     errors["error"] = errors["forecast"] - errors["actual"]
-    errors = pd.concat([errors, bias_corrected(errors)], ignore_index=True)
+    errors = pd.concat([errors, _corrected_with_prior(errors, prior_errors)], ignore_index=True)
     errors["model_version"] = MODEL_VERSION
     errors = errors[["origin", "grain", "horizon", "period_start", "period_end", "series",
                      "model", "forecast", "actual", "error", "model_version"]]
     notes = pd.DataFrame(sorted(note_counts.items()), columns=["note", "n_origins"])
     return BacktestResult(errors=errors, notes=notes)
+
+
+def _corrected_with_prior(errors: pd.DataFrame, prior: pd.DataFrame | None) -> pd.DataFrame:
+    """Bias correction that may also learn from earlier (development) errors."""
+    if prior is None or not len(prior):
+        return bias_corrected(errors)
+    p = prior[prior["model"] == "herd_engine"].copy()
+    p["_prior"] = True
+    both = pd.concat([p, errors.assign(_prior=False)], ignore_index=True)
+    for col in ("origin", "period_start", "period_end"):
+        both[col] = pd.to_datetime(both[col]).dt.date
+    out = bias_corrected(both)
+    return out[~out["_prior"].astype(bool)].drop(columns="_prior")
 
 
 def _add_heifer_calvings(act: pd.DataFrame, pers: pd.DataFrame, monthly: pd.Series,

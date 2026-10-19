@@ -31,7 +31,7 @@ import {
 } from '../../../data/pfoi';
 import { usePfoi } from '../state';
 import { useRun } from '../source';
-import { Card, ConfidenceBadge, Note, Segmented, TipShell } from '../ui';
+import { Card, MonthlyOnly, ConfidenceBadge, Note, Segmented, TipShell } from '../ui';
 import { ForecastReplay } from '../panels/ForecastReplay';
 
 const MODELS: BenchmarkModel[] = ['pfoi', 'persistence', 'seasonal_naive', 'sarima'];
@@ -56,6 +56,11 @@ export function Evidence() {
 
   return (
     <div className="pfie-stack" style={{ gap: 20 }}>
+      <Note tone="info" title={`Evidence for ${run.model_version}`}>
+        These metrics belong to the displayed {run.source === 'demo' ? 'synthetic demo' : 'published'} run.
+        Candidate configuration results for 2019–2023 are discussed separately in Model evaluation.
+        A test-period label alone does not establish that a configuration was frozen before those outcomes were inspected.
+      </Note>
       {run.source === 'demo' && (
         <Note tone="concern" title="These are demo numbers, not results.">
           The tables and charts below show how the backtest will be reported. Every value is synthetic and says
@@ -66,14 +71,14 @@ export function Evidence() {
 
       <Card
         title="Backtest against the benchmarks"
-        sub={`Rolling origin, no leakage · ${GRAIN_LABEL[grain].one}ly grain · error in ${unit}`}
+        sub={`${run.model_version} · rolling origin · ${GRAIN_LABEL[grain].one}ly grain · error in ${unit}`}
         actions={
           <>
             <Segmented
               label="Block"
               value={block}
               onChange={setBlock}
-              options={[{ id: 'development', label: 'Development' }, { id: 'test', label: 'Final test' }]}
+              options={[{ id: 'development', label: 'Development' }, { id: 'test', label: 'Test period' }]}
             />
             <select value={series} onChange={(e) => setSeriesPick(e.target.value as SeriesId)}>
               {seriesOptions.map((s) => <option key={s} value={s}>{SERIES_META[s].label}</option>)}
@@ -145,7 +150,7 @@ export function Evidence() {
       </Card>
 
       <div className="pfie-grid c2">
-        <Card title="Accuracy by record quality" sub="Monthly milk, PFOI: the range should widen when the records are thinner">
+        <Card title={<>Accuracy by record quality <MonthlyOnly /></>} sub="Monthly milk, PFOI: the range should widen when the records are thinner">
           <div className="pfie-tablewrap">
             <table className="pfie-table">
               <thead><tr><th>Quality band</th><th className="num">MAE</th><th className="num">Coverage</th><th className="num">Periods</th></tr></thead>

@@ -7,16 +7,18 @@
  */
 
 import { FACTOR_META, fmtInt, fmtSigned, periodLabel, type MilkBreakdown } from '../../../data/pfoi';
-import { KindTag } from '../ui';
+import { PLAIN_FACTOR } from './ContributionChart';
 
 export function Waterfall({ breakdown }: { breakdown: MilkBreakdown }) {
   const { start, end, parts, isPast, period } = breakdown;
   const steps: { label: string; from: number; to: number; kind: 'anchor' | 'increase' | 'decrease' | 'total'; factor?: MilkBreakdown['parts'][number]['factor'] }[] = [];
-  steps.push({ label: isPast ? 'Previous month (actual)' : 'Previous month (model)', from: start, to: start, kind: 'anchor' });
+  steps.push({ label: isPast ? 'Month before (recorded)' : 'Month before', from: start, to: start, kind: 'anchor' });
   let at = start;
   parts.forEach((p) => {
     if (!isPast && p.factor === 'residual') return;
-    steps.push({ label: FACTOR_META[p.factor].label, from: at, to: at + p.value, kind: p.value < 0 ? 'decrease' : 'increase', factor: p.factor });
+    if (Math.abs(p.value) < 0.05) return;
+    const plain = PLAIN_FACTOR[p.factor];
+    steps.push({ label: plain ? (p.value < 0 ? plain.down : plain.up) : FACTOR_META[p.factor].label, from: at, to: at + p.value, kind: p.value < 0 ? 'decrease' : 'increase', factor: p.factor });
     at += p.value;
   });
   steps.push({ label: `${periodLabel(period, 'month')} (${isPast ? 'actual' : 'forecast'})`, from: end, to: end, kind: 'total' });
@@ -36,10 +38,8 @@ export function Waterfall({ breakdown }: { breakdown: MilkBreakdown }) {
           const left = anchor ? 0 : pct(Math.min(s.from, s.to));
           const width = anchor ? pct(s.to) : Math.max(0.6, pct(Math.max(s.from, s.to)) - pct(Math.min(s.from, s.to)));
           return (
-            <div className={`step ${s.kind}`} key={s.label} title={s.factor ? FACTOR_META[s.factor].blurb : undefined}>
-              <span className="nm">
-                {s.label} {s.factor && <KindTag kind={FACTOR_META[s.factor].kind} />}
-              </span>
+            <div className={`step ${s.kind}`} key={s.label} title={s.factor ? PLAIN_FACTOR[s.factor]?.why ?? FACTOR_META[s.factor].blurb : undefined}>
+              <span className="nm">{s.label}</span>
               <span className="track"><i className={`fill ${s.kind}`} style={{ left: `${left}%`, width: `${width}%` }} /></span>
               <span className="v">{anchor ? `${fmtInt(s.to)} L/day` : `${fmtSigned(s.to - s.from, 1)}`}</span>
             </div>

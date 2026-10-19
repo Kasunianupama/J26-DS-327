@@ -24,6 +24,8 @@ import {
   type GenerationRow,
   type Grain,
   type MilkFactor,
+  type MoveGroup,
+  type MoveRow,
   type OutlookRow,
   type PfoiRun,
   type QualityBandRow,
@@ -57,6 +59,9 @@ const MASTITIS_RATE = 0.0012;
 
 type Driver = [herd: number, stage: number, parity: number, thi: number, mastitis: number];
 const DRIVER_FACTORS: MilkFactor[] = ['herd_size', 'stage_mix', 'parity_mix', 'thi', 'mastitis'];
+/** Demo bulls and unknown-state animals: counted in the total herd, shown as their own band. */
+const DEMO_OTHER = 3;
+
 const milkOf = (x: number[]) => x[0] * BASE_YIELD * x[1] * x[2] * x[3] * x[4];
 
 type EventId = 'calvings' | 'dry_offs' | 'abortions' | 'deaths' | 'culls_sales' | 'entries';
@@ -173,9 +178,9 @@ const avgDriver = (ds: Day[]): Driver => [0, 1, 2, 3, 4].map((i) => mean(ds.map(
 /* Outlook rows                                                        */
 /* ------------------------------------------------------------------ */
 
-const firstTarget = (grain: Grain) => {
-  const p = periodStart(ORIGIN, grain);
-  return p < ORIGIN ? addPeriods(p, grain, 1) : p;
+const firstTarget = (grain: Grain, origin: string = ORIGIN) => {
+  const p = periodStart(origin, grain);
+  return p < origin ? addPeriods(p, grain, 1) : p;
 };
 const MAX_H: Record<Grain, number> = { day: 14, week: 13, month: 12 };
 
@@ -198,7 +203,8 @@ function seriesValue(series: SeriesId, ds: Day[], grain: Grain, start: string) {
     case 'dry': return mean(ds.map((d) => d.dry));
     case 'heifers': return mean(ds.map((d) => d.heifers));
     case 'calves': return mean(ds.map((d) => d.calves));
-    case 'total_herd': return x[0] + mean(ds.map((d) => d.dry + d.heifers + d.calves)) + 3;
+    case 'other': return DEMO_OTHER;
+    case 'total_herd': return x[0] + mean(ds.map((d) => d.dry + d.heifers + d.calves)) + DEMO_OTHER;
     case 'mastitis_episodes': return sum(ds.map((d) => d.mastitisExpected));
     default: return sum(ds.map((d) => d.lambda[series as EventId]));
   }
@@ -207,7 +213,7 @@ function seriesValue(series: SeriesId, ds: Day[], grain: Grain, start: string) {
 function outlookRow(origin: string, grain: Grain, h: number, target: string, series: SeriesId, f: number, widthScale = 1): OutlookRow {
   let lower: number;
   let upper: number;
-  if (series === 'milk_litres' || ['milking', 'dry', 'heifers', 'calves', 'total_herd'].includes(series)) {
+  if (series === 'milk_litres' || ['milking', 'dry', 'heifers', 'calves', 'other', 'total_herd'].includes(series)) {
     const w = widthFor(grain, h, series === 'milk_litres' ? 'milk' : 'stock') * widthScale;
     lower = f * (1 - 1.645 * w);
     upper = f * (1 + 1.645 * w);
@@ -231,15 +237,38 @@ function outlookRow(origin: string, grain: Grain, h: number, target: string, ser
   };
 }
 
-function buildOutlook(): OutlookRow[] {
+/* At an earlier (demo) forecast date the forecast misses the simulated truth by a
+   deterministic error that grows with the horizon, so the outcome overlay has
+   something to show. At the live origin there is no truth yet and no error. */
+const FORECAST_ERROR: Partial<Record<SeriesId, number>> = {
+  milk_litres: 0.035, milking: 0.02, dry: 0.05, heifers: 0.03, calves: 0.04, total_herd: 0.015,
+};
+
+/** A standard-normal draw fixed by its key (independent of call order). */
+function keyedZ(key: string) {
+  let hsh = 2166136261;
+  for (let i = 0; i < key.length; i++) hsh = Math.imul(hsh ^ key.charCodeAt(i), 16777619);
+  const rand = mulberry32(hsh >>> 0);
+  return Math.sqrt(-2 * Math.log(rand() + 1e-12)) * Math.cos(2 * Math.PI * rand());
+}
+
+function forecastError(origin: string, target: string, series: SeriesId, h: number, grain: Grain) {
+  if (origin === ORIGIN) return 1;
+  const steps = grain === 'month' ? h : grain === 'week' ? h / 4.35 : h / 30.4;
+  const sigma = FORECAST_ERROR[series] ?? 0.12;
+  return Math.max(0.2, 1 + sigma * Math.sqrt(steps) * (0.6 * keyedZ(`${origin}|${series}`) + 0.8 * keyedZ(`${origin}|${target}|${series}`)));
+}
+
+function buildOutlook(origin: string = ORIGIN): OutlookRow[] {
   const rows: OutlookRow[] = [];
   (['day', 'week', 'month'] as Grain[]).forEach((grain) => {
-    const first = firstTarget(grain);
+    const first = firstTarget(grain, origin);
     for (let h = 1; h <= MAX_H[grain]; h++) {
       const start = addPeriods(first, grain, h - 1);
       const ds = daysIn(start, addPeriods(start, grain, 1));
       FORECAST_SERIES[grain].forEach((series) => {
-        rows.push(outlookRow(ORIGIN, grain, h, start, series, seriesValue(series, ds, grain, start)));
+        const f = seriesValue(series, ds, grain, start) * forecastError(origin, start, series, h, grain);
+        rows.push(outlookRow(origin, grain, h, start, series, f));
       });
     }
   });
@@ -250,9 +279,10 @@ function buildOutlook(): OutlookRow[] {
 /* Actuals                                                             */
 /* ------------------------------------------------------------------ */
 
+/* Full recorded history at every grain; weeks start on the Monday on or after SIM_START. */
 const HISTORY_FROM: Record<Grain, string> = {
-  day: addDays(ORIGIN, -180),
-  week: '2023-01-02',
+  day: SIM_START,
+  week: '2019-01-07',
   month: SIM_START,
 };
 
@@ -279,7 +309,8 @@ function buildActuals(): ActualRow[] {
       push('dry', mean(ds.map((d) => d.dry)));
       push('heifers', mean(ds.map((d) => d.heifers)));
       push('calves', mean(ds.map((d) => d.calves)));
-      push('total_herd', mean(ds.map((d) => d.driver[0] + d.dry + d.heifers + d.calves + 3)));
+      push('other', DEMO_OTHER);
+      push('total_herd', mean(ds.map((d) => d.driver[0] + d.dry + d.heifers + d.calves + DEMO_OTHER)));
       EVENTS.forEach((e) => push(e, sum(ds.map((d) => d.events[e]))));
       push('mastitis_episodes', sum(ds.map((d) => d.mastitisRecorded)));
     }
@@ -302,22 +333,23 @@ const attr = (origin: string, target: string, grain: Grain, series: SeriesId, fa
   core_version: CORE_VERSION,
 });
 
-function buildAttribution(): AttributionRow[] {
+function buildAttribution(origin: string = ORIGIN): AttributionRow[] {
   const rows: AttributionRow[] = [];
+  const ORIGIN_ = origin;
 
   /* Milk, monthly: change from the previous month in L/day, split by Shapley.
      Past months keep a residual (actual − model); forecasts have none. */
-  const lastMonth = addPeriods(firstTarget('month'), 'month', MAX_H.month - 1);
-  for (let m = '2024-09-01'; m <= lastMonth; m = addPeriods(m, 'month', 1)) {
+  const lastMonth = addPeriods(firstTarget('month', origin), 'month', MAX_H.month - 1);
+  for (let m = addPeriods(firstTarget('month', origin), 'month', -24); m <= lastMonth; m = addPeriods(m, 'month', 1)) {
     const prev = addPeriods(m, 'month', -1);
     const cur = daysIn(m, addPeriods(m, 'month', 1));
     const before = daysIn(prev, m);
     const xNow = avgDriver(cur);
     const xPrev = avgDriver(before);
     const parts = shapley(milkOf, xPrev, xNow);
-    parts.forEach((p, i) => rows.push(attr(ORIGIN, m, 'month', 'milk_litres', DRIVER_FACTORS[i], p)));
+    parts.forEach((p, i) => rows.push(attr(ORIGIN_, m, 'month', 'milk_litres', DRIVER_FACTORS[i], p)));
 
-    const isPast = m < firstTarget('month');
+    const isPast = m < firstTarget('month', origin);
     let residual = 0;
     if (isPast) {
       const actual = (ds: Day[]) => {
@@ -326,12 +358,12 @@ function buildAttribution(): AttributionRow[] {
       };
       residual = (actual(cur) - milkOf(xNow)) - (actual(before) - milkOf(xPrev));
     }
-    rows.push(attr(ORIGIN, m, 'month', 'milk_litres', 'residual', residual));
+    rows.push(attr(ORIGIN_, m, 'month', 'milk_litres', 'residual', residual));
   }
 
   /* Herd flows: how much of each forecast count is already fixed at the origin. */
   (['week', 'month'] as Grain[]).forEach((grain) => {
-    const first = firstTarget(grain);
+    const first = firstTarget(grain, origin);
     for (let h = 1; h <= MAX_H[grain]; h++) {
       const start = addPeriods(first, grain, h - 1);
       const ds = daysIn(start, addPeriods(start, grain, 1));
@@ -341,8 +373,8 @@ function buildAttribution(): AttributionRow[] {
         const share = e === 'calvings' || e === 'entries'
           ? Math.max(0, 1 - monthsAhead / 9.3)
           : e === 'dry_offs' ? Math.max(0, 0.85 - monthsAhead / 10) : 0;
-        rows.push(attr(ORIGIN, start, grain, e, 'determined', f * share));
-        rows.push(attr(ORIGIN, start, grain, e, 'rate_driven', f * (1 - share)));
+        rows.push(attr(ORIGIN_, start, grain, e, 'determined', f * share));
+        rows.push(attr(ORIGIN_, start, grain, e, 'rate_driven', f * (1 - share)));
       });
     }
   });
@@ -477,6 +509,62 @@ const COVERAGE: CoverageRow[] = [
 let cached: PfoiRun | null = null;
 
 /** The demo run. Built once, on first use. */
+/* Moves between groups: recorded by day, week and month, forecast by week and month,
+   as the model publishes them. Demo splits: 30% of calvings are first calvings; exits and arrivals
+   are shared out by group with fixed demo weights. */
+const FIRST_CALVING_SHARE = 0.3;
+const DEATH_WEIGHT: [MoveGroup, number][] = [['calves', 0.45], ['heifers', 0.15], ['milking', 0.25], ['dry', 0.15]];
+const CULL_WEIGHT: [MoveGroup, number][] = [['calves', 0.1], ['heifers', 0.1], ['milking', 0.55], ['dry', 0.25]];
+const ENTRY_WEIGHT: [MoveGroup, number][] = [['heifers', 0.6], ['milking', 0.4]];
+const LOST_WEIGHT: [MoveGroup, number][] = [['heifers', 0.35], ['milking', 0.4], ['dry', 0.25]];
+
+/* On recorded days and weeks the group of an arrival or a lost pregnancy is not dated,
+   so those are herd totals there, as in the model run. */
+function movesFor(ds: Day[], forecast: boolean, herdLevel = false): [MoveGroup, MoveGroup, number][] {
+  const ev = (e: EventId) => sum(ds.map((d) => (forecast ? d.lambda[e] : d.events[e])));
+  const calvings = ev('calvings');
+  const calfDays = sum(ds.map((d) => d.calves));
+  const out: [MoveGroup, MoveGroup, number][] = [
+    ['born', 'calves', calvings * 0.92],
+    ['calves', 'heifers', calfDays * 0.46 / 365],
+    ['calves', 'other', calfDays * 0.02 / 365],
+    ['heifers', 'milking', calvings * FIRST_CALVING_SHARE],
+    ['dry', 'milking', calvings * (1 - FIRST_CALVING_SHARE)],
+    ['milking', 'dry', ev('dry_offs')],
+  ];
+  DEATH_WEIGHT.forEach(([g, w]) => out.push([g, 'died', ev('deaths') * w]));
+  CULL_WEIGHT.forEach(([g, w]) => out.push([g, 'culled_sold', ev('culls_sales') * w]));
+  if (herdLevel) {
+    out.push(['arrived', 'herd', ev('entries')], ['herd', 'lost_pregnancy', ev('abortions')]);
+  } else {
+    ENTRY_WEIGHT.forEach(([g, w]) => out.push(['arrived', g, ev('entries') * w]));
+    LOST_WEIGHT.forEach(([g, w]) => out.push([g, 'lost_pregnancy', ev('abortions') * w]));
+  }
+  return out;
+}
+
+function buildMoves(origin: string = ORIGIN): MoveRow[] {
+  const rows: MoveRow[] = [];
+  const push = (period: string, grain: Grain, ds: Day[], forecast: boolean) =>
+    movesFor(ds, forecast, !forecast && grain !== 'month').forEach(([from, to, v]) => {
+      if (v > 1e-6) rows.push({ period, grain, from, to, value: round(v, 3), forecast });
+    });
+  (['day', 'week', 'month'] as Grain[]).forEach((grain) => {
+    const end = firstTarget(grain, origin);
+    for (let p = HISTORY_FROM[grain]; addPeriods(p, grain, 1) <= end; p = addPeriods(p, grain, 1)) {
+      push(p, grain, daysIn(p, addPeriods(p, grain, 1)), false);
+    }
+  });
+  (['week', 'month'] as Grain[]).forEach((grain) => {
+    const first = firstTarget(grain, origin);
+    for (let h = 1; h <= MAX_H[grain]; h++) {
+      const start = addPeriods(first, grain, h - 1);
+      push(start, grain, daysIn(start, addPeriods(start, grain, 1)), true);
+    }
+  });
+  return rows;
+}
+
 export function demoRun(): PfoiRun {
   if (cached) return cached;
   const { replay, revisions } = buildReplay();
@@ -498,6 +586,45 @@ export function demoRun(): PfoiRun {
     fertility: FERTILITY,
     coverage: COVERAGE,
     mastitis_rate_period: '2017–2019 (demo)',
+    moves: buildMoves(),
   };
   return cached;
+}
+
+/* ------------------------------------------------------------------ */
+/* Demo runs at earlier forecast dates (with their outcomes)           */
+/* ------------------------------------------------------------------ */
+
+/** Demo forecast dates: test-block start, before a gap, recent, and the live origin. */
+export const DEMO_ORIGINS = ['2024-01-01', '2024-07-01', '2026-07-01', ORIGIN];
+
+const atCache = new Map<string, PfoiRun>();
+
+/**
+ * The demo run as it would look at an earlier forecast date: history only before
+ * the date, the synthetic forecast from it, and the synthetic outcomes after it
+ * (`realised`). Fictional throughout, like `demoRun`.
+ */
+export function demoRunAt(origin: string): PfoiRun {
+  const base = demoRun();
+  if (origin === ORIGIN) return { ...base, realised: [], realised_through: DATA_THROUGH };
+  const hit = atCache.get(origin);
+  if (hit) return hit;
+  const outlook = buildOutlook(origin);
+  const targets = new Set(outlook.map((r) => `${r.grain}|${r.series}|${r.target_period}`));
+  const complete = (period: string, grain: Grain) => addPeriods(period, grain, 1) <= addDays(DATA_THROUGH, 1);
+  const run: PfoiRun = {
+    ...base,
+    origin_date: origin,
+    data_through: addDays(origin, -1),
+    outlook,
+    attribution: buildAttribution(origin),
+    actuals: base.actuals.filter((a) => addPeriods(a.period, a.grain, 1) <= origin),
+    realised: base.actuals.filter((a) => a.period >= origin && complete(a.period, a.grain)
+      && targets.has(`${a.grain}|${a.series}|${a.period}`)),
+    realised_through: DATA_THROUGH,
+    moves: buildMoves(origin).filter((m) => m.forecast || addPeriods(m.period, m.grain, 1) <= origin),
+  };
+  atCache.set(origin, run);
+  return run;
 }

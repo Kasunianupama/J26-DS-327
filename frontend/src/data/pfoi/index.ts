@@ -2,4 +2,4 @@
 export * from './contract';
 export * from './util';
 export * from './view';
-export { demoRun } from './demo';
+export { DEMO_ORIGINS, demoRun, demoRunAt } from './demo';

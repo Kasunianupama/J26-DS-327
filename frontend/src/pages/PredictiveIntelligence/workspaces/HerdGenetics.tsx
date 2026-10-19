@@ -23,7 +23,7 @@ import {
 } from 'recharts';
 import { firstTarget, fmtPct, periodLabel } from '../../../data/pfoi';
 import { useRun } from '../source';
-import { Card, KindTag, Note, TipShell } from '../ui';
+import { Card, MonthlyOnly, KindTag, Note, TipShell } from '../ui';
 
 const GENS = ['0', '1', '2', '3+'] as const;
 const GEN_COLORS: Record<(typeof GENS)[number], string> = { '0': '#34483f', '1': '#9a4f27', '2': '#5b7fa6', '3+': '#a8770a' };
@@ -53,7 +53,7 @@ export function HerdGenetics() {
   return (
     <div className="pfie-stack" style={{ gap: 20 }}>
       <Card
-        title="Herd composition by generation"
+        title={<>Herd composition by generation <MonthlyOnly /></>}
         sub={<>Share of the herd, recorded <KindTag kind="measured" /> and projected from births to farm-born dams <KindTag kind="derived" /></>}
       >
         <ResponsiveContainer width="100%" height={260}>

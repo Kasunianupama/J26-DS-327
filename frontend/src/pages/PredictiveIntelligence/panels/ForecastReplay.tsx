@@ -27,7 +27,7 @@ import {
   revisionFor,
 } from '../../../data/pfoi';
 import { useRun } from '../source';
-import { Card, TipShell } from '../ui';
+import { Card, MonthlyOnly, TipShell } from '../ui';
 import { ContributionChart } from './ContributionChart';
 
 export function ForecastReplay() {
@@ -49,7 +49,7 @@ export function ForecastReplay() {
   return (
     <Card
       icon="calendar"
-      title="Forecast replay"
+      title={<>Forecast replay <MonthlyOnly /></>}
       sub="What the model said at an earlier origin, what happened, and why each forecast moved"
       actions={
         <label className="pfie-row tight">
