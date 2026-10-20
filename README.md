@@ -15,7 +15,7 @@ Member 3 is designed to consume typed outputs from Members 1, 2, and 4. Member 4
 
 `React UI → FastAPI integration boundary → independent research services`.
 
-The initial endpoints use deterministic demo responses only. No ML models, LLM calls, vector database, credentials, or NLDB data are included.
+Most initial endpoints remain deterministic demos. The Member 1 counterfactual simulator reads approved Farm X core data using the component-only read-only PostgreSQL role. Its one-day milk-yield model is trained offline from those records; the ignored local model artifact is not included in Git. No credentials or farm records are bundled. Model prediction differences are observational estimates, not causal effects.
 
 ## Repository layout
 
