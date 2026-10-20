@@ -1,164 +1,135 @@
 /**
- * Future workspace (§7) — the Farm Future Brief.
+ * Component 1 (PFOI): Farm Outlook.
  *
- * Deliberately not a KPI dashboard: one plain-language briefing, one dominant
- * forecast panel, then the findings. Everything else is a click away. The
- * headline numbers come from the shared horizon summary so the metric deck in
- * the header and this brief can never disagree.
+ * The timeline leads, then one plain-language brief for the selected grain
+ * and horizon, the biggest drivers of the milk change, and the findings. The
+ * brief reads the same headline helper as the metric deck, so they never
+ * disagree.
  */
 
-import { fmtInt, fmtLKR, longDate } from '../../../data/component2';
-import { MasterTimeline } from '../panels/MasterTimeline';
-import { FindingsList } from '../panels/Findings';
-import { ForecastReplay, ReplayCompareStrip } from '../panels/ForecastReplay';
-import { horizonSummary } from '../summary';
-import { useC2 } from '../state';
-import { Card, ConfidenceBadge, Gauge, Note, Sparkline } from '../ui';
+import {
+  CONFIDENCE_META,
+  GRAIN_LABEL,
+  actualRow,
+  addPeriods,
+  confidenceOf,
+  flowTotals,
+  isForecast,
+  fmt1,
+  fmtInt,
+  forecastRow,
+  headline,
+  milkBreakdown,
+  periodLabel,
+  periodStart,
+  type Confidence,
+} from '../../../data/pfoi';
+import { usePfoi } from '../state';
+import { useRun } from '../source';
+import { Card, MonthlyOnly, Gauge, Note } from '../ui';
 import { Icon } from '../icons';
+import { MasterTimeline } from '../panels/MasterTimeline';
+import { ContributionChart } from '../panels/ContributionChart';
+import { FindingsList } from '../panels/Findings';
+import { HeatOutlook, MilkWithheldCard, ScenarioBands } from '../panels/Pp1Panels';
 
-/** How full the confidence arc reads for each level of the standard vocabulary. */
-const CONFIDENCE_ARC = { High: 88, Moderate: 58, Limited: 28 } as const;
+/* The arc only places the level on the dial; it is not a measured percentage, so the face shows the level, not a number. */
+const CONFIDENCE_ARC: Record<Confidence, number> = { High: 86, Moderate: 58, Limited: 30 };
 
 export function FutureWorkspace() {
-  const { horizon, openDrawer, go, setSelectedMonth, setSelectedDate } = useC2();
-  const s = horizonSummary(horizon);
-  const direction = s.changePct >= 0 ? 'increase' : 'decline';
+  const { grain, horizon, go, openDrawer, setBreakdownMonth } = usePfoi();
+  const run = useRun();
+  const milk = headline(run, grain, horizon, 'milk_litres');
+  const milking = headline(run, grain, horizon, 'milking');
+  const mastitis = headline(run, grain, horizon, 'mastitis_episodes');
+  const calvings = isForecast(run, grain, 'calvings') ? flowTotals(run, grain, horizon, 'calvings') : null;
+  const reach = `${horizon} ${horizon === 1 ? GRAIN_LABEL[grain].one : GRAIN_LABEL[grain].many}`;
+  const month = milk ? periodStart(milk.period, 'month') : null;
+  const breakdown = month ? milkBreakdown(run, month) : null;
+  const prevMonth = month ? addPeriods(month, 'month', -1) : null;
+  /* Milking cows in the month vs the month before, to put the herd-size part in head. */
+  const cowsAt = (m: string) => forecastRow(run, 'month', m, 'milking')?.forecast ?? actualRow(run, 'month', m, 'milking')?.value ?? null;
+  const cowsNow = month ? cowsAt(month) : null;
+  const cowsBefore = prevMonth ? cowsAt(prevMonth) : null;
+  const cowDelta = cowsNow !== null && cowsBefore !== null ? Math.round(cowsNow - cowsBefore) : null;
+  const conf = confidenceOf(milk?.quality);
 
   return (
     <div className="pfie-stack" style={{ gap: 20 }}>
-      {/* ---- the charts lead: this workspace is about the shape of the future ---- */}
       <MasterTimeline />
+      <MilkWithheldCard />
 
-      {/* ---- plain-language briefing ---- */}
-      <section className="pfie-brief">
-        <div className="pfie-brief-inner">
-          <div>
-            <span className="eyebrow"><i aria-hidden />Farm future brief</span>
-            <p className="lead">
-              Across the selected {s.label.toLowerCase()} ({longDate(s.first.date)}–{longDate(s.last.date)}),
-              milk is expected to average <b>{fmtInt(s.averageDailyMilk)} L/day</b> ({s.averagePerCow.toFixed(1)} L
-              per milking cow/day). The outlook is a <b>{Math.abs(s.changePct).toFixed(1)}% {direction}</b> from the
-              opening week to the closing week, with {s.dryOffs} expected dry-offs and {s.entries} expected
-              lactation entries shaping the path.
-            </p>
-            <div className="meta">
-              <div>Selected range<b>{s.label}</b></div>
-              <div>Average daily milk<b>{fmtInt(s.averageDailyMilk)} L</b></div>
-              <div>Per milking cow<b>{s.averagePerCow.toFixed(1)} L/day</b></div>
-              <div>Expected dry-offs<b>{s.dryOffs}</b></div>
-              <div>Lactation entries<b>{s.entries}</b></div>
+      {milk && (
+        <section className="pfie-brief">
+          <div className="pfie-brief-inner">
+            <div>
+              <span className="eyebrow"><i aria-hidden />Farm outlook · {reach} ahead</span>
+              <p className="lead">
+                In {periodLabel(milk.period, grain)}, milk is expected at about <b>{fmtInt(milk.value)} L/day</b>{' '}
+                (likely {fmtInt(milk.lower)}–{fmtInt(milk.upper)})
+                {milk.changePct !== null && milk.baselinePeriod && (
+                  <>, <b>{Math.abs(milk.changePct).toFixed(1)}% {milk.changePct < 0 ? 'lower' : 'higher'}</b> than {periodLabel(milk.baselinePeriod, grain)}, the last recorded {GRAIN_LABEL[grain].one}</>
+                )}
+                .
+                {milking && <> About <b>{fmtInt(milking.value)} cows</b> are expected in milk.</>}
+                {calvings && calvings.total > 0 && (
+                  <> {fmtInt(calvings.total)} calvings are expected along the way, {Math.round((calvings.determined / calvings.total) * 100)}% of them already fixed by recorded conceptions.</>
+                )}
+              </p>
+              <div className="meta">
+                <div>Target period<b>{periodLabel(milk.period, grain)}</b></div>
+                <div>Milk<b>{fmtInt(milk.value)} L/day</b></div>
+                <div>Milking cows<b>{milking ? fmtInt(milking.value) : 'weekly / monthly'}</b></div>
+                <div>Calvings to horizon<b>{calvings ? fmtInt(calvings.total) : 'weekly / monthly'}</b></div>
+                <div>Mastitis expected<b>{mastitis ? fmt1(mastitis.pathTotal) : 'weekly / monthly'}</b></div>
+              </div>
+            </div>
+            <div className="pfie-brief-gauge">
+              <Gauge pct={CONFIDENCE_ARC[conf]} face={CONFIDENCE_META[conf].mark} caption={conf} size={158} sub="Forecast quality" />
             </div>
           </div>
+        </section>
+      )}
 
-          <div className="pfie-brief-gauge">
-            <Gauge
-              pct={CONFIDENCE_ARC[s.confidence]}
-              caption={s.confidence}
-              size={158}
-              sub="Forecast confidence"
-            />
-          </div>
-        </div>
-      </section>
-
-      <ReplayCompareStrip />
-
-      {/* ---- the defining future movement ---- */}
-      <Card
-        className="pfie-movement"
-        icon="trendDown"
-        title="Selected forecast movement"
-        sub={`Expected milk supply across ${longDate(s.first.date)}–${longDate(s.last.date)}`}
-        actions={
-          <>
-            <ConfidenceBadge level={s.confidence} />
-            <button
-              className="pfie-btn primary"
-              onClick={() => openDrawer({ kind: 'structure', date: s.lowPoint.date, domain: 'herd' })}
-            >
-              Explore forecast structure
+      {breakdown && month && (
+        <Card
+          icon={breakdown.end >= breakdown.start ? 'trendUp' : 'trendDown'}
+          title={<>Why milk changes into {periodLabel(month, 'month')} <MonthlyOnly /></>}
+          sub={`Only the last step, from ${periodLabel(prevMonth!, 'month')} to ${periodLabel(month, 'month')}, in average litres per day. The change since the last recorded month is in the outlook above.`}
+          actions={
+            <button className="pfie-btn primary" onClick={() => { setBreakdownMonth(month); go('herd', 'milk'); }}>
+              Open the full breakdown
             </button>
-          </>
-        }
-      >
-        <div className="headline">
-          <span className="delta" style={{ color: s.changePct < 0 ? 'var(--concern)' : 'var(--brand)' }}>
-            {s.changePct >= 0 ? '+' : '−'}{Math.abs(s.changePct).toFixed(1)}%
-          </span>
-          <div>
-            <div style={{ fontSize: 13.5, color: 'var(--muted)' }}>
-              from <b style={{ color: 'var(--ink)' }}>{fmtInt(s.earlyMilk)} L/day</b> in the opening week to about{' '}
-              <b style={{ color: 'var(--predicted)' }}>{fmtInt(s.lateMilk)} L/day</b> in the closing week
-            </div>
-            <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
-              Lowest point around {longDate(s.lowPoint.date)}: {fmtInt(s.lowPoint.expected ?? 0)} L/day
-              {s.lowPoint.lower !== null && s.lowPoint.upper !== null
-                ? ` · likely range ${fmtInt(s.lowPoint.lower)}–${fmtInt(s.lowPoint.upper)} L/day`
-                : ''}
-            </div>
+          }
+        >
+          <ContributionChart
+            parts={breakdown.parts.filter((p) => breakdown.isPast || p.factor !== 'residual')}
+            summary={{ fromLabel: periodLabel(prevMonth!, 'month'), toLabel: periodLabel(month, 'month'), start: breakdown.start, end: breakdown.end, isPast: breakdown.isPast }}
+            facts={cowDelta ? { herd_size: `About ${Math.abs(cowDelta)} ${cowDelta > 0 ? 'more' : 'fewer'} cows in milk than in ${periodLabel(prevMonth!, 'month')}` } : undefined}
+          />
+          <div className="pfie-row tight">
+            <button className="pfie-btn" onClick={() => openDrawer({ kind: 'point', period: milk!.period, grain })}>
+              Explain {periodLabel(milk!.period, grain)} <Icon name="arrowRight" size={13} />
+            </button>
+            <button className="pfie-btn" onClick={() => go('confidence')}>
+              How accurate has this been? <Icon name="arrowRight" size={13} />
+            </button>
           </div>
-          <span className="headline-spark">
-            <Sparkline data={s.spark} tone={s.changePct < 0 ? 'concern' : 'brand'} width={190} height={54} />
-          </span>
-        </div>
+        </Card>
+      )}
 
-        <div className="pfie-consequence">
-          <div>
-            <div className="k">Herd movement</div>
-            <div className="v">{s.dryOffs} out · {s.entries} in</div>
-            <div className="d">Net {s.netMovement >= 0 ? '+' : ''}{s.netMovement} expected milking-animal movement across the selected range</div>
-          </div>
-          <div>
-            <div className="k">Average milk production</div>
-            <div className="v">{fmtInt(s.averageDailyMilk)} L/day</div>
-            <div className="d">Average {s.averagePerCow.toFixed(1)} L per milking cow per day across the range</div>
-          </div>
-          <div>
-            <div className="k">Product consequence</div>
-            <div className="v">
-              {s.product?.shortfall['Tetra pack'] ? `−${fmtInt(s.product.shortfall['Tetra pack'])} L` : 'Within plan'}
-            </div>
-            <div className="d">
-              {s.product?.shortfall['Tetra pack']
-                ? `Tetra pack at the low point in ${s.product.label}; the raw-milk contract is filled first.`
-                : 'All product lines stay within the planned allocation at the low point.'}
-            </div>
-          </div>
-          <div>
-            <div className="k">Financial consequence</div>
-            <div className="v" style={{ color: s.marginGap < 0 ? 'var(--concern)' : 'var(--brand)' }}>
-              {fmtLKR(s.marginGap)}
-            </div>
-            <div className="d">
-              Expected {s.finance?.label ?? 'period-end'} margin against budget
-              {s.finance ? ` (${fmtLKR(s.finance.marginForecast ?? s.finance.margin ?? 0)} vs ${fmtLKR(s.finance.budgetMargin)})` : ''}
-            </div>
-          </div>
-          <div>
-            <div className="k">Lowest expected point</div>
-            <div className="v">{longDate(s.lowPoint.date)}</div>
-            <div className="d">{fmtInt(s.lowPoint.expected ?? 0)} L/day · {s.lowPoint.confidence} confidence at this point</div>
-          </div>
-        </div>
+      <ScenarioBands />
 
-        <div className="pfie-row tight" style={{ marginTop: 16 }}>
-          <button className="pfie-btn" onClick={() => { setSelectedDate(s.lowPoint.date); go('capacity', 'milk'); }}>
-            See which cows drive it <Icon name="arrowRight" size={13} />
-          </button>
-          <button className="pfie-btn" onClick={() => { setSelectedMonth(s.endMonth); go('commerce'); }}>
-            Follow it into products and margin <Icon name="arrowRight" size={13} />
-          </button>
-        </div>
-      </Card>
+      <HeatOutlook />
 
-      {/* ---- replay + findings ---- */}
-      <ForecastReplay />
-      <Card icon="flag" title="Findings" sub="Grouped so one issue reads as one finding.">
+      <Card icon="flag" title="Findings" sub="Herd-level findings computed from this run.">
         <FindingsList />
       </Card>
-      <Note tone="info" title="How to read confidence.">
-        Forecast confidence describes how much the system trusts the estimate. It is separate from an event
-        probability such as a conception likelihood — the two are never combined.
+
+      <Note tone="info" title="How to read this page.">
+        Solid lines are records; dashed lines and shaded bands are forecasts with their 5–95% range. Factors are
+        tagged <i>measured</i>, <i>derived</i> (computed by the model) or <i>assumed</i> (THI in forecasts comes
+        from the climatology of the training years, not from a weather forecast).
       </Note>
     </div>
   );

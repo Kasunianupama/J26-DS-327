@@ -1,205 +1,127 @@
 /**
- * The period bar: a scrubbable overview of the whole window with a play head.
+ * Component 1 (PFOI): step or play through the timeline's periods.
  *
- * Playing advances the shared selected date, so the herd pictograms, the
- * forecast panels and every other workspace move together — the farm's
- * predicted structure changing over time rather than a set of static charts.
+ * Moving the selected period moves the marker on every band and the period
+ * the "Explain" button opens, so the herd's path can be walked one period at
+ * a time across the origin. A milk carton fills to the period's milk, relative
+ * to the highest period on the timeline, so the level is easy to follow while
+ * playing.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  DAILY,
-  DEFINING_MOVEMENT,
-  TODAY_ISO,
-  WINDOW_END,
-  WINDOW_START,
-  dateAtProgress,
-  fmtInt,
-  herdAt,
-  longDate,
-  progressOfDate,
-  windowDays,
-} from '../../../data/component2';
-import { useC2, type Grain } from '../state';
+import { useEffect, useMemo, useState } from 'react';
+import { confidenceOf, fmtInt, type TimelinePoint } from '../../../data/pfoi';
+import { usePfoi } from '../state';
 
-const GRAINS: { id: Grain; label: string; step: number }[] = [
-  { id: 'day', label: 'Day', step: 1 },
-  { id: 'week', label: 'Week', step: 7 },
-  { id: 'month', label: 'Month', step: 30 },
-];
+export function TimelinePlayer({ points }: { points: TimelinePoint[] }) {
+  const { selectedPeriod, setSelectedPeriod } = usePfoi();
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState<'slow' | 'normal' | 'fast'>('normal');
+  const stepMs = { slow: 1200, normal: 700, fast: 260 }[speed];
+  const milkMax = useMemo(
+    () => Math.max(1, ...points.map((p) => Math.max(Number(p.milk_litres ?? 0), Number(p.milk_litres_f ?? 0)))),
+    [points],
+  );
+  const originIdx = Math.max(0, points.findIndex((p) => p.future));
+  const idx = Math.max(0, points.findIndex((p) => p.period === selectedPeriod));
+  const current = selectedPeriod ? points[idx] : null;
 
-const SPEEDS = [
-  { id: 1, label: '1×' },
-  { id: 2, label: '2×' },
-  { id: 4, label: '4×' },
-];
-
-export function TimelinePlayer() {
-  const {
-    selectedDate, setSelectedDate, grain, setGrain, playing, setPlaying, speed, setSpeed,
-  } = useC2();
-  const trackRef = useRef<HTMLDivElement>(null);
-  const [dragging, setDragging] = useState(false);
-
-  const progress = progressOfDate(selectedDate);
-  const snap = herdAt(selectedDate);
-  const step = GRAINS.find((g) => g.id === grain)!.step;
-
-  /* -- playback ---------------------------------------------------- */
   useEffect(() => {
     if (!playing) return;
-    const tick = window.setInterval(() => {
-      setSelectedDate(advance(selectedDate, step));
-    }, 420 / speed);
-    return () => window.clearInterval(tick);
-  }, [playing, speed, step, selectedDate, setSelectedDate]);
+    const timer = window.setInterval(() => {
+      const at = points.findIndex((p) => p.period === selectedPeriod);
+      const next = at < 0 || at >= points.length - 1 ? null : points[at + 1];
+      if (!next) { setPlaying(false); return; }
+      setSelectedPeriod(next.period);
+    }, stepMs);
+    return () => window.clearInterval(timer);
+  }, [playing, points, selectedPeriod, setSelectedPeriod, stepMs]);
 
-  // Stop at the end of the window rather than looping past it.
-  useEffect(() => {
-    if (playing && selectedDate >= WINDOW_END) setPlaying(false);
-  }, [playing, selectedDate, setPlaying]);
-
-  /* -- scrubbing --------------------------------------------------- */
-  const seek = useCallback(
-    (clientX: number) => {
-      const el = trackRef.current;
-      if (!el) return;
-      const r = el.getBoundingClientRect();
-      setSelectedDate(dateAtProgress(Math.min(1, Math.max(0, (clientX - r.left) / r.width))));
-    },
-    [setSelectedDate],
-  );
-
-  useEffect(() => {
-    if (!dragging) return;
-    const move = (e: PointerEvent) => seek(e.clientX);
-    const up = () => setDragging(false);
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-    return () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-    };
-  }, [dragging, seek]);
-
-  const onKey = (e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowRight') { setSelectedDate(advance(selectedDate, step)); e.preventDefault(); }
-    if (e.key === 'ArrowLeft') { setSelectedDate(advance(selectedDate, -step)); e.preventDefault(); }
-    if (e.key === ' ') { setPlaying(!playing); e.preventDefault(); }
+  const step = (d: number) => {
+    setPlaying(false);
+    const base = selectedPeriod ? idx : originIdx;
+    setSelectedPeriod(points[Math.min(points.length - 1, Math.max(0, base + d))].period);
   };
 
-  const todayPct = progressOfDate(TODAY_ISO) * 100;
-  const evStart = progressOfDate(DEFINING_MOVEMENT.windowStart) * 100;
-  const evEnd = progressOfDate(DEFINING_MOVEMENT.windowEnd) * 100;
+  const milk = current ? (current.future ? current.milk_litres_f : current.milk_litres) : null;
 
   return (
-    <div className="pfie-player pfie-rise">
+    <div className="pfie-player">
       <div className="head">
-        <span className="period">
-          Period <b>{longDate(WINDOW_START)} — {longDate(WINDOW_END)}</b>
-        </span>
-
-        <span className="pfie-seg" role="group" aria-label="Timeline granularity">
-          {GRAINS.map((g) => (
-            <button key={g.id} aria-pressed={grain === g.id} onClick={() => setGrain(g.id)}>{g.label}</button>
-          ))}
-        </span>
-
-        <button className="pfie-play" aria-pressed={playing} onClick={() => setPlaying(!playing)}>
+        <button className="pfie-btn ghost" onClick={() => step(-1)} aria-label="Previous period">‹</button>
+        <button
+          className="pfie-play"
+          aria-pressed={playing}
+          onClick={() => {
+            if (!playing && (!selectedPeriod || idx >= points.length - 1)) setSelectedPeriod(points[0].period);
+            setPlaying(!playing);
+          }}
+        >
           <span className="glyph" aria-hidden>{playing ? '❚❚' : '▶'}</span>
-          {playing ? 'Pause' : `Play ${Math.round(windowDays / 365 * 10) / 10} years`}
+          {playing ? 'Pause' : 'Play'}
         </button>
-
-        {playing && (
-          <span className="pfie-seg" role="group" aria-label="Playback speed">
-            {SPEEDS.map((s) => (
-              <button key={s.id} aria-pressed={speed === s.id} onClick={() => setSpeed(s.id)}>{s.label}</button>
-            ))}
+        <button className="pfie-btn ghost" onClick={() => step(1)} aria-label="Next period">›</button>
+        <button className="pfie-btn ghost" onClick={() => { setPlaying(false); setSelectedPeriod(points[originIdx]?.period ?? null); }}>
+          Jump to forecast start
+        </button>
+        <label className="pfie-pick" title="Jump to the period that contains this date">
+          Date
+          <input
+            type="date"
+            value={current?.period ?? ''}
+            min={points[0]?.period}
+            max={points[points.length - 1]?.period}
+            onChange={(e) => {
+              const d = e.target.value;
+              if (!d) return;
+              setPlaying(false);
+              /* the period that contains the date: the last one starting on or before it */
+              const hit = [...points].reverse().find((p) => p.period <= d) ?? points[0];
+              setSelectedPeriod(hit.period);
+            }}
+          />
+        </label>
+        <label className="pfie-pick" title="How fast play moves through the periods">
+          Speed
+          <select value={speed} onChange={(e) => setSpeed(e.target.value as typeof speed)}>
+            <option value="slow">Slow</option>
+            <option value="normal">Normal</option>
+            <option value="fast">Fast</option>
+          </select>
+        </label>
+        {current && typeof milk === 'number' && (
+          <MilkCarton level={milk / milkMax} litres={milk} forecast={current.future} playing={playing} />
+        )}
+        {current && (
+          <span className="at">
+            <b>{current.label}</b>
+            {' · '}{current.future ? `forecast, ${confidenceOf(current.quality).toLowerCase()} confidence` : 'recorded'}
           </span>
         )}
-
-        <button className="pfie-btn ghost" onClick={() => setSelectedDate(TODAY_ISO)}>Jump to today</button>
-
-        <span className="at">
-          Herd on <b>{longDate(selectedDate)}</b> · <b>{snap.total} head</b>
-        </span>
-      </div>
-
-      <div
-        className="pfie-scrub"
-        ref={trackRef}
-        role="slider"
-        tabIndex={0}
-        aria-label="Scrub the timeline"
-        aria-valuemin={0}
-        aria-valuemax={windowDays}
-        aria-valuenow={Math.round(progress * windowDays)}
-        aria-valuetext={longDate(selectedDate)}
-        onKeyDown={onKey}
-        onPointerDown={(e) => { setDragging(true); setPlaying(false); seek(e.clientX); }}
-      >
-        <div className="forecastzone" style={{ left: `${todayPct}%`, right: 0 }} />
-        <div className="eventzone" style={{ left: `${evStart}%`, width: `${evEnd - evStart}%` }} />
-        <Sparkline />
-        <div className="today" style={{ left: `${todayPct}%` }} />
-        <div className="cursor" style={{ left: `${progress * 100}%` }} />
-        {yearTicks().map((t) => (
-          <span key={t.label} className="tick" style={{ left: `${t.pct}%` }}>{t.label}</span>
-        ))}
+        {!current && <span className="at">Click a chart or press play to pick a period</span>}
       </div>
     </div>
   );
 }
 
-/** Milk volume across the whole window, drawn once as a static backdrop. */
-function Sparkline() {
-  const pts = DAILY.filter((d) => d.date >= WINDOW_START && d.date <= WINDOW_END);
-  if (!pts.length) return null;
-  const vals = pts.map((d) => d.observed ?? d.expected ?? 0);
-  const lo = Math.min(...vals) * 0.94;
-  const hi = Math.max(...vals) * 1.02;
-  const w = 1000;
-  const h = 44;
-  const path = vals
-    .map((v, i) => `${i === 0 ? 'M' : 'L'}${((i / (vals.length - 1)) * w).toFixed(1)},${(h - ((v - lo) / (hi - lo)) * h).toFixed(1)}`)
-    .join(' ');
-  const splitAt = pts.findIndex((d) => d.offset > 0) / (vals.length - 1);
-
+/** A carton that fills to the period's milk, relative to the highest period shown. */
+function MilkCarton({ level, litres, forecast, playing }: { level: number; litres: number; forecast: boolean; playing: boolean }) {
+  const fill = Math.max(0.04, Math.min(1, level));
   return (
-    <svg viewBox={`0 0 ${w} ${h + 12}`} preserveAspectRatio="none" aria-hidden>
-      <defs>
-        <linearGradient id="pfieSparkFade" x1="0" x2="1">
-          <stop offset="0" stopColor="#1f6b4a" />
-          <stop offset={String(Math.max(0, splitAt - 0.002))} stopColor="#1f6b4a" />
-          <stop offset={String(splitAt)} stopColor="#5b7fa6" />
-          <stop offset="1" stopColor="#5b7fa6" />
-        </linearGradient>
-      </defs>
-      <path d={`${path} L${w},${h + 12} L0,${h + 12} Z`} fill="url(#pfieSparkFade)" opacity="0.1" />
-      <path d={path} fill="none" stroke="url(#pfieSparkFade)" strokeWidth="1.1" vectorEffect="non-scaling-stroke" />
-    </svg>
+    <span className={`pfie-carton${playing ? ' playing' : ''}${forecast ? ' forecast' : ''}`} title={`${fmtInt(litres)} L/day · ${Math.round(fill * 100)}% of the highest period shown`}>
+      <svg viewBox="0 0 40 56" aria-hidden>
+        <defs>
+          <clipPath id="pfieCartonBody"><path d="M5 18 L20 8 L35 18 V53 H5 Z" /></clipPath>
+        </defs>
+        <g clipPath="url(#pfieCartonBody)">
+          <rect x="0" y="0" width="40" height="56" className="bg" />
+          <g className="milk" style={{ transform: `translateY(${(1 - fill) * 45}px)` }}>
+            <path className="wave" d="M-40 13 q5 -3 10 0 t10 0 t10 0 t10 0 t10 0 t10 0 t10 0 t10 0 t10 0 V60 H-40 Z" />
+          </g>
+        </g>
+        <path d="M5 18 L20 8 L35 18 V53 H5 Z" className="edge" />
+        <path d="M14 4 H26 L28 8 H12 Z" className="cap" />
+      </svg>
+      <span className="lbl"><b>{fmtInt(litres)}</b>L/day{forecast ? ' · forecast' : ''}</span>
+    </span>
   );
 }
-
-function yearTicks() {
-  const out: { label: string; pct: number }[] = [];
-  const firstYear = Number(WINDOW_START.slice(0, 4));
-  const lastYear = Number(WINDOW_END.slice(0, 4));
-  for (let y = firstYear; y <= lastYear; y++) {
-    const iso = `${y}-01-01`;
-    if (iso < WINDOW_START || iso > WINDOW_END) continue;
-    out.push({ label: String(y), pct: progressOfDate(iso) * 100 });
-  }
-  return out;
-}
-
-function advance(iso: string, days: number) {
-  const d = new Date(`${iso}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + days);
-  const next = d.toISOString().slice(0, 10);
-  if (next > WINDOW_END) return WINDOW_END;
-  if (next < WINDOW_START) return WINDOW_START;
-  return next;
-}
-
-export { fmtInt };

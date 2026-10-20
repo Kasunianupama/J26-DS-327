@@ -173,7 +173,7 @@ class AssistantService:
             f"I can report milk production, but I cannot calculate the farm’s total profit reliably yet. "
             f"The current records show {production['current']:.1f} L this week, but a full profit calculation also needs "
             f"milk-sale price, feed cost, labour, veterinary cost, energy, and other operating costs. "
-            f"The available decision record only supports the Group A feed-change comparison, not total NLDB farm profit."
+            f"The available decision record only supports the Group A feed-change comparison, not total farm-network profit."
         )
         return self._response(cid, language, "profit_overview", answer, [{"source":"milk_production", "label":"Weekly milk production records", "recordIds":[], "freshness":"today"}], ["Add milk-sale price and operating-cost records to calculate full farm profit.", "Use the feed-change evaluation for the available cost-and-output comparison."], .62, .58)
 
@@ -207,7 +207,7 @@ class AssistantService:
     def _farm_summary(self, farm_id, text, role, cid, language):
         s = self.data.herd_summary(farm_id); p = self.data.weekly_production(farm_id); attention = self.data.attention_animals(farm_id)
         behavior, behavior_output = self._behavioral_context(farm_id)
-        answer = f"Today’s summary: NLDB Ridiyagama Farm has {s['total']} animals. Milk production is {p['change_pct']:+.1f}% compared with last week. {len(attention)} cows have recent health records that need review, so start with {attention[0]['animal_id']} and then confirm water, cooling, and feeding routines. {behavior_output['sentence']}"
+        answer = f"Today’s summary: Farm X has {s['total']} animals. Milk production is {p['change_pct']:+.1f}% compared with last week. {len(attention)} cows have recent health records that need review, so start with {attention[0]['animal_id']} and then confirm water, cooling, and feeding routines. {behavior_output['sentence']}"
         return self._response(cid, language, "farm_summary", answer, [{"source":"farm_summary", "label":"Farm records", "recordIds":[], "freshness":"today"}, behavior_output["evidence"]], ["Review priority health events.", "Confirm cooling, water, and feeding routine."], .86, .86, behavioral_context=behavior)
 
     @staticmethod

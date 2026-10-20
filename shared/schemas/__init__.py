@@ -10,3 +10,4 @@ from .explanation import Explanation
 from .evidence import EvidenceSource
 from .recommendation import Recommendation
 from .predictive import PredictiveFarmContext
+from .predictive_api import PredictiveSnapshot, PredictiveOverview, PredictiveWorkspaceFinding

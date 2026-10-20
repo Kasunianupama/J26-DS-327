@@ -1,6 +1,6 @@
 # Dairy Intelligence Research Monorepo
 
-**Machine Learning-Based Prediction of Milk Yield in Dairy Cows in Farming Systems** — an initial decision-support scaffold for the NLDB research context.
+**Machine Learning-Based Prediction of Milk Yield in Dairy Cows in Farming Systems** — an initial decision-support scaffold for the Farm X research context.
 
 ## Research components
 
@@ -15,7 +15,7 @@ Member 3 is designed to consume typed outputs from Members 1, 2, and 4. Member 4
 
 `React UI → FastAPI integration boundary → independent research services`.
 
-Most initial endpoints remain deterministic demos. The Member 1 counterfactual simulator reads approved Farm X core data using the component-only read-only PostgreSQL role. Its one-day milk-yield model is trained offline from those records; the ignored local model artifact is not included in Git. No credentials or farm records are bundled. Model prediction differences are observational estimates, not causal effects.
+The initial endpoints use deterministic demo responses only. No ML models, LLM calls, vector database, credentials, or real farm data are included.
 
 ## Repository layout
 
@@ -52,17 +52,22 @@ npm run dev
 
 The frontend reads `VITE_API_BASE_URL`, defaulting to `http://localhost:8000/api/v1`. FastAPI permits the Vite development origin `http://localhost:5173` via configured CORS.
 
-### SQL Server / DBeaver
+### Database (`farmx_app`, PostgreSQL)
 
-The backend is configured for the existing SQL Server Docker setup shown in your DBeaver connection flow:
+The backend and the research components use the PostgreSQL database **`farmx_app`**
+(port 5433 in this project), filled from the ETL repo (`research-etl-data-integration`) by
+its `publish-app-db` command. The backend never connects to DelPro / SQL Server.
 
-- Server: `localhost:1433`
-- Container: `delpro-sql`
-- Database: `master` (the initial database in the existing DBeaver connection)
+Full setup, in order, including which password goes in which `.env`:
+[docs/database/app_database_setup.md](docs/database/app_database_setup.md) (start at
+section 0, "New team member: setup order").
 
-Copy `.env.example` to `.env` and set `DATABASE_USER` and `DATABASE_PASSWORD` to the same SQL Server credentials used in DBeaver. Install Microsoft **ODBC Driver 18 for SQL Server** if it is not already installed. Basic tests do not require the database to be online.
+In this repo's `.env`, fill `APP_DB_API_PASSWORD` (login `farmx_api`, used by the backend)
+and `APP_DB_PFOI_PASSWORD` (login `farmx_model`, Component 1 model jobs). Other components
+add their own `APP_DB_<CN>_USER` / `APP_DB_<CN>_PASSWORD`. Basic tests do not require the
+database to be online.
 
-The included `docker-compose.yml` is retained as the original optional PostgreSQL development template; do not run it when using the existing SQL Server instance.
+Never give an AI coding agent database access, `.env` or passwords (see `AGENTS.md`).
 
 ## Team workflow
 
@@ -72,4 +77,4 @@ Keep research logic outside route files and UI code. Keep each component's work 
 
 ## Sample-data disclaimer
 
-All included data is fictional, synthetic demo data. It is not NLDB data and does not represent research outcomes.
+All included data is fictional, synthetic demo data. It is not real farm data and does not represent research outcomes.

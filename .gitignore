@@ -13,3 +13,28 @@ components/member1_didt/prediction/artifacts/
 
 frontend/node_modules/
 frontend/.env
+.DS_Store
+shared/.DS_Store
+
+
+# Research data must never be committed (see AGENTS.md section 3)
+# Research data must never be committed (see AGENTS.md section 3)
+*.env
+.env.*
+!.env.example
+!frontend/.env.example
+data/*
+!data/sample/
+*.csv
+!data/sample/*.csv
+logs/
+snapshots/
+share/
+*.dump
+/component_exports/
+*.bak
+*.parquet
+*.xlsx
+*.xls
+*.sqlite
+*.db
