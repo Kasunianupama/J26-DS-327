@@ -15,6 +15,13 @@
   by the curve litres of the starting herd (the herd on the day before the origin). Both
   are known at the origin. With fewer than 7 such days, the 12-month k is kept and the
   run is flagged ``k_window``. ``k_mode="window"`` always uses the 12-month k.
+* Anchor first (``k_mode="anchor_first"``, pp1_plan.md M1): the anchored k does not need
+  the 12-month k to exist. After a long recording gap the 12-month window has no usable
+  months, but two weeks of trusted recent days are enough to set the level. The 12-month
+  k is only the fallback; if neither is possible the milk forecast is withheld
+  (``MilkWithheld``, reason ``milk_withheld:no_trusted_recent_days``) and the herd
+  forecast is unaffected. ``anchored`` keeps the pfoi-1.0.0 / 1.1.0 behaviour, which
+  needs the 12-month k before anchoring is tried.
 * Days that are not scoreable (gaps, suspect lows, no DelPro milk) are neither used for k
   nor scored, and never imputed.
 """
@@ -38,7 +45,9 @@ FITTED_EVERYWHERE_RANGE = (date(2020, 8, 1), date(2023, 1, 1))  # sensitivity on
 CURVE_MODES = ("published", "herd_fitted", "fitted_everywhere")
 MIN_K_MONTHS = 3
 MIN_SCOREABLE_SHARE = 0.8
-K_MODES = ("anchored", "window")
+K_MODES = ("anchored", "window", "anchor_first")
+WITHHELD_NO_TRUSTED_DAYS = "milk_withheld:no_trusted_recent_days"
+K_TAG = {"anchored": "a", "window": "w", "anchor_first": "f"}
 ANCHOR_DAYS = 14
 ANCHOR_LOOKBACK_DAYS = 28
 ANCHOR_MIN_DAYS = 7
@@ -50,11 +59,11 @@ class MilkConfig:
     pregnancy_factor: bool = True
     generation_factor: bool = False
     k_months: int = 12
-    k_mode: str = "anchored"  # anchored | window
+    k_mode: str = "anchored"  # anchored | window | anchor_first
 
     def tag(self) -> str:
         return (f"{self.curve_mode}_p{int(self.pregnancy_factor)}"
-                f"_g{int(self.generation_factor)}_k{self.k_mode[0]}")
+                f"_g{int(self.generation_factor)}_k{K_TAG[self.k_mode]}")
 
 
 def calibration_window(origin: date, months: int = 12) -> tuple[date, date]:
@@ -126,6 +135,16 @@ def fit_k(curve_m: pd.Series, target_m: pd.DataFrame) -> dict[str, tuple[float, 
         if den > 0:
             out[str(source)] = (float(num / den), len(months))
     return out
+
+
+class MilkWithheld(ValueError):
+    """No trusted level for herd milk at this origin: the milk forecast is withheld.
+
+    ``reason`` is a stable code, shown to users and counted in backtests."""
+
+    def __init__(self, reason: str, detail: str = ""):
+        super().__init__(f"{reason}: {detail}" if detail else reason)
+        self.reason = reason
 
 
 @dataclass
@@ -209,16 +228,22 @@ def prepare_milk(source, origin: date, cfg: MilkConfig, hist: MilkHistory,
         k_source = max(ks, key=lambda s: ks[s][1])
         k = ks[k_source][0]
         flags.append("source_switch")
+    elif cfg.k_mode == "anchor_first":
+        k, k_source = float("nan"), "none"  # anchor_k sets it, or withholds the forecast
+        flags.append("no_window_k")
     else:
         raise ValueError(f"no usable months to calibrate k before {origin}")
-    notes.append(f"k: {k:.3f} from {k_source} ({ks[k_source][1]} months)")
+    if k_source in ks:
+        notes.append(f"k: {k:.3f} from {k_source} ({ks[k_source][1]} months)")
+    else:
+        notes.append("k: no usable months for the 12-month k; anchoring on recent days only")
     return MilkSetup(origin=origin, curve=curve, arrays=arrays, k=k, k_source=k_source,
                      target_source=src, flags=flags, notes=notes)
 
 
 def anchor_k(setup: MilkSetup, target_hist: pd.DataFrame, start_state, cfg: MilkConfig) -> MilkSetup:
     """Replace k by the anchored k (see module docstring); modifies and returns ``setup``."""
-    if cfg.k_mode != "anchored":
+    if cfg.k_mode not in ("anchored", "anchor_first"):
         return setup
     origin = setup.origin
     t = target_hist.copy()
@@ -230,12 +255,17 @@ def anchor_k(setup: MilkSetup, target_hist: pd.DataFrame, start_state, cfg: Milk
     recent = t[ok].sort_values("date").tail(ANCHOR_DAYS)
     start_litres = setup.arrays.litres(start_state)
     if len(recent) < ANCHOR_MIN_DAYS or start_litres <= 0:
+        if not np.isfinite(setup.k):
+            raise MilkWithheld(WITHHELD_NO_TRUSTED_DAYS,
+                               f"{len(recent)} trusted days in the {ANCHOR_LOOKBACK_DAYS} days "
+                               f"before {origin} and no 12-month k")
         setup.flags.append("k_window")
         setup.notes.append("k: anchoring not possible (too few recent scoreable days), 12-month k kept")
         return setup
     window_k = setup.k
     setup.k = float(recent["target_litres"].mean() / start_litres)
     setup.k_source = f"anchored:{setup.target_source}"
+    window_note = f"{window_k:.3f}" if np.isfinite(window_k) else "not available"
     setup.notes.append(f"k: anchored {setup.k:.3f} on {len(recent)} recent days "
-                       f"(12-month k was {window_k:.3f})")
+                       f"(12-month k was {window_note})")
     return setup

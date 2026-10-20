@@ -27,7 +27,7 @@ from .data import DATA_START, SnapshotSource, add_months, load_origin_inputs, pr
 from .error_tools import add_intervals, bias_corrected
 from .herd_engine import project
 from .parallel import map_origins
-from .milk_baseline import MilkConfig, MilkHistory, anchor_k, prepare_milk
+from .milk_baseline import MilkConfig, MilkHistory, MilkWithheld, anchor_k, prepare_milk
 from .periods import HORIZONS, horizon_days, period_bounds
 from .rates import estimate_rates
 
@@ -145,7 +145,10 @@ def _score_origin(c: _Ctx, origin: date) -> tuple[list[dict], list[str]]:
     except ValueError:  # no calibration data yet (e.g. first months): skip, but count it
         return [], ["skipped (no usable months for k)"]
     inputs = load_origin_inputs(c.source, origin, c.cfg)
-    anchor_k(setup, c.hist.target_before(origin), inputs.state, c.milk_cfg)
+    try:
+        anchor_k(setup, c.hist.target_before(origin), inputs.state, c.milk_cfg)
+    except MilkWithheld as w:  # no trusted level: nothing is forecast, the reason is counted
+        return [], [f"withheld ({w.reason})"]
     rates = estimate_rates(inputs.rate_inputs, c.cfg)
     H = max(horizon_days(origin, g, max(HORIZONS[g])) for g in c.grains)
     proj = project(inputs.state, rates, H, milk_curve=setup.arrays)

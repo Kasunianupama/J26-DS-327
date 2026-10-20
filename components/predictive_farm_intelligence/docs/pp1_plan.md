@@ -133,6 +133,118 @@ recovery error and recovery time (M2); coverage and width; split into normal,
 heat (THI ≥ training P90), outage and recovery bands. Rungs 5–6 can only be scored on
 2024–26 (post-test development) and are expected to be not interpretable.
 
+### Status
+
+| # | Status | Date | Notes |
+|---|---|---|---|
+| M1 | implemented and tested; **not yet evaluated** | 2026-10-20 | `MilkConfig(k_mode="anchor_first")`, CLI `--k anchor_first`, file tag `_kf`. `MilkWithheld` with reason `milk_withheld:no_trusted_recent_days`; backtests count withheld origins in their notes. pfoi-1.0.0 and 1.1.0 hashes unchanged (tested). Tests: `tests/test_outage_recovery.py` (7). Outlook (`outlook.py`) not yet changed: waits for the pfoi-1.1.1 edits to be committed. Real-data check: RUN BATCH 1 |
+| M2 | implemented and tested; **not yet evaluated** | 2026-10-20 | `pfoi/outage_sim.py` (own command, `cli.py` untouched). Scenarios: normal (0, 0) plus outage length 28 / 90 / 180 days × days of records back 0 / 3 / 7 / 14. Hidden days feed neither k, the early herd-fitted curve nor persistence; scoring uses recorded actuals only; nothing imputed. Prints forecast/withheld counts per scenario, outage cost (vs no outage and vs persistence, identical periods) and error spread by days since the last trusted day (input for M4). Limit printed with every run: only milk is hidden, herd records stay complete, so results are optimistic. Tests: `tests/test_outage_sim.py` (10). Real-data check: RUN BATCH 2 |
+
+**RUN BATCH 1 (M1, user runs from the repository root; prints aggregates only):**
+
+```bash
+python -m components.predictive_farm_intelligence.pfoi.cli backtest-milk --grain both --preset pfoi-1.1 --k anchor_first --jobs 0
+python -m components.predictive_farm_intelligence.pfoi.cli backtest-milk --grain both --preset pfoi-1.1 --k anchor_first --block posthoc --jobs 0
+```
+
+Send back: the "MAE by horizon" tables and the "Notes" tables (origins skipped, withheld
+and their reasons) of both runs. The development run should match the existing pfoi-1.1
+milk files on every origin both can build (same k by construction); the post-hoc run shows
+how many 2024–26 origins become buildable (previously 15 of 32 monthly origins skipped).
+Post-hoc numbers are post-test development.
+
+
+**RUN BATCH 1 results (user, 2026-10-20; aggregates only).**
+
+*M1 post-hoc replay 2024–26 (`--k anchor_first --block posthoc`), forecast dates built.
+Post-test development: counts of buildable forecasts, not accuracy.*
+
+| Origins | Total | Forecast built | of which: no 12-month k (recovered by M1) | of which: stale 12-month k (no recent trusted days) | Withheld (`no_trusted_recent_days`) |
+|---|---|---|---|---|---|
+| Monthly | 32 | 26 (was 17) | 9 | 8 | 6 |
+| Weekly | 138 | 116 | 43 | 37 | 22 |
+
+Reading: M1 makes 9 more monthly and 43 more weekly forecast dates buildable after the
+outage, and withholds the rest with a stated reason. The 8 monthly / 37 weekly dates that
+fall back to a 12-month k have **no trusted recent days**: those are the cases M3 (trust
+gate) and M4 (staleness-widened intervals) must handle. Accuracy on 2024–26 is not yet
+reported (needs `milk-report ... --block posthoc`).
+
+*M1 post-hoc accuracy 2024–26 (`milk-report --preset pfoi-1.1 --k anchor_first --block
+posthoc`). **Post-test development**, all origins M1 can build, MAE ratio vs persistence:*
+
+| Grain | Horizons | milk_baseline | milk_baseline_corrected | n | 90 % coverage (baseline) |
+|---|---|---|---|---|---|
+| Daily | 1 / 7 / 14 | 0.97 / 1.03 / 1.09 | 1.05 / 1.13 / 1.21 | 61 / 57 / 56 | 62 / 56 / 55 % |
+| Weekly | 1 / 4 / 8 / 13 | 0.97 / 1.40 / 1.35 / 1.81 | 1.07 / 1.71 / 1.42 / 2.48 | 38 / 35 / 30 / 28 | 82 / 63 / 63 / 61 % |
+| Monthly | 1 / 3 / 6 | 0.79 / 2.40 / 0.62 | 1.10 / 2.71 / 1.95 | 5 / 3 / 3 | not interpretable |
+
+Reading (post-test, not a confirmation):
+* Daily and 1-week forecasts tie with persistence (0.97–1.09). Beyond 1 week the baseline
+  loses clearly (1.35–1.81): after 2024 the herd engine drifts away from the recorded level.
+* ETS is far better where it can run (daily 0.34 / 0.52 / 0.68, n 29–36), but needs an
+  unbroken history, so it covers about half the periods. On common periods (n 17–22) the
+  baseline is 1.20–1.23 against persistence.
+* The 2-year mean bias correction makes 2024–26 worse at every grain and horizon: it
+  carries errors learned before the outage across it. Evidence for a gap-aware correction.
+  The pfoi-1.1.0 adaptive layer is not in these files (it is applied by `adapt`).
+* 90 % ranges cover 55–63 %, far below 85–95 %. M4 is needed.
+* These rows mix recovered origins with origins that were buildable before M1 (for those,
+  forecasts are identical by construction). M1's own effect needs the split below.
+
+*M1 post-hoc split by where the level came from (user, 2026-10-20). **Post-test
+development.** MAE ratio vs persistence on the same periods (n):*
+
+| Level from | Daily 1 / 7 / 14 | Weekly 1 / 4 / 8 / 13 |
+|---|---|---|
+| Recent days + 12-month k (buildable before M1) | 1.15 / 1.19 / 1.19 (29 / 26 / 23) | 1.12 / 1.08 / 0.99 / 0.70 (24 / 16 / 13 / 7) |
+| **Recent days only (recovered by M1)** | **0.88 / 0.90 / 0.94** (31 / 29 / 30) | **0.62** / 1.04 / 1.24 / 1.58 (13 / 15 / 14 / 15) |
+| Stale 12-month k (no trusted recent days) | 4.78 / 4.09 / 3.40 (1 / 2 / 3) | 3.25 / 3.46 / 3.83 / 9.31 (1 / 4 / 3 / 6) |
+
+Monthly: n = 1–4 per row, not interpretable.
+
+Reading:
+* **M1's recovered dates beat persistence up to 2 weeks ahead** (daily 0.88–0.94, n ≈ 30;
+  weekly 1 week 0.62, n 13). From 8 weeks on they lose (1.24, 1.58): the recent level is
+  right, the projected change after it is not.
+* **Falling back to a stale 12-month k is badly wrong** (3.3–9.3× persistence's error).
+  Each row is small (n 1–6), but all 7 rows agree. This supports withholding the milk
+  forecast when there are no trusted recent days, instead of the fallback.
+* Decision rule: the withholding change is decided on the development block (M2,
+  scenarios with records still missing at the forecast date, `resumed = 0`), not on these
+  post-test numbers, which only motivated the question.
+
+*M1 development block (`--k anchor_first`):* every MAE, bias, MAPE, coverage and n is
+identical to pfoi-1.1 without M1 (table below), as expected, because no development origin
+lacked a 12-month k. M1's "keep if" rule (development no worse than +1 %) is met (0 %).
+
+*Reference: pfoi-1.1 milk without M1 (`--k anchored`), development block, MAE ratio vs
+persistence on common periods (all models except SARIMA for monthly):*
+
+| Grain | Horizons | milk_baseline | milk_baseline_corrected | n |
+|---|---|---|---|---|
+| Monthly | 1 / 3 / 6 / 12 | 0.66 / 0.77 / 0.91 / 0.64 | 0.63 / 0.62 / 0.89 / 0.68 | 59 / 58 / 59 / 57 |
+| Weekly | 1 / 4 / 8 / 13 | 1.08 / 0.86 / 0.83 / 0.87 | 1.06 / 0.84 / 0.84 / 0.90 | 299 / 297 / 294 / 283 |
+| Daily | 1 / 7 / 14 | 1.12 / 1.02 / 0.96 | 1.13 / 1.05 / 1.00 | 314 / 312 / 311 |
+
+Short-range weakness confirmed in development: the baseline loses to persistence at
+1 day (MAE 457 vs 387 L) and 1 week, and ETS is best at 1 day (0.82). The baseline's
+upward bias grows with horizon (daily +50 → +279 L/day at 1 → 14 days; monthly +41k /
++81k L at 3 / 6 months). 90 % interval coverage is 82–84 % weekly and daily and 49 % at
+12 months, below the 85–95 % target. These are the targets for M3 (recent level),
+M4 (intervals) and M5 (THI).
+
+**RUN BATCH 2 (M2, development block only; aggregates only; may take hours, run in the
+background):**
+
+```bash
+python -m components.predictive_farm_intelligence.pfoi.outage_sim --preset pfoi-1.1 --every 2 --jobs 0
+```
+
+Send back the three printed tables: "forecast dates per scenario", "outage cost" and
+"error spread by days since the last trusted milk day". If it is too slow, add
+`--every 4` and say so (fewer origins, same scenarios).
+
 ## 6. Schedule (everything before PP1)
 
 | When | Claude (code and synthetic tests) | User |

@@ -1125,7 +1125,7 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_check_snapshots)
 
     p = sub.add_parser("milk-report", help="H1 table from a finished milk backtest")
-    milk_opts(p)
+    milk_opts(p, blocks=("development", "test", "posthoc"))
     p.set_defaults(func=_cmd_milk_report)
 
     p = sub.add_parser("adapt", help="Layer 1: adaptive-level variants of development backtests")
