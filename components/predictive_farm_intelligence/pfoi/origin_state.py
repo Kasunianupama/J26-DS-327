@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from .categories import (
+    GENERATIONS,
     DIM_BAND_BOUNDS,
     DIM_BANDS,
     STATES,
@@ -62,10 +63,14 @@ def build_origin_state(
     pregnancy_check_lag_days: int = 35,
     max_live_gest: int | None = None,
     conception_per_ai: float = 0.0,
+    calf_sex: pd.DataFrame | None = None,
 ) -> tuple[OriginState, list[str]]:
     """Starting herd. ``max_live_gest``: recorded conceptions older than this with no
     calving are not live pregnancies. ``conception_per_ai``: probability that a milking
-    cow whose last service is too recent to be confirmed is pregnant."""
+    cow whose last service is too recent to be confirmed is pregnant. ``calf_sex``:
+    animals under one year by sex and generation, used to split calf counts (without
+    it every calf is held in the female row, i.e. one calf group)."""
+    male_share = _male_share_by_generation(calf_sex)
     max_live = MAX_LIVE_GEST if max_live_gest is None else max_live_gest
     s = OriginState(origin=origin)
     notes: list[str] = []
@@ -102,7 +107,9 @@ def build_origin_state(
         p = cow_parity_index(row.parity_group)
         state = row.state
         if state == "calf":
-            s.calf[g] += n
+            m = male_share[g]
+            s.calf[0, g] += n * (1.0 - m)
+            s.calf[1, g] += n * m
         elif state == "heifer_open":
             s.heifer_open[g] += n
         elif state == "bull":
@@ -147,6 +154,24 @@ def build_origin_state(
         if n > 0:
             notes.append(f"{state}: {n:.0f} animals spread uniformly (no clock histogram)")
     return s, notes
+
+
+def _male_share_by_generation(calf_sex: pd.DataFrame | None) -> np.ndarray:
+    """Male share of young animals per generation, falling back to the pooled share."""
+    out = np.zeros(len(GENERATIONS))
+    if calf_sex is None or not len(calf_sex):
+        return out
+    cs = calf_sex[calf_sex["sex"].isin(["female", "male"])]
+    tot = cs.groupby("sex")["n"].sum()
+    if tot.sum() <= 0:
+        return out
+    pooled = float(tot.get("male", 0.0)) / float(tot.sum())
+    out[:] = pooled
+    for gen, grp in cs.groupby("generation_group"):
+        t = grp.groupby("sex")["n"].sum()
+        if t.sum() > 0:
+            out[generation_index(str(gen))] = float(t.get("male", 0.0)) / float(t.sum())
+    return out
 
 
 def _note_stale(notes: list[str], name: str, clock: pd.DataFrame, stale: pd.Series,

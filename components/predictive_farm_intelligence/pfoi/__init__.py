@@ -5,4 +5,4 @@ and configured from environment variables; the engine and estimators are pure
 functions that are unit-tested on synthetic data.
 """
 
-MODEL_VERSION = "herd-engine-0.1.0"
+MODEL_VERSION = "pfoi-1.0.0"  # frozen 2026-10-19 (docs/freeze.md)

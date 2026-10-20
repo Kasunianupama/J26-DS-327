@@ -24,11 +24,43 @@ class ConfigError(RuntimeError):
 class EngineConfig:
     """Modelling choices for the herd engine. Defaults follow docs/forecast_design.md."""
 
-    window_months: int | None = 24  # None = expanding window
+    window_months: int | None = 12  # None = expanding; chosen in development (docs/herd_engine.md)
     # A conception counts as "recorded" only once this many days have passed
     # (typical pregnancy-diagnosis delay). Conceptions newer than this at the
     # origin are not known and are projected by the conception hazard instead.
     pregnancy_check_lag_days: int = 35
+    # Months of the transition table used for heifer and dry-cow conceptions and
+    # pregnancy losses (and for conceptions per AI). "origin" (pfoi-1.0.0): every complete
+    # month before the origin, although conceptions in the last month or two could not yet
+    # be confirmed (leakage audit L2). "known": only months that ended before
+    # origin - pregnancy_check_lag_days.
+    conception_cut: str = "origin"
+    # Herd cells the starting herd and exposures come from. "day_cell" (pfoi-1.0.0):
+    # pregnancy states use later calvings (leakage audit L3). "day_cell_known": an animal
+    # is pregnant only once its conception was confirmed (ETL item E1).
+    cell_table: str = "day_cell"
+    # When a cow's conception counts as known. "lag" (pfoi-1.0.0): its date is more than
+    # pregnancy_check_lag_days before the origin. "recorded": its conception_known_date
+    # (positive pregnancy check, ETL item E1) is before the origin; checks take a median
+    # 41-85 days, so pair it with pregnancy_check_lag_days ~90 for the rate window.
+    conception_known: str = "lag"
+    # Recency weighting of the rate window. None (pfoi-1.0.0): every month in the window
+    # counts equally, so a regime change (abortion surge, removal campaign) enters the
+    # rates only slowly. A number: each month's exposure and events are weighted by
+    # 0.5 ** (age in months / half-life), the last complete month having weight 1.
+    rate_half_life_months: float | None = None
+    # M7 (docs/pp1_plan.md): within each DIM band, shape the cow conception rate by days in
+    # milk (10-day bins, measured in the rate window, normalised so the band rate is kept).
+    # False (every frozen version): one constant rate per band.
+    conception_dim_shape: bool = False
+    # PP1 improvement 1b: a shorter recency half-life (months) for the flows that shift
+    # fastest (abortions, pregnancy losses, exits, conceptions); the other rates keep
+    # rate_half_life_months. None (every frozen version): one half-life for all rates.
+    fast_half_life_months: float | None = None
+    # PP1 exit fix: "state" (every frozen version) = one exit rate per herd state;
+    # "lactation" = milking-cow exits measured from dated lactation records by parity x DIM
+    # band x pregnancy status (open cows late in lactation leave far more often).
+    milking_exit_model: str = "state"
     # Pseudo-exposure used for shrinkage when the method-of-moments estimate fails.
     default_prior_days: float = 3650.0
     # Where external entries go when the transition table does not say.

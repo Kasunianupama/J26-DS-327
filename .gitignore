@@ -30,6 +30,7 @@ logs/
 snapshots/
 share/
 *.dump
+/component_exports/
 *.bak
 *.parquet
 *.xlsx

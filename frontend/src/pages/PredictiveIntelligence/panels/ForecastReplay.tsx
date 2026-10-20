@@ -1,101 +1,119 @@
 /**
- * Forecast replay (§9) — what did the system predict then, and what happened?
+ * Component 1 (PFOI): forecast replay.
+ *
+ * Pick an earlier monthly origin: what did the model forecast then, what
+ * happened, and why did the forecast for a month move between consecutive
+ * origins? The revision is split across the same factors as the milk
+ * breakdown, so every revision is explained.
  */
 
-import { REPLAY_VINTAGES, fmtInt, fmtPct, longDate } from '../../../data/component2';
-import { useC2 } from '../state';
-import { Card, ConfidenceBadge, ForecastValue, Note } from '../ui';
+import { useMemo, useState } from 'react';
+import {
+  Area,
+  CartesianGrid,
+  ComposedChart,
+  Line,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+import {
+  fmtInt,
+  fmtSigned,
+  periodLabel,
+  replayOrigins,
+  replayPath,
+  revisionFor,
+} from '../../../data/pfoi';
+import { useRun } from '../source';
+import { Card, MonthlyOnly, TipShell } from '../ui';
+import { ContributionChart } from './ContributionChart';
 
 export function ForecastReplay() {
-  const { replayOn, setReplayOn, replayVintage, setReplayVintage } = useC2();
-  const v = REPLAY_VINTAGES.find((x) => x.madeOn === replayVintage) ?? REPLAY_VINTAGES[0];
+  const run = useRun();
+  const origins = replayOrigins(run);
+  const [origin, setOrigin] = useState(origins[Math.max(0, origins.length - 7)] ?? '');
+  const path = useMemo(() => replayPath(run, origin), [run, origin]);
+  const prevOrigin = origins[origins.indexOf(origin) - 1];
+  const targets = path.filter((p) => prevOrigin && p.horizon <= 11).map((p) => p.period);
+  const [target, setTarget] = useState<string | null>(null);
+  const shownTarget = target && targets.includes(target) ? target : targets[0] ?? null;
+  const revision = shownTarget ? revisionFor(run, origin, shownTarget) : [];
+  const scored = path.filter((p) => p.actual !== null && p.scoreable);
+  const inside = scored.filter((p) => p.actual! >= p.band[0] && p.actual! <= p.band[1]).length;
+  const mae = scored.length ? scored.reduce((s, p) => s + Math.abs(p.actual! - p.forecast), 0) / scored.length : null;
+
+  if (!origins.length) return null;
 
   return (
     <Card
-      title="Forecast replay"
-      sub="Step back to an earlier run and compare what was known then against what actually happened."
+      icon="calendar"
+      title={<>Forecast replay <MonthlyOnly /></>}
+      sub="What the model said at an earlier origin, what happened, and why each forecast moved"
       actions={
-        <button className={`pfie-btn${replayOn ? ' primary' : ''}`} onClick={() => setReplayOn(!replayOn)}>
-          {replayOn ? 'Replay on' : 'Turn on replay'}
-        </button>
+        <label className="pfie-row tight">
+          <span className="pfie-field">Origin</span>
+          <select value={origin} onChange={(e) => { setOrigin(e.target.value); setTarget(null); }}>
+            {origins.map((o) => <option key={o} value={o}>{periodLabel(o, 'month')}</option>)}
+          </select>
+        </label>
       }
     >
-      {!replayOn ? (
-        <p className="sub">
-          Replay is off. Turn it on to pick a historical forecast date and see the run that was current then.
-        </p>
-      ) : (
-        <>
-          <div className="pfie-row" style={{ marginBottom: 16 }}>
-            <label className="pfie-field">
-              Forecast made on
-              <select value={replayVintage} onChange={(e) => setReplayVintage(e.target.value)}>
-                {REPLAY_VINTAGES.map((r) => (
-                  <option key={r.madeOn} value={r.madeOn}>{r.label} — for {r.targetLabel}</option>
-                ))}
-              </select>
-            </label>
-            <ConfidenceBadge level={v.confidenceThen} />
+      <div className="pfie-grid side">
+        <div>
+          <ResponsiveContainer width="100%" height={240}>
+            <ComposedChart data={path} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
+              <CartesianGrid stroke="#eef2f0" vertical={false} />
+              <XAxis dataKey="short" tick={{ fontSize: 11, fill: '#70827a' }} />
+              <YAxis tick={{ fontSize: 11, fill: '#70827a' }} width={52} tickFormatter={(v: number) => fmtInt(v)} domain={['auto', 'auto']} />
+              <Area dataKey="band" stroke="none" fill="#5b7fa6" fillOpacity={0.16} isAnimationActive={false} />
+              <Line dataKey="forecast" stroke="#5b7fa6" strokeDasharray="5 4" strokeWidth={2} dot={false} isAnimationActive={false} />
+              <Line dataKey="actual" stroke="#9a4f27" strokeWidth={2} dot={{ r: 2.5 }} connectNulls={false} isAnimationActive={false} />
+              <Tooltip
+                content={({ active, payload }) => {
+                  const p = payload?.[0]?.payload as (typeof path)[number] | undefined;
+                  if (!active || !p) return null;
+                  return (
+                    <TipShell
+                      title={`${periodLabel(p.period, 'month')} · ${p.horizon} month${p.horizon === 1 ? '' : 's'} ahead`}
+                      rows={[
+                        ['Forecast then', `${fmtInt(p.forecast)} L/day`, '#5b7fa6'],
+                        ['5–95% range', `${fmtInt(p.band[0])}–${fmtInt(p.band[1])}`],
+                        ['Actual', p.actual !== null ? `${fmtInt(p.actual)} L/day` : 'not yet known', '#9a4f27'],
+                      ]}
+                    />
+                  );
+                }}
+              />
+            </ComposedChart>
+          </ResponsiveContainer>
+          <div className="pfie-legend">
+            <span><i className="dash" />Forecast at {periodLabel(origin, 'month')}</span>
+            <span><i style={{ background: '#9a4f27' }} />Actual</span>
+            {mae !== null && <span>MAE <b>{fmtInt(mae)} L/day</b> over {scored.length} months · {inside}/{scored.length} inside the range</span>}
           </div>
+        </div>
 
-          <div className="pfie-consequence">
-            <div>
-              <div className="k">Predicted then</div>
-              <div className="v">{fmtInt(v.predicted)} L</div>
-              <div className="d">{v.targetLabel}, forecast on {longDate(v.madeOn)}</div>
-            </div>
-            <div>
-              <div className="k">Actual</div>
-              <div className="v">{v.actual !== null ? `${fmtInt(v.actual)} L` : 'Not yet known'}</div>
-              <div className="d">{v.actual !== null ? 'Recorded outturn' : 'This period has not completed'}</div>
-            </div>
-            <div>
-              <div className="k">Forecast error</div>
-              <div className="v" style={{ color: v.errorPct === null ? 'var(--muted)' : v.errorPct < 0 ? 'var(--concern)' : 'var(--brand)' }}>
-                {v.errorPct === null ? '—' : fmtPct(v.errorPct)}
-              </div>
-              <div className="d">{v.errorPct === null ? 'Available once the period closes' : 'Predicted against recorded'}</div>
-            </div>
-          </div>
-
-          <div className="pfie-grid c2" style={{ marginTop: 18 }}>
-            <div>
-              <div className="pfie-section-title">What was known then</div>
-              <ul className="pfie-stack" style={{ gap: 6, fontSize: 12.5 }}>
-                {v.knownThen.map((k) => <li key={k}>• {k}</li>)}
-              </ul>
-            </div>
-            <div>
-              <div className="pfie-section-title">Information that had not yet arrived</div>
-              <ul className="pfie-stack" style={{ gap: 6, fontSize: 12.5 }}>
-                {v.laterInformation.map((k) => <li key={k}>• {k}</li>)}
-              </ul>
-            </div>
-          </div>
-
-          <div style={{ marginTop: 16 }}>
-            <Note tone="info">
-              Replay shows the run as it stood, without hindsight. Differences between the runs come from
-              records that arrived afterwards, not from a change of method.
-            </Note>
-          </div>
-        </>
-      )}
+        <div>
+          {prevOrigin && shownTarget ? (
+            <>
+              <label className="pfie-row tight" style={{ marginBottom: 10 }}>
+                <span className="pfie-field">Revision for</span>
+                <select value={shownTarget} onChange={(e) => setTarget(e.target.value)}>
+                  {targets.map((t) => <option key={t} value={t}>{periodLabel(t, 'month')}</option>)}
+                </select>
+              </label>
+              <ContributionChart
+                parts={revision}
+                caption={`How the forecast for ${periodLabel(shownTarget, 'month')} moved from the ${periodLabel(prevOrigin, 'month')} origin to the ${periodLabel(origin, 'month')} origin (${fmtSigned(revision.reduce((s, r) => s + r.value, 0), 1)} L/day).`}
+              />
+            </>
+          ) : (
+            <p className="pfie-chart-note">The first origin has no earlier forecast to revise.</p>
+          )}
+        </div>
+      </div>
     </Card>
   );
 }
-
-export function ReplayCompareStrip() {
-  const { replayOn, replayVintage } = useC2();
-  if (!replayOn) return null;
-  const v = REPLAY_VINTAGES.find((x) => x.madeOn === replayVintage);
-  if (!v) return null;
-  return (
-    <Note tone="caution" title={`Replaying the run from ${v.label}.`}>
-      Predicted {fmtInt(v.predicted)} L for {v.targetLabel}
-      {v.actual !== null ? `, actual ${fmtInt(v.actual)} L (${fmtPct(v.errorPct ?? 0)}).` : '. That period has not closed yet.'}
-    </Note>
-  );
-}
-
-export { ForecastValue };

@@ -10,8 +10,8 @@ backtest can report which origins used assumed rather than measured rates.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date
+from dataclasses import dataclass, field, replace
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -52,6 +52,15 @@ class RateInputs:
     preg_milking_days: float
     dryoff_gest: pd.DataFrame  # gest, n
     gestation: pd.DataFrame  # gest, n
+    # Calf sex split (optional; empty frames keep a single calf group)
+    young_days: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=["sex", "days"]))
+    young_exits: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=["sex", "exit_type", "exits"]))
+    births_by_sex: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=["sex", "n"]))
+    # M7: cow_open by 10-day DIM bin (dim_band = bin start); None = no within-band shape
+    cow_open_dim: pd.DataFrame | None = None
+    # exit fix: month, parity_group, dim_band, preg (0/1), days, exits; None = state exits
+    milking_exits: pd.DataFrame | None = None
 
 
 def eb_shrink(events, exposure, prior_rate: float | None = None,
@@ -106,15 +115,39 @@ def _normal_pmf(mean: float, sd: float) -> np.ndarray:
     return pmf / pmf.sum()
 
 
-def conception_per_ai(inp: RateInputs, default: float = 0.25) -> float:
+def conception_cut_month(inp: RateInputs, cfg: EngineConfig | None) -> date | None:
+    """First month whose conception outcomes are not yet known, or None (no cut).
+
+    With ``cfg.conception_cut == "known"``: the month of origin - pregnancy-check lag;
+    transition months from it onward are left out of conception and pregnancy-loss rates.
+    """
+    if cfg is None or cfg.conception_cut == "origin":
+        return None
+    if cfg.conception_cut != "known":
+        raise ValueError(f"unknown conception_cut {cfg.conception_cut!r}")
+    return (inp.origin - timedelta(days=cfg.pregnancy_check_lag_days)).replace(day=1)
+
+
+def _before_month(frame: pd.DataFrame, cut: date | None) -> pd.DataFrame:
+    if cut is None or not len(frame):
+        return frame
+    return frame[pd.to_datetime(frame["month"]).dt.date < cut]
+
+
+def conception_per_ai(inp: RateInputs, default: float = 0.25,
+                      cfg: EngineConfig | None = None) -> float:
     """Share of inseminations that become a pregnancy in the window (herd level).
 
     Conceptions = cow conceptions while milking + heifer and dry-cow conceptions from
-    the transition table; inseminations = day_panel.ais. Clipped to [0.05, 0.9].
+    the transition table; inseminations = day_panel.ais. Clipped to [0.05, 0.9]. With
+    a conception cut (``conception_cut_month``), transitions and inseminations both stop
+    at the cut month.
     """
-    ais = float(inp.panel["ais"].sum()) if len(inp.panel) else 0.0
+    cut = conception_cut_month(inp, cfg)
+    panel = _before_month(inp.panel, cut)
+    ais = float(panel["ais"].sum()) if len(panel) else 0.0
     conc = float(inp.cow_open["conceptions"].sum()) if len(inp.cow_open) else 0.0
-    tr = inp.transitions
+    tr = _before_month(inp.transitions, cut)
     if len(tr):
         mask = ((tr["from_state"] == "heifer_open") & (tr["to_state"] == "heifer_pregnant")) | (
             (tr["from_state"] == "dry_open") & (tr["to_state"] == "dry_pregnant"))
@@ -134,9 +167,181 @@ def max_live_gestation(gestation: pd.DataFrame, quantile: float = 0.99,
     return int(g.loc[cum >= quantile, "gest"].iloc[0])
 
 
+@dataclass
+class CalfSplit:
+    female_share: float
+    calf_to_heifer: float
+    calf_to_bull: float
+    exit_by_sex: dict[str, dict[str, float]]
+    exit_types_matched: bool = True
+
+
+def calf_split(inp: RateInputs, calf_days: float, moved_to_heifer: float,
+               moved_to_bull: float, calf_exits: dict[str, float]) -> CalfSplit | None:
+    """Split the measured calf totals between female and male calves.
+
+    Totals (calf-days from day_cell, calf exits and calf -> heifer/bull moves from the
+    transition table) are kept exactly; sex only decides how they are shared:
+    calf-days by the sex ratio of animal-days under one year (core.animal), each exit
+    type by the sex ratio of exits under one year. Returns None if sex data is missing.
+    """
+    yd = inp.young_days.groupby("sex")["days"].sum() if len(inp.young_days) else pd.Series(dtype=float)
+    d_f, d_m = float(yd.get("female", 0.0)), float(yd.get("male", 0.0))
+    if calf_days <= 0 or d_f <= 0 or d_m <= 0:
+        return None
+    share_m = d_m / (d_f + d_m)
+    days = {"female": calf_days * (1 - share_m), "male": calf_days * share_m}
+
+    ye = inp.young_exits
+    by_kind = {k: {"female": 0.0, "male": 0.0} for k in EXIT_TYPES}
+    if len(ye):
+        ye = ye.assign(kind=ye["exit_type"].astype(str).str.lower().map(EXIT_TO_STATES))
+        for row in ye.dropna(subset=["kind"]).itertuples(index=False):
+            by_kind[row.kind][row.sex] += float(row.exits)
+    exit_by_sex: dict[str, dict[str, float]] = {"female": {}, "male": {}}
+    for kind in EXIT_TYPES:
+        f, m = by_kind[kind]["female"], by_kind[kind]["male"]
+        sm = m / (f + m) if f + m > 0 else share_m
+        total = calf_exits.get(kind, 0.0)
+        exit_by_sex["male"][kind] = total * sm / days["male"]
+        exit_by_sex["female"][kind] = total * (1 - sm) / days["female"]
+
+    bs = inp.births_by_sex.groupby("sex")["n"].sum() if len(inp.births_by_sex) else pd.Series(dtype=float)
+    b_f, b_m = float(bs.get("female", 0.0)), float(bs.get("male", 0.0))
+    female_share = b_f / (b_f + b_m) if b_f + b_m > 0 else 0.5
+    return CalfSplit(
+        female_share=female_share,
+        calf_to_heifer=moved_to_heifer / days["female"],
+        calf_to_bull=moved_to_bull / days["male"],
+        exit_by_sex=exit_by_sex,
+        exit_types_matched=any(v["female"] + v["male"] > 0 for v in by_kind.values()),
+    )
+
+
+def _month_weights(months: pd.Series, origin: date, half_life: float) -> np.ndarray:
+    """0.5 ** (age / half_life); age 0 = the month before the origin's month."""
+    m = pd.to_datetime(months)
+    age = (origin.year - m.dt.year) * 12 + (origin.month - m.dt.month) - 1
+    return np.power(0.5, np.clip(age.to_numpy(dtype=float), 0.0, None) / half_life)
+
+
+def recency_weighted(inp: RateInputs, half_life: float) -> tuple[RateInputs, float]:
+    """Weight each window month's exposure and events by its age (pfoi-1.1 candidate).
+
+    Month-indexed frames (exposure, transitions, panel) are weighted month by month.
+    Inputs without a month (open cow-days, pregnant milking-days) are scaled by the mean
+    weight of the window's panel days, so ratios that mix both kinds keep the same
+    relative weight. Weighted counts are smaller, so shrinkage toward the pooled rate is
+    stronger: the effective sample really is smaller. Returns (weighted inputs, mean weight).
+    """
+    if half_life <= 0:
+        raise ValueError("rate half-life must be positive")
+
+    def weigh(frame: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        if not len(frame):
+            return frame
+        w = _month_weights(frame["month"], inp.origin, half_life)
+        out = frame.copy()
+        for c in cols:
+            out[c] = out[c].astype(float) * w
+        return out
+
+    skip = {"month", "max_date"}
+    panel_cols = [c for c in inp.panel.columns
+                  if c not in skip and pd.api.types.is_numeric_dtype(inp.panel[c])]
+    panel = weigh(inp.panel, panel_cols)
+    days = float(inp.panel["days"].sum()) if len(inp.panel) else 0.0
+    mean_w = float(panel["days"].sum()) / days if days > 0 else 1.0
+    co = inp.cow_open.copy()
+    for c in ("open_days", "conceptions", "open_dry_offs"):
+        if c in co:
+            co[c] = co[c].astype(float) * mean_w
+    return replace(
+        inp,
+        milking_exits=(weigh(inp.milking_exits, ["days", "exits"])
+                       if inp.milking_exits is not None else None),
+        exposure=weigh(inp.exposure, ["animal_days"]),
+        transitions=weigh(inp.transitions, ["n_moved"]),
+        panel=panel,
+        cow_open=co,
+        preg_milking_days=inp.preg_milking_days * mean_w,
+    ), mean_w
+
+
+MIN_SHAPE_CONCEPTIONS = 5  # per DIM band; fewer and the band stays flat
+
+
+def conception_dim_shape(cow_open_dim: pd.DataFrame, n_dim: int = 1000, bin_width: int = 10,
+                         min_conceptions: int = MIN_SHAPE_CONCEPTIONS) -> np.ndarray:
+    """Multiplier of the cow conception rate per day in milk (M7).
+
+    Rate per 10-day bin = conceptions / open days (all parities), relative to its DIM band's
+    rate (``categories.DIM_BAND_BOUNDS``), so the open-day weighted mean of the multiplier
+    within each band is 1 and the band rates are unchanged. Bands with fewer than
+    ``min_conceptions`` stay flat (multiplier 1)."""
+    from .categories import DIM_BAND_BOUNDS
+
+    shape = np.ones(n_dim)
+    if cow_open_dim is None or not len(cow_open_dim):
+        return shape
+    g = cow_open_dim.groupby(cow_open_dim["dim_band"].astype(int))[["open_days", "conceptions"]].sum()
+    last_bin = int(g.index.max())
+    for lo, hi in DIM_BAND_BOUNDS:
+        hi = n_dim - 1 if hi is None else min(hi, n_dim - 1)
+        rate, w = np.zeros(n_dim), np.zeros(n_dim)  # bin rate and open days per day
+        for start, r in g.iterrows():
+            a = int(start)
+            b = a + bin_width - 1 if a < last_bin else n_dim - 1
+            a2, b2 = max(a, lo), min(b, hi)
+            if a2 > b2 or r["open_days"] <= 0:
+                continue
+            rate[a2:b2 + 1] = r["conceptions"] / r["open_days"]
+            w[a2:b2 + 1] = r["open_days"] / (b - a + 1)
+        seg = slice(lo, hi + 1)
+        days, conc = w[seg].sum(), (rate[seg] * w[seg]).sum()
+        if conc < min_conceptions or days <= 0:
+            continue
+        band_rate = conc / days
+        shape[seg] = np.where(w[seg] > 0, rate[seg] / band_rate, 1.0)
+    return shape
+
+
+FAST_FLOWS = ("exit", "calf_exit_by_sex", "early_deaths_per_calving", "conc_heifer", "conc_dry",
+              "conc_cow", "abortion", "heifer_loss", "dry_loss", "milk_exit_cell")
+
+
+def milking_exit_cells(me: pd.DataFrame, default_prior: float) -> np.ndarray:
+    """Daily exit hazard of milking cows by parity group x DIM band x pregnancy status
+    (open 0, pregnant 1), from dated lactation exits; each cell is shrunk toward the
+    pooled milking exit rate (beta-binomial, as the other rates). Parity 'unknown' gets
+    the pooled rate per band and status."""
+    cells = np.zeros((len(COW_PARITIES), len(DIM_BANDS), 2))
+    if me is None or not len(me) or me["days"].sum() <= 0:
+        return cells
+    pooled = float(me["exits"].sum() / me["days"].sum())
+    g = me.groupby(["parity_group", "dim_band", "preg"])[["exits", "days"]].sum()
+    for b, band in enumerate(DIM_BANDS):
+        for st in (0, 1):
+            ev = np.array([g["exits"].get((p, band, st), 0.0) for p in COW_PARITIES])
+            ex = np.array([g["days"].get((p, band, st), 0.0) for p in COW_PARITIES])
+            cells[:, b, st] = eb_shrink(ev, ex, prior_rate=pooled, default_prior=default_prior)
+    cells[COW_PARITIES.index("unknown")] = cells[:3].mean(axis=0) if cells[:3].any() else pooled
+    return cells
+
+
 def estimate_rates(inp: RateInputs, cfg: EngineConfig | None = None) -> RateSet:
     cfg = cfg or EngineConfig()
+    if cfg.fast_half_life_months:  # 1b: fast flows from a shorter half-life, the rest as before
+        base = replace(cfg, fast_half_life_months=None)
+        slow = estimate_rates(inp, base)
+        fast = estimate_rates(inp, replace(base, rate_half_life_months=cfg.fast_half_life_months))
+        return replace(slow, **{f: getattr(fast, f) for f in FAST_FLOWS},
+                       notes=slow.notes + (f"fast half-life {cfg.fast_half_life_months:g} months for "
+                                           "abortions, losses, exits and conceptions",))
     notes: list[str] = []
+    if cfg.rate_half_life_months is not None:
+        inp, _ = recency_weighted(inp, cfg.rate_half_life_months)
+        notes.append(f"recency-weighted rates: half-life {cfg.rate_half_life_months:g} months")
     exp = inp.exposure
     E_all = exp.groupby("state")["animal_days"].sum().reindex(STATES, fill_value=0.0)
     tr = inp.transitions.copy()
@@ -159,6 +364,29 @@ def estimate_rates(inp: RateInputs, cfg: EngineConfig | None = None) -> RateSet:
             notes.append(f"{key}: no transitions/exposure in window, assumed {DEFAULTS[key]:.5f}/day")
             return DEFAULTS[key]
         return moved(src, dst) / E_tr[src]
+
+    # Conceptions and pregnancy losses are known only after a pregnancy check, so with
+    # conception_cut="known" they use only transition months (and their exposure) that
+    # ended before origin - lag.
+    cut = conception_cut_month(inp, cfg)
+    tr_p = _before_month(tr, cut)
+    E_p = (
+        exp[exp["month"].isin(set(tr_p["month"]))].groupby("state")["animal_days"].sum()
+        .reindex(STATES, fill_value=0.0)
+    ) if cut is not None and len(tr_p) else (E_tr if cut is None else E_tr * 0.0)
+    if cut is not None:
+        notes.append(f"conception cut: heifer/dry conceptions and losses from months before {cut}")
+
+    def moved_p(src: str, dst: str) -> float:
+        if not len(tr_p):
+            return 0.0
+        return float(tr_p.loc[(tr_p["from_state"] == src) & (tr_p["to_state"] == dst), "n_moved"].sum())
+
+    def preg_rate(src: str, dst: str, key: str) -> float:
+        if not len(tr_p) or E_p[src] <= 0:
+            notes.append(f"{key}: no transitions/exposure in window, assumed {DEFAULTS[key]:.5f}/day")
+            return DEFAULTS[key]
+        return moved_p(src, dst) / E_p[src]
 
     # exits
     exit_rates: dict[str, dict[str, float]] = {s: {} for s in STATES}
@@ -224,9 +452,9 @@ def estimate_rates(inp: RateInputs, cfg: EngineConfig | None = None) -> RateSet:
     # Pregnancy losses beyond real abortions (e.g. pregnancies not confirmed at a later
     # check), from the transition table: pregnant -> open for heifers and dry cows.
     def extra_loss(src: str, dst: str) -> float:
-        if not len(tr) or E_tr[src] <= 0:
+        if not len(tr_p) or E_p[src] <= 0:
             return 0.0
-        return max(0.0, moved(src, dst) / E_tr[src] - abortion)
+        return max(0.0, moved_p(src, dst) / E_p[src] - abortion)
 
     heifer_loss = extra_loss("heifer_pregnant", "heifer_open")
     dry_loss = extra_loss("dry_pregnant", "dry_open")
@@ -239,7 +467,10 @@ def estimate_rates(inp: RateInputs, cfg: EngineConfig | None = None) -> RateSet:
     open_days = E_all["heifer_open"] + E_all["dry_open"] + (co["open_days"].sum() if len(co) else 0.0)
     ai_open = float(panel.get("ais", 0.0)) / open_days if open_days > 0 else 0.0
 
-    entry_per_day = float(panel.get("external_entries", 0.0)) / float(panel["days"])
+    # Purchases are lumpy management decisions (one-off restocking), so the typical
+    # month (median daily rate over the window's months) is projected, not the mean.
+    months = inp.panel[inp.panel["days"] > 0]
+    entry_per_day = float((months["external_entries"] / months["days"]).median())
     entry_shares = {cfg.default_entry_state: 1.0}
     if len(tr):
         ent = tr[tr["from_state"].isin(ENTRY_FROM_STATES) & tr["to_state"].isin(STATES)]
@@ -248,11 +479,65 @@ def estimate_rates(inp: RateInputs, cfg: EngineConfig | None = None) -> RateSet:
     if entry_per_day > 0 and entry_shares == {cfg.default_entry_state: 1.0}:
         notes.append(f"entries: state of entering animals unknown, assigned to {cfg.default_entry_state}")
 
+    split = None
+    if len(tr) and E_tr["calf"] > 0:
+        if len(tr_exit):  # measured calf exits by type
+            ce = tr_exit[tr_exit["from_state"] == "calf"].groupby("kind")["n_moved"].sum()
+            calf_exits = {k: float(ce.get(k, 0.0)) for k in EXIT_TYPES}
+        else:
+            calf_exits = {k: float(exit_rates["calf"].get(k, 0.0)) * E_tr["calf"] for k in EXIT_TYPES}
+        split = calf_split(inp, float(E_tr["calf"]), moved("calf", "heifer_open"),
+                           moved("calf", "bull"), calf_exits)
+    if split is None:
+        notes.append("calves: no sex data in window, one calf group (all may become heifers)")
+        calf_kwargs = dict(calf_to_heifer=trans_rate("calf", "heifer_open", "calf_to_heifer"))
+    else:
+        if not split.exit_types_matched:
+            notes.append("calves: core.animal exit_type values not recognised, "
+                         "male and female calves share exit rates")
+        calf_kwargs = dict(
+            calf_to_heifer=split.calf_to_heifer,
+            calf_to_bull=split.calf_to_bull,
+            female_share=split.female_share,
+            calf_exit_by_sex=split.exit_by_sex,
+        )
+
+    # Exit calibration. The transition table counts moves from each animal's state at
+    # the start of a month, so animals that arrive and leave within one month (mostly
+    # newborn calves) are missing. Match each exit type to day_panel over the same
+    # months: a death shortfall becomes early calf deaths at birth; a cull or sale
+    # shortfall (or any excess) rescales that exit type in every state.
+    early_deaths_per_calving = 0.0
+    if len(tr_exit):
+        pm = inp.panel[inp.panel["month"].isin(tr_months)]
+        measured = tr_exit.groupby("kind")["n_moved"].sum()
+        calv_tr = float(pm["calvings"].sum())
+        parts = []
+        for kind in EXIT_TYPES:
+            target, got = float(pm[kind].sum()), float(measured.get(kind, 0.0))
+            if got <= 0:
+                continue
+            factor = 1.0
+            if kind == "deaths" and target > got and calv_tr > 0:
+                early_deaths_per_calving = min((target - got) / calv_tr, births_per_calving)
+                parts.append(f"deaths +{early_deaths_per_calving:.3f} per calving at birth")
+            elif target > 0:
+                factor = float(np.clip(target / got, 1 / 3, 3.0))
+            if factor != 1.0:
+                for st in STATES:
+                    exit_rates[st][kind] = exit_rates[st].get(kind, 0.0) * factor
+                for d in (calf_kwargs.get("calf_exit_by_sex") or {}).values():
+                    d[kind] *= factor
+                parts.append(f"{kind} x{factor:.2f}")
+        if parts:
+            notes.append("exit calibration: " + ", ".join(parts))
+
     return RateSet(
         exit=exit_rates,
-        calf_to_heifer=trans_rate("calf", "heifer_open", "calf_to_heifer"),
-        conc_heifer=trans_rate("heifer_open", "heifer_pregnant", "conc_heifer"),
-        conc_dry=trans_rate("dry_open", "dry_pregnant", "conc_dry"),
+        **calf_kwargs,
+        early_deaths_per_calving=early_deaths_per_calving,
+        conc_heifer=preg_rate("heifer_open", "heifer_pregnant", "conc_heifer"),
+        conc_dry=preg_rate("dry_open", "dry_pregnant", "conc_dry"),
         conc_cow=conc_cow,
         dry_open_cow=dry_open_cow,
         dry_preg_by_gest=dry_preg,
@@ -266,14 +551,26 @@ def estimate_rates(inp: RateInputs, cfg: EngineConfig | None = None) -> RateSet:
         entry_shares=entry_shares,
         entry_dim=cfg.entry_dim,
         entry_gestation=cfg.entry_gestation,
-        notes=tuple(notes),
+        conc_dim_shape=(conception_dim_shape(inp.cow_open_dim) if inp.cow_open_dim is not None
+                        else None),
+        milk_exit_cell=(milking_exit_cells(inp.milking_exits, cfg.default_prior_days)
+                        if inp.milking_exits is not None else None),
+        notes=tuple(notes + (["conception rate shaped by days in milk within each band (M7)"]
+                             if inp.cow_open_dim is not None else [])
+                    + (["milking-cow exits by parity x DIM band x pregnancy (lactation records)"]
+                       if inp.milking_exits is not None else [])),
     )
 
 
 def rate_summary(r: RateSet) -> pd.DataFrame:
     """Annualised herd-level rates for a sanity check (aggregates only)."""
     rows = [(f"exit_{k}:{s}", v * 365) for s, d in r.exit.items() for k, v in d.items()]
+    if r.calf_exit_by_sex:
+        rows += [(f"exit_{k}:calf_{sex}", v * 365)
+                 for sex, d in r.calf_exit_by_sex.items() for k, v in d.items()]
     rows += [
+        ("female_share_of_calves_born", r.female_share),
+        ("calf_to_bull (male calves)", r.calf_to_bull * 365),
         ("calf_to_heifer", r.calf_to_heifer * 365),
         ("conc_heifer", r.conc_heifer * 365),
         ("conc_dry", r.conc_dry * 365),
@@ -282,6 +579,7 @@ def rate_summary(r: RateSet) -> pd.DataFrame:
         ("extra_loss_dry_pregnant_year", r.dry_loss * 365),
         ("ai_per_open_year", r.ai_open * 365),
         ("births_per_calving", r.births_per_calving),
+        ("early_calf_deaths_per_calving", r.early_deaths_per_calving),
         ("entries_per_year", r.entry_per_day * 365),
     ]
     rows += [(f"conc_cow:{p}:{b}", r.conc_cow[i, j] * 365)
