@@ -2513,6 +2513,23 @@ main:has(> .pfie) {
 }
 .pfie-pick select:focus, .pfie-pick input:focus { outline: 2px solid #9a4f2733; border-color: #9a4f27; }
 .pfie-pick-reset { font-size: 12px; padding: 3px 8px; }
+.pfie-datefield {
+  display: inline-flex; align-items: stretch; background: #fff;
+  border: 1px solid #d6dfda; border-radius: 6px; overflow: hidden;
+}
+.pfie-datefield:focus-within { outline: 2px solid #9a4f2733; border-color: #9a4f27; }
+.pfie-datefield input {
+  width: 10ch; font: inherit; font-size: 12px; color: #17231f; text-align: center;
+  border: 0; padding: 3px 4px; background: transparent; font-variant-numeric: tabular-nums;
+}
+.pfie-datefield input:focus { outline: none; }
+.pfie-datefield input.invalid { color: #b3261e; background: #fdecea; }
+.pfie-datefield button {
+  font: inherit; font-size: 13px; line-height: 1; color: #52665d; background: transparent;
+  border: 0; padding: 0 6px; cursor: pointer;
+}
+.pfie-datefield button:hover:not(:disabled) { background: #f1f4f2; color: #17231f; }
+.pfie-datefield button:disabled { opacity: 0.35; cursor: default; }
 
 /* plain-language contribution chart */
 .pfie-contrib-summary { margin: 0 0 6px; font-size: 14px; line-height: 1.5; color: var(--ink); }
@@ -2688,3 +2705,42 @@ main:has(> .pfie) { min-width: 0; }
   .pfie-asof { padding: 10px 12px; }
   .pfie-asof-note { flex-basis: 100%; }
 }
+
+/* ---------- milk change, explained (Waterfall.tsx) ---------- */
+
+.pfie-mx { display: grid; gap: 14px; }
+.pfie-mx-sum { display: flex; flex-wrap: wrap; align-items: stretch; gap: 10px; }
+.pfie-mx-sum > div { flex: 1 1 120px; display: grid; gap: 2px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--paper); }
+.pfie-mx-sum .arrow { align-self: center; color: var(--faint); font-size: 18px; }
+.pfie-mx-sum .k { font-size: 11px; color: var(--muted); }
+.pfie-mx-sum .v { font-size: 20px; font-weight: 700; letter-spacing: -.4px; font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.pfie-mx-sum .v small { font-size: 11.5px; font-weight: 600; color: var(--muted); letter-spacing: 0; }
+.pfie-mx-sum .d { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pfie-mx-sum .chg.up { background: color-mix(in srgb, var(--positive) 8%, var(--paper)); border-color: color-mix(in srgb, var(--positive) 30%, var(--line)); }
+.pfie-mx-sum .chg.up .v { color: var(--positive); }
+.pfie-mx-sum .chg.down { background: var(--concern-soft); border-color: color-mix(in srgb, var(--concern) 30%, var(--line)); }
+.pfie-mx-sum .chg.down .v { color: var(--concern); }
+.pfie-mx-lede { margin: 0; font-size: 13px; color: var(--ink-2); line-height: 1.5; }
+.pfie-mx-rows { display: grid; gap: 10px; }
+.pfie-mx-row { display: grid; grid-template-columns: minmax(150px, 1.1fr) minmax(90px, 1fr) minmax(96px, auto); gap: 12px; align-items: center; font-size: 12.5px; }
+.pfie-mx-row .nm { display: grid; gap: 2px; min-width: 0; }
+.pfie-mx-row .nm b { color: var(--ink-2); font-weight: 600; }
+.pfie-mx-row .nm small { font-size: 11px; color: var(--muted); line-height: 1.35; }
+.pfie-mx-row .track { position: relative; height: 18px; background: var(--ground); border-radius: 4px; }
+.pfie-mx-row .track::before { content: ''; position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: var(--faint); opacity: .6; }
+.pfie-mx-row .track i { position: absolute; top: 3px; bottom: 3px; border-radius: 3px; transition: width .45s cubic-bezier(.22,.8,.3,1); }
+.pfie-mx-row .track i.up { background: var(--positive); }
+.pfie-mx-row .track i.down { background: var(--concern); }
+.pfie-mx-row .track i.other { background: var(--faint); }
+.pfie-mx-row .val { display: grid; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pfie-mx-row .val.up { color: var(--positive); }
+.pfie-mx-row .val.down { color: var(--concern); }
+.pfie-mx-row .val small { font-size: 11px; font-weight: 500; color: var(--muted); }
+@media (max-width: 640px) {
+  .pfie-mx-row { grid-template-columns: 1fr auto; }
+  .pfie-mx-row .track { grid-column: 1 / -1; grid-row: 2; }
+}
+
+.pfie-flowlink .nm { display: grid; gap: 2px; }
+.pfie-flowlink .nm small { font-size: 11px; color: var(--muted); line-height: 1.35; }
+.pfie-flowlink .v small { font-weight: 500; color: var(--muted); }

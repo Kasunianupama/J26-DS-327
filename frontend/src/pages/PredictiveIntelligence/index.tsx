@@ -24,6 +24,7 @@ import { HerdGenetics } from './workspaces/HerdGenetics';
 import { Evidence } from './workspaces/Evidence';
 import { ModelEvaluation } from './workspaces/ModelEvaluation';
 import { Tabs } from './ui';
+import { DateField } from './DateField';
 import { Icon, type IconName } from './icons';
 import { MetricDeck } from './deck';
 import { OutcomeBar } from './panels/OutcomeBar';
@@ -258,16 +259,16 @@ function RangePickers({ grain, horizon, setHorizon, historyFrom, setHistoryFrom 
           ))}
         </select>
       </label>
-      <label className="pfie-pick" title={`Show recorded history from this date (records start ${periodLabel(earliest, grain)})`}>
+      <span className="pfie-pick" title={`Show recorded history from this date (records start ${periodLabel(earliest, grain)})`}>
         From
-        <input
-          type="date"
+        <DateField
+          label="Show history from"
           value={historyFrom ?? earliest}
           min={earliest}
           max={first}
-          onChange={(e) => setHistoryFrom(e.target.value && e.target.value > earliest ? e.target.value : null)}
+          onChange={(d) => setHistoryFrom(d > earliest ? d : null)}
         />
-      </label>
+      </span>
       {historyFrom && (
         <button className="pfie-btn pfie-pick-reset" onClick={() => setHistoryFrom(null)} title="Show all recorded history">
           All history

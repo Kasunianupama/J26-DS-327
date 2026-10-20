@@ -111,7 +111,7 @@ export function PointDrawer({ period, grain }: { period: string; grain: Grain })
         </Card>
 
         {breakdown ? (
-          <Card title={`Milk change into ${periodLabel(month, 'month')}`} sub="Exact Shapley split; the parts add up to the change">
+          <Card title={`Why milk changes into ${periodLabel(month, 'month')}`} sub="Each reason's share of the change from the month before; the reasons add up exactly to the change">
             <Waterfall breakdown={breakdown} />
           </Card>
         ) : (
@@ -121,27 +121,38 @@ export function PointDrawer({ period, grain }: { period: string; grain: Grain })
         )}
 
         {future && grain !== 'day' && (
-          <Card title="Herd flows in this period" sub="How much of each count is already fixed at the origin">
+          <Card title="Herd events expected this period" sub="How much of each count is already known from records, and how much is an estimate from recent rates">
             <div className="pfie-flowlinks">
               {EVENT_SERIES.map((s) => {
                 const split = flowSplit(run, grain, period, s);
                 if (!split) return null;
                 const total = split.determined + split.rate_driven;
+                const detShare = total ? split.determined / total : 0;
+                const summary = !total
+                  ? 'None expected.'
+                  : detShare >= 0.995
+                    ? `All ${fmt1(total)} are already known from records, so this count is firm.`
+                    : detShare <= 0.005
+                      ? `All ${fmt1(total)} are estimated from recent rates, so this count is less certain.`
+                      : `${fmt1(split.determined)} already known from records (${Math.round(detShare * 100)}%), ${fmt1(split.rate_driven)} estimated from recent rates.`;
                 return (
                   <div className="pfie-flowlink" key={s}>
-                    <span><b>{SERIES_META[s].label}</b></span>
-                    <span className="bar">
-                      <i className="det" style={{ width: `${total ? (split.determined / total) * 100 : 0}%` }} />
-                      <i className="rate" style={{ width: `${total ? (split.rate_driven / total) * 100 : 0}%` }} />
+                    <span className="nm">
+                      <b>{SERIES_META[s].label}</b>
+                      <small>{summary}</small>
                     </span>
-                    <span className="v">{fmt1(total)}</span>
+                    <span className="bar" aria-label={`${SERIES_META[s].label}: ${Math.round(detShare * 100)}% already known`}>
+                      <i className="det" style={{ width: `${detShare * 100}%` }} />
+                      <i className="rate" style={{ width: `${total ? (1 - detShare) * 100 : 0}%` }} />
+                    </span>
+                    <span className="v">{fmt1(total)}<small> expected</small></span>
                   </div>
                 );
               })}
             </div>
             <div className="pfie-legend">
-              <span><i style={{ background: 'var(--brand)' }} />Already determined</span>
-              <span><i className="hatch" />Rate-driven</span>
+              <span><i style={{ background: 'var(--brand)' }} />Already known from records (e.g. calvings from confirmed pregnancies)</span>
+              <span><i className="hatch" />Estimated from recent rates (the uncertain part)</span>
             </div>
           </Card>
         )}
