@@ -398,15 +398,18 @@ def _cmd_scorecard(args: argparse.Namespace) -> int:
         q = daily_quality(source.target_daily(DATA_START, DATA_END),
                           source.panel_daily(DATA_START, DATA_END))
         errors = add_bands(errors, q)
-    errors = prepare(add_recovery(errors), method=args.intervals, quality=q)
+    interval_quality = q if getattr(args, "interval_quality", "on") == "on" else None
+    errors = prepare(add_recovery(errors), method=args.intervals, quality=interval_quality)
     card = scorecard(errors)
     iv = "" if args.intervals == "empirical" else f"_{args.intervals}"
-    name = f"scorecard_{args.block}_{mcfg.tag()}_{_wtag(args)}{iv}.csv"
+    quality_tag = "_quality_off" if args.quality == "off" else ""
+    interval_quality_tag = "_interval_quality_off" if getattr(args, "interval_quality", "on") == "off" else ""
+    name = f"scorecard_{args.block}_{mcfg.tag()}_{_wtag(args)}{iv}{quality_tag}{interval_quality_tag}.csv"
     card.to_csv(out / name, index=False)
 
     pd.set_option("display.width", 200)
     show = card[card["target"] != "no target"]
-    cols = ["n", "accuracy", "target_accuracy", "skill", "best_benchmark", "bias_pct",
+    cols = ["n", "n_coverage", "accuracy", "target_accuracy", "skill", "best_benchmark", "bias_pct",
             "coverage80", "coverage90", "width90", "deviance_ratio", "target", "calibrated", "reasons"]
     for block, b in show.groupby("block", sort=False):
         print(f"\n=== {block} block: targets (docs/targets.md), herd-level aggregates ===")
@@ -1529,6 +1532,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="aci = recency-weighted adaptive conformal intervals scaled by record quality")
     p.add_argument("--quality", default="on", choices=["on", "off"],
                    help="on = read daily herd-level record quality to split scores by band")
+    p.add_argument("--interval-quality", default="on", choices=["on", "off"],
+                   help="off = disable ACI quality scaling while retaining --quality scoring bands; "
+                        "matched-period diagnostic, not a change to the published model")
     p.set_defaults(func=_cmd_scorecard)
 
     for name, func, help_ in (

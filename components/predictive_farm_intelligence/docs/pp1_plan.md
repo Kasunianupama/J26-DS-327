@@ -706,6 +706,295 @@ components/predictive_farm_intelligence/tests/test_pp1_improvements.py -q -k
 The deselected synthetic scenario CLI integration test was included in the preceding
 23-test pass; no code changed between these reviews. Only this plan was edited.
 
+### Decision sequence requested by the user (2026-10-20)
+
+**Selected for evaluation:** the six-month reference rates, anchor-first milk, no fast
+half-life and no conception shape. Exit-only is the preferred candidate, conditional
+on completing the original calving safeguard against the saved development summaries.
+Break reset is selected only by its rule on that engine's own tags. Intervals remain
+unconfirmed; there is no new calibration or held-out accuracy claim.
+
+**New reproductive evidence (post-test development, supplied aggregates).** Both reports
+use lactations starting before 2026-08-21 and engine rates at 2026-08-01. The observed
+tables are the same; only the engine's projected curves change. The record comparison
+uses 2023–26 lactations: parity 1 n=503 (42.7% censored for conception), parity 2 n=528
+(16.3%), parity 3+ n=1,226 (10.3%). The checkpoints are dependent points on three
+curves, not 15 independent samples.
+
+| Parity | Mean absolute exit-share gap across five checkpoints, reference → exit-only | Recorded / reference / exit-only left by day 300 |
+|---|---|---|
+| 1 | 1.90 → 1.20 percentage points | .105 / .111 / .120 |
+| 2 | 5.68 → 5.56 points | .169 / .107 / .107 |
+| 3+ | 17.16 → 16.04 points | .313 / .107 / .117 |
+
+Derived from the rounded printed checkpoints (days 60/100/150/200/300), the equally
+weighted mean absolute gap across all 15 points falls from 8.25 to 7.60 points (about
+7.8% relatively). This descriptive summary was not a pre-specified metric: it supports
+the original directional "closer" check, not a new tuned threshold. Parity 1 worsens at
+day 300; parity 2 barely changes; parity 3+ still misses most exits. The reproductive
+part of the exit-only rule is supported with these limits. The new curve does not make
+the engine's fertility or exits fully match the record.
+
+**Remaining numerical safeguards are now executable, not assumed.** Agent access to
+non-PNG log files remains prohibited. `pfoi/pp1_decisions.py`, run by the user, reads
+only the saved baseline and exit-only aggregate summary tables. It checks raw monthly
+milking and total-herd MAE strictly improve at 3/6 months, and raw calvings worsen by
+at most 2% at all monthly 1/3/6/12 and weekly 1/4/8/13 horizons. Every required cell must
+exist, be unique and finite, and have equal n>=12. It prints baseline/candidate MAE, n,
+change and verdict per cell. Both runs must use the same development origin schedule,
+as in the supplied run list; equal n alone does not prove matching periods.
+
+Missing evidence stops the runner before any real-data command. A failed numerical rule
+rejects exit-only and selects the reference engine. A pass selects exit-only, supported
+by the supplied reproduction check above. The post-test outcomes never override a failed
+development safeguard. The script contains no hard-coded Farm X performance values.
+
+**Break-reset decision:** no automatic transfer from the combined or reference run.
+After the selected engine's development milk backtest finishes, the runner invokes
+`break-reset` with its own herd and milk tags, reads the aggregate comparison table and
+applies the original seven-row rule. The command now saves
+`break_reset_comparison_<milk-tag>[_posthoc].csv` so the decision is inspectable.
+`break_eval.verdict` previously skipped missing pairs, which could give a partial table
+a false pass. Missing/duplicate pairs, nonfinite values or unequal n now prevent a pass.
+Small after-break n remains qualified, without changing the original numerical keep rule.
+The posthoc reset run is reported separately; it does not select the option.
+
+**Uncertainty-width investigation and decision:** the displayed event ranges are not
+accepted as calibrated or useful. Code inspection found two mechanisms to audit:
+
+1. The development outlook passes milk-derived record-quality bands to ACI for herd
+   counts and events too; these bands describe milk recording, not direct event quality.
+2. Quality scaling divides/multiplies the entire `log(actual/forecast)` residual, without
+   separating bias from spread. A synthetic run with 24 completed monthly errors,
+   forecast=10 and actual about 100, has upper actual/forecast multiplier 10.10 under
+   a normal current band versus 102.02 under an unverified current band. This is the
+   same synthetic error history, not measured Farm X performance: doubling a nonzero
+   log-residual also squares its bias multiplier. It establishes an inflation mechanism,
+   not the exact decomposition of the observed 4,000-calving range.
+
+No cap, tolerance relaxation or change to the frozen interval formula was made. A
+candidate remedy is to separate residual location from spread and to avoid treating milk
+recording quality as event-record quality; such a method requires its own development
+coverage/width comparison before adoption. The runner prints the selected configuration's
+empirical, ACI quality-on and ACI quality-off scorecards. The quality-off control is an
+audit, not a selected replacement. Its filename now ends `_quality_off.csv`, preventing
+it from overwriting the quality-on audit. Compare `n`, `coverage80`, `coverage90`,
+`width90` and `calibrated` for identical cells; use the original coverage bands and
+less-than-doubling width rule. Raw/bias-corrected scorecard checks do not by themselves
+validate adaptive milk or reset-layer published ranges; those need their own errors.
+
+**One user-run command from the repository root:**
+
+```bash
+python -m components.predictive_farm_intelligence.pfoi.pp1_decisions --run --jobs 4
+```
+
+Without `--run`, it only audits aggregate summaries and prints commands. With `--run`,
+the sequence is: exit preflight → milk development → development milk-report → selected
+tag break-reset (development) → three interval scorecards → selected engine herd posthoc
+→ milk posthoc → posthoc milk-report → selected tag break-reset (posthoc). Commands stop
+on execution failure. Development milk always precedes posthoc, so its errors exist
+before posthoc correction/interval history is loaded. It never invokes the final test,
+`--force`, `build-outlook`, `--write`, a database migration or a commit. It can take a
+long time; paste the aggregate tables and verdicts, not animal records.
+
+The user's screenshot shows the eleven visible development origin/version groups each
+with `n_builds=1`. This supports one saved run-document row per listed key; it does not
+identify which option combination is behind the shared development version or establish
+forecast quality. No SQL in the image was executed by the agent.
+
+Validation of this decision workflow: synthetic decision/ordering/error-file guards,
+break-reset guards, interval and scorecard suites — **41 passed, 1 deselected in 4.37s**:
+
+```bash
+python -m pytest components/predictive_farm_intelligence/tests/test_pp1_decisions.py components/predictive_farm_intelligence/tests/test_pp1_improvements.py components/predictive_farm_intelligence/tests/test_intervals.py components/predictive_farm_intelligence/tests/test_scorecard.py -q -k 'not scenarios_command'
+```
+
+The deselected scenario CLI integration test is unrelated to these edits and was included
+in the preceding 23-test pass. Frozen hash assertions passed. The runner execution test
+mocks every subprocess and uses temporary fictional summaries; it does not launch a
+real-data command. `pp1_decisions --help`, Markdown structure and `git diff --check`
+passed. A first standalone synthetic inflation probe omitted quality-frame columns and
+raised KeyError; after completing that fictional fixture it produced the values reported
+above. No real files were involved in that probe. Changes: decision runner, synthetic
+tests, reset validation and aggregate comparison export, distinct quality-off scorecard
+filename, and this plan. No frontend edits, database access, publication or agent commit.
+
+### Decision-run results supplied by the user (2026-10-20)
+
+Source: pasted `pp1_decisions --run --jobs 12` output. All ten evaluation commands
+completed, ending with the runner's completion message. No traceback or missing-file
+warning appears. No outlook was published by this sequence. Results from 2024–26 are
+post-test development, not new held-out confirmation. Exact supplied output is retained
+in the decision-run appendix below.
+
+**Selection now settled by the fixed rules:**
+
+* **Keep exit-only.** All 12 numerical safeguards pass, completing the pending decision;
+  the preceding reproductive check provides its separate directional support. Keep the
+  six-month reference half-life and `--exit-model lactation`; no `--fast-half-life 3`.
+* **Keep break reset on exit-only by its development rule**, qualified by small samples.
+  Its own tags are `_xl` and milk `_kf_..._xl`, not `_fhl3_xl`. The post-test run exposes
+  mixed behavior and is retained below; it does not replace the pre-fixed selection rule.
+* **Keep anchor-first.** Development milk completes without withheld/skipped notes;
+  posthoc withheld counts are explicitly reported, never replaced with zero milk.
+* **Intervals: partial support only.** Daily milk and weekly 1/4-week raw-milk ACI rows
+  satisfy the coverage bands without doubling width. This is not evidence that all herd
+  horizons or the adaptive/reset output layers are calibrated. Monthly milk retains the
+  existing quantile choice; do not infer that those quantiles are calibrated everywhere.
+
+**Exit safeguards, development, raw engine (n is forecast periods):**
+
+| Grain / series | h | n | Reference MAE | Exit-only MAE | Change % |
+|---|---|---|---|---|---|
+| Monthly calvings | 1 | 84 | 17.0911 | 17.1021 | +.0642 |
+| Monthly calvings | 3 | 82 | 8.0544 | 8.0863 | +.3964 |
+| Monthly calvings | 6 | 79 | 17.0824 | 17.0491 | −.1949 |
+| Monthly calvings | 12 | 73 | 25.6331 | 26.0303 | +1.5496 |
+| Monthly milking | 3 | 82 | 68.0685 | 66.8058 | −1.8551 |
+| Monthly milking | 6 | 79 | 106.0881 | 99.6031 | −6.1128 |
+| Monthly total herd | 3 | 82 | 74.7944 | 73.1749 | −2.1653 |
+| Monthly total herd | 6 | 79 | 123.9300 | 120.9627 | −2.3943 |
+| Weekly calvings | 1 | 365 | 6.5673 | 6.5680 | +.0103 |
+| Weekly calvings | 4 | 362 | 4.9133 | 4.9154 | +.0426 |
+| Weekly calvings | 8 | 358 | 4.4195 | 4.4258 | +.1414 |
+| Weekly calvings | 13 | 353 | 4.2538 | 4.2637 | +.2315 |
+
+The largest calving increase is +1.5496%, below the +2% limit. The modest milking and
+total-herd gains meet their required 3/6-month directions. These all-date n values differ
+from scorecard n below, which excludes unverified/gap target periods.
+
+**Exit-only break reset, development, accuracy = 1 − WAPE:**
+
+| Series, grain, h | n / after-break n | All dates before → reset | After break before → reset |
+|---|---|---|---|
+| Milk weekly 4 | 330 / 33 | .944 → .945 | .834 → .853 |
+| Milk monthly 3 | 66 / 6 | .909 → .910 | .729 → .790 |
+| Milking monthly 3 | 82 / 8 | .941 → .943 | .873 → .912 |
+| Milking monthly 6 | 79 / 8 | .930 → .939 | .726 → .858 |
+| Total herd monthly 6 | 79 / 8 | .956 → .959 | .892 → .935 |
+| Total herd monthly 12 | 73 / 2 | .952 → .953 | .829 → .870 |
+| Calvings monthly 3 | 82 / 8 | .936 → .938 | .916 → .947 |
+
+All four required after-break rows improve; none of the seven all-date rows falls.
+The required milk-monthly and both milking after-break rows have n<12, so the numerical
+pass is qualified, not strong confirmation. Four detected breaks: 2015, 2016, 2022, 2023.
+
+**Milk development, exit-only, without the reset (the raw/bias-corrected milk-report):**
+
+| Grain | h | Raw MAE | Raw ratio to persistence | Raw n |
+|---|---|---|---|---|
+| Monthly | 1/3/6/12 | 17,477 / 50,412 / 81,927 / 78,088 L | .63 / .77 / .85 / .60 | 68/66/64/58 |
+| Weekly | 1/4/8/13 | 3,088 / 5,730 / 9,123 / 12,766 L | 1.10 / .87 / .86 / .88 | 333/330/326/323 |
+| Daily | 1/7/14 | 457 / 585 / 707 L | 1.18 / 1.07 / 1.02 | 348/348/347 |
+
+Against the earlier reference milk MAEs on the same scheduled development design,
+monthly decreases are about 1.8/7.2/8.4/6.4% (derived from rounded printed MAEs; same n).
+The monthly 3–6-month claim is supported versus persistence, but daily and one-week
+milk do not beat persistence on each model's own scored periods. On periods shared by
+all benchmarks, raw ratios are monthly .77/.96/.98/.59 (n35/33/33/31), weekly
+1.07/.83/.79/.80 (n299/297/294/283), daily 1.12/1.01/.95 (n314/312/311); ETS is stronger
+at the shortest daily horizon. Do not present own-period ratios as common-period scores.
+The scorecard's recovery target is still missed: weekly h4 accuracy .674 versus .900,
+n19 verified periods in the 0–2-month recovery bucket, without reset.
+
+Development scheduled origins: 84 monthly, 365 weekly; notes curve 84/365, k168/730,
+k_window2/11, source_switch7/34 (monthly/weekly). Notes overlap and are not scored n.
+
+**Matched empirical → ACI quality-on audit, development, raw models:**
+
+| Series, grain, h | Scored n | 80% coverage before → ACI | 90% coverage before → ACI | width90 before → ACI (ratio) |
+|---|---|---|---|---|
+| Milk daily 1 | 348 | .740 → .784 | .831 → .889 | .119 → .195 (1.64×) |
+| Milk daily 7 | 348 | .724 → .778 | .835 → .886 | .144 → .237 (1.65×) |
+| Milk daily 14 | 347 | .767 → .780 | .834 → .875 | .180 → .304 (1.69×) |
+| Milk weekly 1 | 333 | .739 → .777 | .823 → .883 | .121 → .169 (1.40×) |
+| Milk weekly 4 | 330 | .739 → .771 | .839 → .886 | .230 → .297 (1.29×) |
+| Milk weekly 13 | 323 | .712 → .705 | .830 → .786 | .439 → .437 (1.00×) |
+| Milk monthly 1 | 68 | .786 → .732 | .875 → .857 | .141 → .159 (1.13×) |
+| Milk monthly 3 | 66 | .577 → .692 | .788 → .808 | .343 → .367 (1.07×) |
+| Milk monthly 6 | 64 | .660 → .596 | .851 → .723 | .442 → .406 (.92×) |
+| Milk monthly 12 | 58 | .371 → .371 | .486 → .514 | .439 → .524 (1.19×) |
+
+Daily and weekly h1/h4 meet both calibration bands; weekly h13 does not. Monthly ACI
+is not calibrated and is worse at h6, supporting retention of monthly quantiles.
+The printed primary target/calibration tally rises from 5/42 (empirical) to 14/42 (ACI).
+Neither number means every target or horizon has met its accuracy and uncertainty goals.
+`n` above counts scored forecasts; the submitted console did not separately print the
+coverage denominator. The next audit now prints `n_coverage` from the existing scorecard.
+
+Herd/event ACI still fails many horizons: calvings h6/h12 coverage90=.796/.952
+(scored n71/65), milking h3/h6/h12=.817/.796/.762 (n73/71/65), total herd h6/h12=.815/.786
+(n71/65). For abortions h1/3/6/12, width90=2.505/3.035/3.594/3.045 and coverage80=
+.778/.729/.717/.714 (n75/73/71/65); only h1 is calibrated. Width is mean interval width
+divided by its forecast, not a percentage of the whole herd. This does not resolve the
+earlier enormous adaptive/reset chart ranges, whose own models are absent from these
+primary raw scorecards. Their width/calibration remains unconfirmed.
+
+**Correction to the interval control supplied by the agent:** `--quality off` also
+removes quality-based scoring exclusions. Thus monthly n changes from 75/73/71/65 to
+84/82/79/73; the apparent differences mix sample changes with scaling changes. Its
+14/42 tally cannot be used to identify the effect of scaling alone. The synthetic
+inflation mechanism remains established, but the real-data control was confounded.
+
+The audit now provides `--interval-quality off` separately from the existing `--quality`
+option. Keep `--quality on` (the default) to retain exactly the scoring bands; only
+interval scaling is switched off. Its separate output ends `_interval_quality_off.csv`.
+The decision runner is corrected for future use. Defaults, interval formula, frozen
+hashes, forecasts and selection rules are unchanged. **Do not rerun the decision runner
+or backtests for this correction.** Only these scorecard commands are needed:
+
+```bash
+python -m components.predictive_farm_intelligence.pfoi.cli scorecard --preset pfoi-1.1 --exit-model lactation --k anchor_first --block development --intervals aci
+python -m components.predictive_farm_intelligence.pfoi.cli scorecard --preset pfoi-1.1 --exit-model lactation --k anchor_first --block development --intervals aci --interval-quality off
+```
+
+These rebuild aggregate scorecards from saved errors (plus user-loaded herd-level
+record-quality aggregates); they do not rerun forecasts or publish an outlook.
+
+**Exit-only, post-test development (without reset):** monthly raw milking MAE h3/6/12 is
+42.52/62.00/82.14 against persistence 42.85/81.10/131.44 (n29/26/20). Total herd remains
+worse: 100.12/206.09/443.79 against 85.93/159.87/204.55 (same n; ratios 1.17/1.29/2.17).
+This is a modest development improvement with unresolved management/regime-change error,
+not a general solution to herd contractions and recovery.
+
+Milk posthoc, raw ratios to persistence: daily .97/1.03/1.10 (h1/7/14, n61/57/56);
+weekly .97/1.40/1.34/1.82 (h1/4/8/13, n38/35/30/28). Monthly .79/2.38/.70 at h1/3/6
+has n5/3/3 and is not interpretable. The weekly all-model common samples at h1/h13
+have n3 each and are also not interpretable. Posthoc scheduled origins 32/138, curves
+26/116, k 52/232, k_window 8/37, no_window_k 9/43, milk withheld 6/22 (monthly/weekly).
+These runs have no missing development-error warning. Extra buildable origins are
+record coverage, not proof of short-horizon skill.
+
+**Exit-only reset, post-test development:** six breaks (2015,2016,2022,2023,2024,2025).
+
+| Series, grain, h | n / after-break n | All dates before → reset | After break before → reset |
+|---|---|---|---|
+| Milk weekly 4 | 35 / 16 | .587 → .773 | .308 → .685 |
+| Milk monthly 3 | 3 / 2 | .611 → .650 | .622 → .654 |
+| Milking monthly 3 | 29 / 12 | .918 → .883 | .939 → .924 |
+| Milking monthly 6 | 26 / 11 | .836 → .809 | .848 → .900 |
+| Total herd monthly 6 | 26 / 11 | .867 → .879 | .909 → .934 |
+| Total herd monthly 12 | 20 / 6 | .748 → .738 | .707 → .694 |
+| Calvings monthly 3 | 29 / 12 | .686 → .663 | .667 → .630 |
+
+Reset helps weekly milk strongly (+18.6 overall and +37.7 after-break percentage points),
+but lowers overall milking accuracy 3.5/2.7 points and calvings 2.3 points. Preserve the
+fixed development verdict and these limitations together; do not call the selected
+configuration uniformly better. No updated outlook comparison or publication for this
+exit-only/reset configuration is supplied yet; the existing published combined build is
+a different experiment and must not be used as its evidence.
+
+Review validation: decision, interval, scorecard and PP1-improvement synthetic suites
+passed **42 tests, 1 deselected, in 4.65s** using the preceding documented test command.
+The new regression test retains identical scoring n, accuracy, bias and skill when only
+interval quality scaling changes, while keeping milk-quality scoring exclusions active.
+The scorecard now prints its existing `n_coverage` field. Every line of supplied aggregate
+output is retained (trailing whitespace removed); Markdown and `git diff --check` pass.
+Changes in this review: scorecard control/console metadata, the runner's diagnostic flag,
+synthetic regression test and this plan. No model or interval formula changed, and no
+real-data run, publication, database access or commit was performed by the agent.
+
 ### FINAL RUN BATCH (user runs from the repository root; aggregates only)
 
 Run in order; steps 1–2 are long, start them first. Send back the printed tables named
@@ -2366,6 +2655,1200 @@ origin  series
         abortions           0         NaN          NaN             NaN            NaN             NaN                NaN              NaN         NaN
 
 Charts in logs/pfoi/compare/ (gitignored)
+```
+
+</details>
+
+## Appendix: reproductive decision evidence (2026-10-20)
+
+User-supplied aggregate tables; descriptive post-test development evidence. N is lactations
+or known pregnancies in each printed cell. The comparison uses the same recorded cohorts
+for both engines; repeated observed values are not independent replications. Checkpoints
+on a curve are dependent. NaN means unavailable, never zero.
+
+<details>
+<summary>Reference engine — exact supplied aggregate report</summary>
+
+```text
+python -m components.predictive_farm_intelligence.pfoi.cli repro-timing --preset pfoi-1.1 --asof 2026-08-21
+Reproductive timing, lactations that started before 2026-08-21 (herd-level counts only).
+Open or pregnant cows at that date are censored, not failures; leaving the herd is its own outcome; 'first_ai' is the first RECORDED service.
+
+=== by period ===
+   period             step    n  median_days  censored_share  left_herd_share  by_60d  by_100d  by_150d  by_200d  by_300d  p25_days  p75_days  first_event_day  calved_share  lost_share  n_resolved  calved_of_resolved  lost_of_resolved
+2015-2019         first_ai 7265         66.0           0.000            0.050   0.406    0.845    0.923    0.941    0.949      53.0      84.0              3.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019       conception 7265        255.0           0.000            0.113   0.036    0.133    0.246    0.364    0.593     152.0     415.0             24.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019 calving_interval 7265        543.0           0.000            0.170   0.000    0.000    0.000    0.000    0.001     433.0     746.0             38.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019        pregnancy 6445          NaN           0.000            0.047     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.935       0.017      6445.0               0.935             0.017
+2020-2022         first_ai 3975         74.0           0.001            0.190   0.298    0.678    0.763    0.787    0.805      58.0     136.0              1.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022       conception 3975        296.0           0.000            0.304   0.047    0.159    0.267    0.365    0.505     142.0       NaN             16.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022 calving_interval 3975        644.0           0.003            0.402   0.004    0.005    0.005    0.005    0.008     432.0       NaN              1.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022        pregnancy 2765          NaN           0.000            0.107     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.856       0.037      2764.0               0.856             0.037
+2023-2026         first_ai 2257         78.0           0.053            0.165   0.299    0.669    0.775    0.810    0.828      56.0     130.0              1.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026       conception 2257        430.0           0.189            0.330   0.041    0.141    0.210    0.272    0.379     183.0       NaN             21.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026 calving_interval 2257          NaN           0.327            0.488   0.024    0.025    0.026    0.026    0.028     550.0       NaN              0.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026        pregnancy 1195          NaN           0.159            0.086     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.523       0.232      1005.0               0.622             0.276
+
+=== by period, parity_group ===
+   period parity_group             step    n  median_days  censored_share  left_herd_share  by_60d  by_100d  by_150d  by_200d  by_300d  p25_days  p75_days  first_event_day  calved_share  lost_share  n_resolved  calved_of_resolved  lost_of_resolved
+2015-2019            1         first_ai 2818         61.0           0.000            0.016   0.494    0.855    0.947    0.973    0.983      49.0      82.0              4.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019            1       conception 2818        259.0           0.000            0.050   0.028    0.097    0.195    0.326    0.603     170.0     377.0             39.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019            1 calving_interval 2818        541.0           0.000            0.083   0.000    0.000    0.000    0.000    0.000     449.0     673.0            276.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019            1        pregnancy 2677          NaN           0.000            0.024     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.965       0.011      2677.0               0.965             0.011
+2015-2019            2         first_ai 2288         68.0           0.000            0.042   0.336    0.858    0.939    0.950    0.958      57.0      83.0             14.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019            2       conception 2288        242.0           0.000            0.111   0.034    0.148    0.274    0.394    0.618     140.0     395.0             24.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019            2 calving_interval 2288        530.0           0.000            0.167   0.000    0.000    0.000    0.000    0.000     422.0     725.0            300.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019            2        pregnancy 2033          NaN           0.000            0.045     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.938       0.017      2033.0               0.938             0.017
+2015-2019           3+         first_ai 2159         67.0           0.000            0.104   0.367    0.818    0.876    0.888    0.895      56.0      89.0              3.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019           3+       conception 2159        262.0           0.000            0.196   0.046    0.165    0.281    0.383    0.552     135.0     568.0             38.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019           3+ calving_interval 2159        575.0           0.000            0.287   0.000    0.000    0.001    0.001    0.001     423.0       NaN             38.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019           3+        pregnancy 1735          NaN           0.000            0.086     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.887       0.027      1735.0               0.887             0.027
+2020-2022            1         first_ai 1007         69.0           0.004            0.088   0.337    0.763    0.869    0.888    0.909      56.0      97.0              1.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022            1       conception 1007        240.0           0.001            0.158   0.057    0.185    0.314    0.425    0.591     127.0     457.0             16.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022            1 calving_interval 1007        529.0           0.006            0.230   0.014    0.014    0.014    0.014    0.016     406.0     968.0              1.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022            1        pregnancy  847          NaN           0.000            0.065     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.908       0.027       847.0               0.908             0.027
+2020-2022            2         first_ai  724         67.0           0.000            0.112   0.373    0.765    0.849    0.865    0.885      54.0      97.0              2.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022            2       conception  724        240.0           0.000            0.207   0.064    0.202    0.336    0.448    0.588     116.0     536.0             23.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022            2 calving_interval  724        552.0           0.003            0.304   0.001    0.003    0.003    0.003    0.007     402.0       NaN             24.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022            2        pregnancy  574          NaN           0.002            0.089     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.875       0.035       573.0               0.876             0.035
+2020-2022           3+         first_ai 2244         80.0           0.000            0.260   0.256    0.611    0.688    0.717    0.733      60.0       NaN              1.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022           3+       conception 2244        371.0           0.000            0.401   0.037    0.133    0.225    0.312    0.440     162.0       NaN             25.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022           3+ calving_interval 2244          NaN           0.001            0.511   0.001    0.001    0.001    0.002    0.004     461.0       NaN             15.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022           3+        pregnancy 1344          NaN           0.000            0.141     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.815       0.045      1344.0               0.815             0.045
+2023-2026            1         first_ai  503         82.0           0.121            0.092   0.242    0.696    0.831    0.878    0.898      61.0     113.0              1.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026            1       conception  503        405.0           0.427            0.207   0.021    0.075    0.121    0.202    0.318     250.0     735.0             29.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026            1 calving_interval  503        773.0           0.596            0.281   0.054    0.054    0.056    0.056    0.056     564.0       NaN              0.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026            1        pregnancy  222          NaN           0.320            0.050     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.477       0.153       151.0               0.702             0.225
+2023-2026            2         first_ai  528         71.0           0.044            0.109   0.340    0.731    0.838    0.859    0.886      54.0     109.0              1.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026            2       conception  528        394.0           0.163            0.226   0.050    0.152    0.231    0.309    0.413     163.0     911.0             34.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026            2 calving_interval  528        999.0           0.312            0.386   0.023    0.023    0.025    0.027    0.029     480.0       NaN              6.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026            2        pregnancy  337          NaN           0.113            0.083     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.579       0.226       299.0               0.652             0.254
+2023-2026           3+         first_ai 1226         78.0           0.029            0.218   0.304    0.632    0.727    0.763    0.776      56.0     177.0              1.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026           3+       conception 1226        474.0           0.103            0.414   0.045    0.163    0.236    0.283    0.385     166.0       NaN             21.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026           3+ calving_interval 1226          NaN           0.222            0.586   0.013    0.014    0.014    0.014    0.017     576.0       NaN              0.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026           3+        pregnancy  636          NaN           0.127            0.101     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.509       0.263       555.0               0.584             0.301
+
+=== share conceived by day in milk: record (calvings 2023-2026) vs engine rates at 2026-08-01 ===
+(engine: one conception rate per DIM band)
+parity_group  day  recorded_conceived  engine_conceived  recorded_left  engine_left
+           1   60               0.021             0.033          0.041        0.016
+           1  100               0.075             0.105          0.054        0.029
+           1  150               0.121             0.187          0.068        0.049
+           1  200               0.202             0.278          0.090        0.070
+           1  300               0.318             0.422          0.105        0.111
+           2   60               0.050             0.033          0.063        0.016
+           2  100               0.152             0.131          0.079        0.029
+           2  150               0.231             0.238          0.111        0.048
+           2  200               0.309             0.327          0.130        0.068
+           2  300               0.413             0.467          0.169        0.107
+          3+   60               0.045             0.033          0.147        0.016
+          3+  100               0.163             0.130          0.177        0.029
+          3+  150               0.236             0.236          0.225        0.048
+          3+  200               0.283             0.326          0.264        0.068
+          3+  300               0.385             0.466          0.313        0.107
+
+Files in logs/pfoi/repro/. Associations in this herd only.
+```
+
+</details>
+
+<details>
+<summary>Lactation exit engine — exact supplied aggregate report</summary>
+
+```text
+python -m components.predictive_farm_intelligence.pfoi.cli repro-timing --preset pfoi-1.1 --exit-model lactation --asof 2026-08-21
+Reproductive timing, lactations that started before 2026-08-21 (herd-level counts only).
+Open or pregnant cows at that date are censored, not failures; leaving the herd is its own outcome; 'first_ai' is the first RECORDED service.
+
+=== by period ===
+   period             step    n  median_days  censored_share  left_herd_share  by_60d  by_100d  by_150d  by_200d  by_300d  p25_days  p75_days  first_event_day  calved_share  lost_share  n_resolved  calved_of_resolved  lost_of_resolved
+2015-2019         first_ai 7265         66.0           0.000            0.050   0.406    0.845    0.923    0.941    0.949      53.0      84.0              3.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019       conception 7265        255.0           0.000            0.113   0.036    0.133    0.246    0.364    0.593     152.0     415.0             24.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019 calving_interval 7265        543.0           0.000            0.170   0.000    0.000    0.000    0.000    0.001     433.0     746.0             38.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019        pregnancy 6445          NaN           0.000            0.047     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.935       0.017      6445.0               0.935             0.017
+2020-2022         first_ai 3975         74.0           0.001            0.190   0.298    0.678    0.763    0.787    0.805      58.0     136.0              1.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022       conception 3975        296.0           0.000            0.304   0.047    0.159    0.267    0.365    0.505     142.0       NaN             16.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022 calving_interval 3975        644.0           0.003            0.402   0.004    0.005    0.005    0.005    0.008     432.0       NaN              1.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022        pregnancy 2765          NaN           0.000            0.107     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.856       0.037      2764.0               0.856             0.037
+2023-2026         first_ai 2257         78.0           0.053            0.165   0.299    0.669    0.775    0.810    0.828      56.0     130.0              1.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026       conception 2257        430.0           0.189            0.330   0.041    0.141    0.210    0.272    0.379     183.0       NaN             21.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026 calving_interval 2257          NaN           0.327            0.488   0.024    0.025    0.026    0.026    0.028     550.0       NaN              0.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026        pregnancy 1195          NaN           0.159            0.086     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.523       0.232      1005.0               0.622             0.276
+
+=== by period, parity_group ===
+   period parity_group             step    n  median_days  censored_share  left_herd_share  by_60d  by_100d  by_150d  by_200d  by_300d  p25_days  p75_days  first_event_day  calved_share  lost_share  n_resolved  calved_of_resolved  lost_of_resolved
+2015-2019            1         first_ai 2818         61.0           0.000            0.016   0.494    0.855    0.947    0.973    0.983      49.0      82.0              4.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019            1       conception 2818        259.0           0.000            0.050   0.028    0.097    0.195    0.326    0.603     170.0     377.0             39.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019            1 calving_interval 2818        541.0           0.000            0.083   0.000    0.000    0.000    0.000    0.000     449.0     673.0            276.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019            1        pregnancy 2677          NaN           0.000            0.024     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.965       0.011      2677.0               0.965             0.011
+2015-2019            2         first_ai 2288         68.0           0.000            0.042   0.336    0.858    0.939    0.950    0.958      57.0      83.0             14.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019            2       conception 2288        242.0           0.000            0.111   0.034    0.148    0.274    0.394    0.618     140.0     395.0             24.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019            2 calving_interval 2288        530.0           0.000            0.167   0.000    0.000    0.000    0.000    0.000     422.0     725.0            300.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019            2        pregnancy 2033          NaN           0.000            0.045     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.938       0.017      2033.0               0.938             0.017
+2015-2019           3+         first_ai 2159         67.0           0.000            0.104   0.367    0.818    0.876    0.888    0.895      56.0      89.0              3.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019           3+       conception 2159        262.0           0.000            0.196   0.046    0.165    0.281    0.383    0.552     135.0     568.0             38.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019           3+ calving_interval 2159        575.0           0.000            0.287   0.000    0.000    0.001    0.001    0.001     423.0       NaN             38.0           NaN         NaN         NaN                 NaN               NaN
+2015-2019           3+        pregnancy 1735          NaN           0.000            0.086     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.887       0.027      1735.0               0.887             0.027
+2020-2022            1         first_ai 1007         69.0           0.004            0.088   0.337    0.763    0.869    0.888    0.909      56.0      97.0              1.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022            1       conception 1007        240.0           0.001            0.158   0.057    0.185    0.314    0.425    0.591     127.0     457.0             16.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022            1 calving_interval 1007        529.0           0.006            0.230   0.014    0.014    0.014    0.014    0.016     406.0     968.0              1.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022            1        pregnancy  847          NaN           0.000            0.065     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.908       0.027       847.0               0.908             0.027
+2020-2022            2         first_ai  724         67.0           0.000            0.112   0.373    0.765    0.849    0.865    0.885      54.0      97.0              2.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022            2       conception  724        240.0           0.000            0.207   0.064    0.202    0.336    0.448    0.588     116.0     536.0             23.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022            2 calving_interval  724        552.0           0.003            0.304   0.001    0.003    0.003    0.003    0.007     402.0       NaN             24.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022            2        pregnancy  574          NaN           0.002            0.089     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.875       0.035       573.0               0.876             0.035
+2020-2022           3+         first_ai 2244         80.0           0.000            0.260   0.256    0.611    0.688    0.717    0.733      60.0       NaN              1.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022           3+       conception 2244        371.0           0.000            0.401   0.037    0.133    0.225    0.312    0.440     162.0       NaN             25.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022           3+ calving_interval 2244          NaN           0.001            0.511   0.001    0.001    0.001    0.002    0.004     461.0       NaN             15.0           NaN         NaN         NaN                 NaN               NaN
+2020-2022           3+        pregnancy 1344          NaN           0.000            0.141     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.815       0.045      1344.0               0.815             0.045
+2023-2026            1         first_ai  503         82.0           0.121            0.092   0.242    0.696    0.831    0.878    0.898      61.0     113.0              1.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026            1       conception  503        405.0           0.427            0.207   0.021    0.075    0.121    0.202    0.318     250.0     735.0             29.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026            1 calving_interval  503        773.0           0.596            0.281   0.054    0.054    0.056    0.056    0.056     564.0       NaN              0.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026            1        pregnancy  222          NaN           0.320            0.050     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.477       0.153       151.0               0.702             0.225
+2023-2026            2         first_ai  528         71.0           0.044            0.109   0.340    0.731    0.838    0.859    0.886      54.0     109.0              1.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026            2       conception  528        394.0           0.163            0.226   0.050    0.152    0.231    0.309    0.413     163.0     911.0             34.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026            2 calving_interval  528        999.0           0.312            0.386   0.023    0.023    0.025    0.027    0.029     480.0       NaN              6.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026            2        pregnancy  337          NaN           0.113            0.083     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.579       0.226       299.0               0.652             0.254
+2023-2026           3+         first_ai 1226         78.0           0.029            0.218   0.304    0.632    0.727    0.763    0.776      56.0     177.0              1.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026           3+       conception 1226        474.0           0.103            0.414   0.045    0.163    0.236    0.283    0.385     166.0       NaN             21.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026           3+ calving_interval 1226          NaN           0.222            0.586   0.013    0.014    0.014    0.014    0.017     576.0       NaN              0.0           NaN         NaN         NaN                 NaN               NaN
+2023-2026           3+        pregnancy  636          NaN           0.127            0.101     NaN      NaN      NaN      NaN      NaN       NaN       NaN              NaN         0.509       0.263       555.0               0.584             0.301
+
+=== share conceived by day in milk: record (calvings 2023-2026) vs engine rates at 2026-08-01 ===
+(engine: one conception rate per DIM band)
+parity_group  day  recorded_conceived  engine_conceived  recorded_left  engine_left
+           1   60               0.021             0.033          0.041        0.028
+           1  100               0.075             0.104          0.054        0.041
+           1  150               0.121             0.185          0.068        0.059
+           1  200               0.202             0.275          0.090        0.080
+           1  300               0.318             0.418          0.105        0.120
+           2   60               0.050             0.033          0.063        0.017
+           2  100               0.152             0.131          0.079        0.031
+           2  150               0.231             0.238          0.111        0.050
+           2  200               0.309             0.327          0.130        0.069
+           2  300               0.413             0.466          0.169        0.107
+          3+   60               0.045             0.033          0.147        0.027
+          3+  100               0.163             0.129          0.177        0.041
+          3+  150               0.236             0.233          0.225        0.060
+          3+  200               0.283             0.322          0.264        0.079
+          3+  300               0.385             0.461          0.313        0.117
+
+Files in logs/pfoi/repro/. Associations in this herd only.
+```
+
+</details>
+
+## Appendix: completed decision-run output (2026-10-20)
+
+Exact user-supplied aggregate evidence. Development origins are 2017–2023; 2024–26
+results are post-test development. Counts are explicitly printed per metric table;
+notes overlap and progress counts are not scored n. Coverage denominators were not
+separately printed in this run. The quality-off control changes scoring eligibility
+and is not a matched scaling-only comparison. NaN is missing, never zero.
+
+<details>
+<summary>Full decision-run aggregate output — ten commands, development before posthoc</summary>
+
+```text
+python -m components.predictive_farm_intelligence.pfoi.pp1_decisions --run --jobs 12
+Exit-only safeguards (DEVELOPMENT; n is scored forecast periods):
+  grain   series  horizon   n  baseline_mae  exit_mae  change_pct  passed
+monthly calvings        1  84       17.0911   17.1021      0.0642    True
+monthly calvings        3  82        8.0544    8.0863      0.3964    True
+monthly calvings        6  79       17.0824   17.0491     -0.1949    True
+monthly calvings       12  73       25.6331   26.0303      1.5496    True
+monthly  milking        3  82       68.0685   66.8058     -1.8551    True
+monthly  milking        6  79      106.0881   99.6031     -6.1128    True
+monthly   n_herd        3  82       74.7944   73.1749     -2.1653    True
+monthly   n_herd        6  79      123.9300  120.9627     -2.3943    True
+ weekly calvings        1 365        6.5673    6.5680      0.0103    True
+ weekly calvings        4 362        4.9133    4.9154      0.0426    True
+ weekly calvings        8 358        4.4195    4.4258      0.1414    True
+ weekly calvings       13 353        4.2538    4.2637      0.2315    True
+Exit option: KEEP (numerical safeguards passed; reproductive evidence in PP1 plan)
+
+/opt/anaconda3/bin/python -m components.predictive_farm_intelligence.pfoi.cli backtest-milk --preset pfoi-1.1 --out logs/pfoi --exit-model lactation --k anchor_first --grain both --jobs 12
+
+  monthly: origin 1/84 (2017-01-01)
+  monthly: origin 11/84 (2017-11-01)
+  monthly: origin 21/84 (2018-11-01)
+  monthly: origin 31/84 (2019-05-01)
+  monthly: origin 41/84 (2020-05-01)
+  monthly: origin 51/84 (2021-03-01)
+  monthly: origin 61/84 (2022-01-01)
+  monthly: origin 71/84 (2022-11-01)
+  monthly: origin 81/84 (2023-09-01)
+
+Notes (monthly origins, number of origins):
+         note  n_origins
+        curve         84
+            k        168
+     k_window          2
+source_switch          7
+  weekly: origin 1/365 (2017-08-14)
+  weekly: origin 11/365 (2017-07-03)
+  weekly: origin 21/365 (2017-01-30)
+  weekly: origin 31/365 (2017-04-10)
+  weekly: origin 41/365 (2017-10-09)
+  weekly: origin 51/365 (2017-12-18)
+  weekly: origin 61/365 (2018-02-26)
+  weekly: origin 71/365 (2018-05-07)
+  weekly: origin 81/365 (2018-09-10)
+  weekly: origin 91/365 (2018-07-30)
+  weekly: origin 101/365 (2019-01-28)
+  weekly: origin 111/365 (2018-12-17)
+  weekly: origin 121/365 (2019-02-25)
+  weekly: origin 131/365 (2019-08-26)
+  weekly: origin 141/365 (2019-07-15)
+  weekly: origin 151/365 (2019-11-18)
+  weekly: origin 161/365 (2020-01-27)
+  weekly: origin 171/365 (2020-04-06)
+  weekly: origin 181/365 (2020-06-15)
+  weekly: origin 191/365 (2020-08-24)
+  weekly: origin 201/365 (2020-11-02)
+  weekly: origin 211/365 (2021-01-11)
+  weekly: origin 221/365 (2021-03-22)
+  weekly: origin 231/365 (2021-05-31)
+  weekly: origin 241/365 (2021-06-14)
+  weekly: origin 251/365 (2021-10-18)
+  weekly: origin 261/365 (2021-12-27)
+  weekly: origin 271/365 (2022-03-07)
+  weekly: origin 281/365 (2022-05-16)
+  weekly: origin 291/365 (2022-07-25)
+  weekly: origin 301/365 (2022-10-03)
+  weekly: origin 311/365 (2022-12-12)
+  weekly: origin 321/365 (2023-02-20)
+  weekly: origin 331/365 (2023-12-11)
+  weekly: origin 341/365 (2023-06-05)
+  weekly: origin 351/365 (2023-08-14)
+  weekly: origin 361/365 (2023-10-23)
+
+Notes (weekly origins, number of origins):
+         note  n_origins
+        curve        365
+            k        730
+     k_window         11
+source_switch         34
+
+Done. Run milk-report with the same options to see the H1 table. Files in logs/pfoi/.
+
+/opt/anaconda3/bin/python -m components.predictive_farm_intelligence.pfoi.cli milk-report --preset pfoi-1.1 --out logs/pfoi --exit-model lactation --k anchor_first
+
+=== monthly (herd_fitted_p1_g0_kf, window 24) — litres per period ===
+MAE:
+model         ets  milk_baseline  milk_baseline_corrected  persistence    sarima  seasonal_naive
+horizon
+1         45351.0        17477.0                  17654.0      27789.0   32208.0        141442.0
+3        141766.0        50412.0                  46976.0      65368.0   77844.0        141442.0
+6        284900.0        81927.0                  91488.0      95860.0   95587.0        130780.0
+12       379179.0        78088.0                  88015.0     129284.0  137502.0        131136.0
+MAE ratio vs persistence (< 1 = better):
+model     ets  milk_baseline  milk_baseline_corrected  persistence  sarima  seasonal_naive
+horizon
+1        1.63           0.63                     0.64          1.0    1.16            5.09
+3        2.17           0.77                     0.72          1.0    1.19            2.16
+6        2.97           0.85                     0.95          1.0    1.00            1.36
+12       2.93           0.60                     0.68          1.0    1.06            1.01
+bias (forecast - actual):
+model        ets  milk_baseline  milk_baseline_corrected  persistence    sarima  seasonal_naive
+horizon
+1        -3308.2         4780.8                    303.4       2910.9   17831.2         80507.4
+3       -14830.7        34952.3                   2819.3       6452.0   49316.8         80507.4
+6       -69494.1        70742.1                   2151.2      13484.9   61489.5         67911.1
+12      -62414.7        48869.8                  21905.2      70685.7  106913.4         72341.8
+MAPE %:
+model      ets  milk_baseline  milk_baseline_corrected  persistence  sarima  seasonal_naive
+horizon
+1          9.2            4.6                      5.2          6.7     7.6            45.1
+3         26.4           14.9                     15.9         14.6    18.0            45.1
+6         68.3           21.5                     24.3         22.0    27.8            42.9
+12       125.4           27.8                     25.5         45.1    64.3            45.5
+90% interval coverage %:
+model     ets  milk_baseline  milk_baseline_corrected  persistence  sarima  seasonal_naive
+horizon
+1        92.0           87.5                     82.1         87.5    87.0            73.6
+3        79.5           78.8                     71.2         78.8    78.9            72.5
+6        66.7           85.1                     76.6         68.1    44.4            54.3
+12       39.4           48.6                     37.1         37.1     8.3            35.3
+n periods scored:
+model     ets  milk_baseline  milk_baseline_corrected  persistence  sarima  seasonal_naive
+horizon
+1        62.0           68.0                     68.0         68.0    35.0            65.0
+3        58.0           66.0                     66.0         66.0    33.0            65.0
+6        59.0           64.0                     64.0         64.0    33.0            63.0
+12       57.0           58.0                     58.0         58.0    31.0            57.0
+
+=== monthly: COMMON PERIODS (all models) — MAE ratio vs persistence ===
+model    ets  milk_baseline  milk_baseline_corrected  persistence  sarima  seasonal_naive  n_periods
+horizon
+1       1.64           0.77                     0.68         1.00    1.65            5.87         35
+3       2.39           0.96                     0.64         1.00    1.56            2.36         33
+6       3.87           0.98                     0.56         1.00    1.26            1.66         33
+12      3.15           0.59                     0.58         1.00    0.99            1.00         31
+
+=== monthly: COMMON PERIODS (all models except SARIMA) — MAE ratio vs persistence ===
+model    ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive  n_periods
+horizon
+1       1.57           0.64                     0.62         1.00            4.94         59
+3       1.99           0.72                     0.62         1.00            1.95         58
+6       2.80           0.84                     0.91         1.00            1.29         59
+12      2.89           0.60                     0.67         1.00            1.00         57
+
+=== daily (herd_fitted_p1_g0_kf, window 24) — litres per period ===
+MAE:
+model      ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        324.0          457.0                    466.0        387.0          4679.0
+7        570.0          585.0                    597.0        548.0          4682.0
+14       704.0          707.0                    727.0        695.0          4693.0
+MAE ratio vs persistence (< 1 = better):
+model     ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        0.84           1.18                     1.20          1.0           12.10
+7        1.04           1.07                     1.09          1.0            8.55
+14       1.01           1.02                     1.05          1.0            6.75
+bias (forecast - actual):
+model     ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1         3.7           48.7                     16.9         -9.6          2929.1
+7        34.0          145.1                     -9.5         30.2          2964.6
+14       74.5          251.2                    -30.8         77.0          2976.3
+MAPE %:
+model    ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        2.9            4.3                      4.4          3.4            50.1
+7        4.8            6.3                      6.6          5.0            50.3
+14       6.2            7.6                      8.1          6.3            50.4
+90% interval coverage %:
+model     ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        80.4           83.1                     85.1         79.1            80.1
+7        80.6           83.5                     81.8         85.9            80.2
+14       83.8           83.4                     81.1         87.5            80.1
+n periods scored:
+model      ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        329.0          348.0                    348.0        348.0           330.0
+7        326.0          348.0                    348.0        348.0           331.0
+14       326.0          347.0                    347.0        347.0           330.0
+
+=== weekly (herd_fitted_p1_g0_kf, window 24) — litres per period ===
+MAE:
+model        ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1         2727.0         3088.0                   3052.0       2809.0         32560.0
+4         6593.0         5730.0                   5767.0       6567.0         32736.0
+8        12152.0         9123.0                   9553.0      10555.0         32694.0
+13       19029.0        12766.0                  14299.0      14580.0         32475.0
+MAE ratio vs persistence (< 1 = better):
+model     ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        0.97           1.10                     1.09          1.0           11.59
+4        1.00           0.87                     0.88          1.0            4.99
+8        1.15           0.86                     0.91          1.0            3.10
+13       1.31           0.88                     0.98          1.0            2.23
+bias (forecast - actual):
+model      ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        130.5          685.4                     63.2        251.3         19774.1
+4        273.4         2887.1                   -415.8        958.5         19914.2
+8        242.3         5933.6                  -1195.0       1454.6         19789.9
+13      -671.7         9364.6                  -2686.4       2010.6         19447.8
+MAPE %:
+model     ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1         3.2            3.9                      3.9          3.4            47.4
+4         7.0            8.1                      8.5          7.9            47.7
+8        12.8           13.0                     14.4         12.1            47.7
+13       16.7           17.7                     20.4         15.9            47.6
+90% interval coverage %:
+model     ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        83.4           82.3                     82.0         82.3            79.4
+4        86.6           83.9                     81.1         86.4            78.4
+8        88.0           83.7                     80.4         84.4            77.0
+13       93.3           83.0                     79.3         82.7            76.2
+n periods scored:
+model      ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        309.0          333.0                    333.0        333.0           319.0
+4        303.0          330.0                    330.0        330.0           317.0
+8        299.0          326.0                    326.0        326.0           315.0
+13       290.0          323.0                    323.0        323.0           312.0
+
+=== daily: COMMON PERIODS (all models) — MAE ratio vs persistence ===
+model    ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive  n_periods
+horizon
+1       0.82           1.12                     1.13         1.00           11.64        314
+7       1.06           1.01                     1.04         1.00            8.42        312
+14      1.03           0.95                     1.00         1.00            6.73        311
+
+=== weekly: COMMON PERIODS (all models) — MAE ratio vs persistence ===
+model    ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive  n_periods
+horizon
+1       0.98           1.07                     1.06         1.00           11.60        299
+4       1.00           0.83                     0.84         1.00            4.89        297
+8       1.11           0.79                     0.84         1.00            2.91        294
+13      1.25           0.80                     0.91         1.00            2.04        283
+
+/opt/anaconda3/bin/python -m components.predictive_farm_intelligence.pfoi.cli break-reset --herd-tag w24_ck_kn_rk_lag90_hl6_xl --milk-tag herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_xl --out logs/pfoi
+Breaks detected (herd size +/-10 % over 90 days, or milk back after 28+ days): 4; years: 2015, 2016, 2022, 2023
+
+=== correction layer with and without the break reset (development) ===
+   series   grain  horizon                     model   n  accuracy  n_after  after_break
+herd_milk  weekly        4    milk_baseline_adaptive 330     0.944       33        0.834
+herd_milk  weekly        4 milk_baseline_adaptive_br 330     0.945       33        0.853
+herd_milk monthly        3    milk_baseline_adaptive  66     0.909        6        0.729
+herd_milk monthly        3 milk_baseline_adaptive_br  66     0.910        6        0.790
+  milking monthly        3     herd_engine_corrected  82     0.941        8        0.873
+  milking monthly        3  herd_engine_corrected_br  82     0.943        8        0.912
+  milking monthly        6     herd_engine_corrected  79     0.930        8        0.726
+  milking monthly        6  herd_engine_corrected_br  79     0.939        8        0.858
+   n_herd monthly        6     herd_engine_corrected  79     0.956        8        0.892
+   n_herd monthly        6  herd_engine_corrected_br  79     0.959        8        0.935
+   n_herd monthly       12     herd_engine_corrected  73     0.952        2        0.829
+   n_herd monthly       12  herd_engine_corrected_br  73     0.953        2        0.870
+ calvings monthly        3     herd_engine_corrected  82     0.936        8        0.916
+ calvings monthly        3  herd_engine_corrected_br  82     0.938        8        0.947
+
+Keep rule: PASSED
+Wrote candidates w24_ck_kn_rk_lag90_hl6_xl_br and herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_xl_br (models *_br).
+SELECTED-CONFIG RESET: KEEP
+Small after-break samples: numerical verdict is not strong confirmation.
+
+/opt/anaconda3/bin/python -m components.predictive_farm_intelligence.pfoi.cli scorecard --preset pfoi-1.1 --out logs/pfoi --exit-model lactation --k anchor_first --block development --intervals empirical
+
+=== development block: targets (docs/targets.md), herd-level aggregates ===
+                                                n  accuracy  target_accuracy  skill best_benchmark  bias_pct  coverage80  coverage90  width90  deviance_ratio  target calibrated                                           reasons
+grain   series         horizon model
+daily   herd_milk      1       milk_baseline  348     0.970            0.950 -0.372            ets     0.003       0.740       0.831    0.119             NaN  missed         no                             skill below condition
+                       7       milk_baseline  348     0.962            0.920 -0.069    persistence     0.009       0.724       0.835    0.144             NaN  missed         no                             skill below condition
+                       14      milk_baseline  347     0.954            0.900 -0.017    persistence     0.016       0.767       0.834    0.180             NaN     met         no
+monthly calvings       1       herd_engine     75     0.860            0.800  0.382    persistence     0.139       0.734       0.828    0.240             NaN     met         no
+                       3       herd_engine     73     0.935            0.800  0.798         sarima     0.027       0.767       0.850    0.229             NaN     met        yes
+                       6       herd_engine     71     0.861            0.750  0.533         sarima     0.057       0.519       0.667    0.324             NaN     met         no
+                       12      herd_engine     65     0.767            0.650  0.293         sarima     0.139       0.690       0.905    0.651             NaN     met         no
+        culls          1       herd_engine     75     0.472              NaN  0.238    persistence    -0.086       0.862       0.966   11.519           0.537  missed         no                       80% coverage outside 75-85%
+                       3       herd_engine     73     0.466              NaN  0.221    persistence    -0.095       0.833       0.981    3.428           0.505     met         no
+                       6       herd_engine     71     0.441              NaN  0.268    persistence    -0.170       0.833       0.958   12.301           0.550     met         no
+                       12      herd_engine     65     0.400              NaN  0.185    persistence    -0.259       0.750       0.889   19.167           0.520     met        yes
+        deaths         1       herd_engine     75     0.762              NaN -0.025    persistence    -0.013       0.703       0.844    1.065           1.023  missed         no  80% coverage outside 75-85%; deviance ratio >= 1
+                       3       herd_engine     73     0.725              NaN  0.203    persistence     0.001       0.617       0.717    0.984           0.469  missed         no                       80% coverage outside 75-85%
+                       6       herd_engine     71     0.670              NaN  0.249    persistence    -0.027       0.519       0.574    1.051           0.418  missed         no                       80% coverage outside 75-85%
+                       12      herd_engine     65     0.586              NaN  0.115    persistence    -0.084       0.429       0.452    1.805           0.669  missed         no                       80% coverage outside 75-85%
+        dry_offs       1       herd_engine     75     0.610            0.750  0.360    persistence    -0.025       0.672       0.797    1.505             NaN  missed         no                                    accuracy < 75%
+                       3       herd_engine     73     0.593            0.700  0.344    persistence    -0.087       0.633       0.733    1.543             NaN  missed         no                                    accuracy < 70%
+                       6       herd_engine     71     0.577            0.700  0.387    persistence    -0.115       0.704       0.778    1.626             NaN  missed         no                                    accuracy < 70%
+                       12      herd_engine     65     0.578            0.650  0.416    persistence    -0.014       0.738       0.810    1.501             NaN  missed         no                                    accuracy < 65%
+        herd_milk      1       milk_baseline   68     0.965            0.920  0.371    persistence     0.010       0.786       0.875    0.141             NaN     met        yes
+                       3       milk_baseline   66     0.900            0.900  0.229    persistence     0.069       0.577       0.788    0.343             NaN  missed         no       accuracy < 90%; |bias| > 3%; width90 > 0.30
+                       6       milk_baseline   64     0.838            0.880  0.145    persistence     0.140       0.660       0.851    0.442             NaN  missed         no                       accuracy < 88%; |bias| > 3%
+                       12      milk_baseline   58     0.837            0.850  0.396    persistence     0.102       0.371       0.486    0.439             NaN  missed         no                       accuracy < 85%; |bias| > 3%
+        milking        1       herd_engine     75     0.979            0.970  0.139    persistence     0.005       0.672       0.797    0.082             NaN     met         no
+                       3       herd_engine     73     0.953            0.950  0.292    persistence     0.021       0.700       0.717    0.158             NaN     met         no
+                       6       herd_engine     71     0.931            0.920  0.318    persistence     0.048       0.667       0.722    0.153             NaN     met         no
+                       12      herd_engine     65     0.932            0.880  0.545    persistence    -0.012       0.571       0.833    0.252             NaN     met         no
+        n_herd         1       herd_engine     75     0.993            0.980 -0.104    persistence     0.005       0.734       0.859    0.035             NaN     met         no
+                       3       herd_engine     73     0.976            0.960 -0.140    persistence     0.012       0.767       0.817    0.098             NaN     met         no
+                       6       herd_engine     71     0.963            0.940 -0.053    persistence     0.020       0.759       0.852    0.137             NaN  missed        yes                             skill below condition
+                       12      herd_engine     65     0.953            0.900  0.176         sarima     0.027       0.762       0.786    0.144             NaN     met         no
+        real_abortions 1       herd_engine     75     0.424              NaN -0.037    persistence     0.033       0.703       0.859    2.027           0.881  missed         no                       80% coverage outside 75-85%
+                       3       herd_engine     73     0.369              NaN -0.021    persistence     0.042       0.600       0.800    2.037           0.916  missed         no                       80% coverage outside 75-85%
+                       6       herd_engine     71     0.308              NaN  0.175    persistence     0.071       0.667       0.741    2.123           0.634  missed         no                       80% coverage outside 75-85%
+                       12      herd_engine     65     0.228              NaN  0.048    persistence     0.183       0.690       0.738    2.074           0.648  missed         no                       80% coverage outside 75-85%
+        sales          1       herd_engine     75     0.381              NaN  0.120    persistence    -0.016       0.734       0.844    2.326           0.537  missed         no                       80% coverage outside 75-85%
+                       3       herd_engine     73     0.389              NaN  0.231    persistence     0.072       0.717       0.833    2.220           0.422  missed         no                       80% coverage outside 75-85%
+                       6       herd_engine     71     0.368              NaN  0.320    persistence     0.110       0.722       0.852    1.907           0.289  missed         no                       80% coverage outside 75-85%
+                       12      herd_engine     65     0.264              NaN  0.135    persistence     0.216       0.595       0.762    1.766           0.505  missed         no                       80% coverage outside 75-85%
+weekly  herd_milk      1       milk_baseline  333     0.972            0.930 -0.103            ets     0.006       0.739       0.823    0.121             NaN     met         no
+                       4       milk_baseline  330     0.948            0.900  0.127    persistence     0.026       0.739       0.839    0.230             NaN     met         no
+                       13      milk_baseline  323     0.884            0.870  0.124    persistence     0.085       0.712       0.830    0.439             NaN     met         no
+rows met (target and calibrated): 5 of 42; not interpretable: 0
+
+=== other series and horizons (no target): accuracy and skill ===
+                                     accuracy                                             skill
+horizon                                    1      3      4      6      8      12     13      1      3      4      6      8      12     13
+block       grain   series
+development monthly ais                 0.786  0.772    NaN  0.741    NaN  0.730    NaN  -1.141 -0.260    NaN  0.013    NaN -0.162    NaN
+                    births              0.858  0.937    NaN  0.860    NaN  0.766    NaN   0.373  0.837    NaN  0.679    NaN  0.348    NaN
+                    calves              0.959  0.890    NaN  0.867    NaN  0.890    NaN   0.027  0.143    NaN  0.080    NaN  0.417    NaN
+                    calvings_heifer     0.886  0.879    NaN  0.289    NaN  0.357    NaN   0.693  0.839    NaN  0.273    NaN  0.247    NaN
+                    dry_open            0.414  0.314    NaN  0.284    NaN  0.276    NaN  -5.507 -1.827    NaN -0.765    NaN -0.305    NaN
+                    dry_pregnant        0.870  0.817    NaN  0.796    NaN  0.894    NaN  -1.363 -0.327    NaN -0.077    NaN  0.547    NaN
+                    external_entries    0.031  0.027    NaN  0.005    NaN -0.065    NaN   0.279  0.313    NaN  0.344    NaN  0.353    NaN
+                    heifers_open        0.868  0.819    NaN  0.766    NaN  0.833    NaN  -3.116 -0.469    NaN -0.081    NaN  0.311    NaN
+                    heifers_pregnant    0.771  0.707    NaN  0.611    NaN  0.742    NaN  -3.404 -0.294    NaN  0.065    NaN  0.453    NaN
+            weekly  ais                 0.772    NaN  0.766    NaN  0.759    NaN  0.752  -0.789    NaN -0.613    NaN -0.350    NaN -0.158
+                    births              0.762    NaN  0.826    NaN  0.844    NaN  0.852  -0.026    NaN  0.459    NaN  0.595    NaN  0.674
+                    calves              0.983    NaN  0.936    NaN  0.904    NaN  0.882  -0.086    NaN -0.036    NaN  0.053    NaN  0.109
+                    calvings            0.764    NaN  0.827    NaN  0.846    NaN  0.852  -0.031    NaN  0.457    NaN  0.595    NaN  0.672
+                    culls               0.097    NaN  0.084    NaN  0.086    NaN  0.087   0.166    NaN  0.147    NaN  0.268    NaN  0.251
+                    deaths              0.647    NaN  0.642    NaN  0.628    NaN  0.615   0.106    NaN  0.154    NaN  0.249    NaN  0.228
+                    dry_offs            0.062    NaN  0.066    NaN  0.055    NaN  0.044   0.302    NaN  0.201    NaN  0.181    NaN  0.221
+                    dry_open            0.432    NaN  0.388    NaN  0.343    NaN  0.307 -13.248    NaN -3.879    NaN -2.381    NaN -1.611
+                    dry_pregnant        0.883    NaN  0.858    NaN  0.832    NaN  0.813  -3.163    NaN -0.790    NaN -0.458    NaN -0.249
+                    external_entries   -0.257    NaN -0.254    NaN -0.257    NaN -0.264   0.290    NaN  0.267    NaN  0.251    NaN  0.290
+                    heifers_open        0.879    NaN  0.868    NaN  0.846    NaN  0.818 -12.275    NaN -1.903    NaN -0.794    NaN -0.404
+                    heifers_pregnant    0.770    NaN  0.760    NaN  0.730    NaN  0.685 -14.574    NaN -1.887    NaN -0.645    NaN -0.206
+                    herd_milk             NaN    NaN    NaN    NaN  0.917    NaN    NaN     NaN    NaN    NaN    NaN  0.136    NaN    NaN
+                    milking             0.989    NaN  0.970    NaN  0.958    NaN  0.948   0.047    NaN  0.141    NaN  0.196    NaN  0.259
+                    n_herd              0.997    NaN  0.988    NaN  0.981    NaN  0.974  -0.140    NaN -0.153    NaN -0.154    NaN -0.133
+                    real_abortions      0.196    NaN  0.182    NaN  0.170    NaN  0.136   0.047    NaN  0.133    NaN  0.087    NaN  0.134
+                    sales               0.099    NaN  0.096    NaN  0.090    NaN  0.086   0.055    NaN  0.088    NaN  0.204    NaN  0.165
+
+=== accuracy by record-quality band (targets use normal + degraded); n in brackets ===
+band                                     degraded         gap       normal
+block       grain   series    horizon
+development daily   herd_milk 1        0.854 (25)              0.972 (323)
+                              7        0.869 (22)              0.963 (326)
+                              14       0.834 (22)              0.956 (325)
+            monthly calvings  1         0.829 (2)   0.835 (9)   0.861 (73)
+                              3         0.936 (2)   0.925 (9)   0.935 (71)
+                              6         0.946 (2)   0.814 (8)   0.860 (69)
+                              12        0.509 (2)   0.848 (8)   0.771 (63)
+                    herd_milk 1         0.782 (2)               0.966 (66)
+                              3         0.705 (2)               0.901 (64)
+                              6         0.695 (2)               0.839 (62)
+                              12        0.648 (2)               0.838 (56)
+                    milking   1         0.966 (2)   0.976 (9)   0.979 (73)
+                              3         0.897 (2)   0.891 (9)   0.954 (71)
+                              6         0.808 (2)   0.826 (8)   0.933 (69)
+                              12        0.812 (2)   0.854 (8)   0.935 (63)
+                    n_herd    1         0.997 (2)   0.991 (9)   0.993 (73)
+                              3         0.974 (2)   0.976 (9)   0.976 (71)
+                              6         0.916 (2)   0.938 (8)   0.964 (69)
+                              12        0.969 (2)   0.941 (8)   0.953 (63)
+            weekly  calvings  1        0.782 (21)  0.759 (20)  0.763 (324)
+                              4        0.805 (21)  0.770 (20)  0.828 (321)
+                              8        0.857 (21)  0.783 (20)  0.845 (317)
+                              13       0.884 (21)  0.778 (18)  0.851 (314)
+                    herd_milk 1        0.895 (18)              0.973 (315)
+                              4        0.777 (18)              0.950 (312)
+                              8        0.694 (18)              0.920 (308)
+                              13       0.702 (18)              0.886 (305)
+                    milking   1        0.983 (21)  0.986 (20)  0.989 (324)
+                              4        0.958 (21)  0.933 (20)  0.971 (321)
+                              8        0.934 (21)  0.874 (20)  0.959 (317)
+                              13       0.907 (21)  0.814 (18)  0.950 (314)
+                    n_herd    1        0.997 (21)  0.996 (20)  0.997 (324)
+                              4        0.994 (21)  0.981 (20)  0.988 (321)
+                              8        0.989 (21)  0.969 (20)  0.980 (317)
+                              13       0.976 (21)  0.964 (18)  0.973 (314)
+
+=== accuracy by months from the latest break to the origin; n in brackets ===
+since_break                            0-2 months  3-5 months 6-11 months before any break
+block       grain   series    horizon
+development daily   herd_milk 1        0.912 (21)  0.899 (13)  0.913 (21)      0.972 (293)
+                              7        0.854 (22)  0.928 (13)  0.879 (21)      0.965 (292)
+                              14       0.787 (22)  0.908 (13)  0.837 (21)      0.959 (291)
+            monthly calvings  1         0.827 (8)   0.929 (3)   0.896 (5)       0.857 (68)
+                              3         0.935 (6)   0.948 (3)   0.964 (5)       0.932 (68)
+                              6         0.770 (6)   0.918 (3)   0.855 (2)       0.862 (68)
+                              12        0.716 (5)                               0.777 (68)
+                    herd_milk 1         0.867 (3)   0.983 (2)   0.830 (3)       0.967 (60)
+                              3         0.379 (4)   0.796 (2)   0.705 (2)       0.909 (58)
+                              6         0.448 (4)   0.695 (2)                   0.843 (58)
+                              12        0.648 (2)                               0.838 (56)
+                    milking   1         0.976 (8)   0.970 (3)   0.970 (5)       0.979 (68)
+                              3         0.937 (6)   0.892 (3)   0.916 (5)       0.952 (68)
+                              6         0.907 (6)   0.805 (3)   0.890 (2)       0.928 (68)
+                              12        0.771 (5)                               0.934 (68)
+                    n_herd    1         0.988 (8)   0.992 (3)   0.995 (5)       0.993 (68)
+                              3         0.952 (6)   0.970 (3)   0.981 (5)       0.978 (68)
+                              6         0.933 (6)   0.921 (3)   0.937 (2)       0.964 (68)
+                              12        0.925 (5)                               0.954 (68)
+            weekly  calvings  1        0.779 (34)  0.801 (13)  0.798 (22)      0.759 (296)
+                              4        0.779 (31)  0.797 (13)  0.820 (22)      0.828 (296)
+                              8        0.782 (27)  0.823 (13)  0.840 (22)      0.847 (296)
+                              13       0.779 (26)  0.896 (13)  0.848 (18)      0.851 (296)
+                    herd_milk 1        0.885 (19)  0.926 (12)  0.907 (19)      0.974 (283)
+                              4        0.674 (19)  0.883 (13)  0.808 (18)      0.954 (280)
+                              8        0.494 (20)  0.871 (13)  0.687 (17)      0.926 (276)
+                              13       0.372 (25)  0.865 (12)  0.655 (13)      0.895 (273)
+                    milking   1        0.987 (34)  0.983 (13)  0.982 (22)      0.989 (296)
+                              4        0.953 (31)  0.960 (13)  0.955 (22)      0.970 (296)
+                              8        0.939 (27)  0.922 (13)  0.932 (22)      0.958 (296)
+                              13       0.934 (26)  0.884 (13)  0.905 (18)      0.947 (296)
+                    n_herd    1        0.996 (34)  0.997 (13)  0.998 (22)      0.997 (296)
+                              4        0.980 (31)  0.992 (13)  0.994 (22)      0.988 (296)
+                              8        0.962 (27)  0.983 (13)  0.988 (22)      0.981 (296)
+                              13       0.949 (26)  0.964 (13)  0.980 (18)      0.975 (296)
+
+=== recovery targets (verified periods after a break) ===
+      block    series  grain  horizon since_break  n  accuracy  target_accuracy target
+development herd_milk weekly        4  0-2 months 19     0.674            0.900 missed
+
+Full table: logs/pfoi/scorecard_development_herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_xl.csv (gitignored)
+
+/opt/anaconda3/bin/python -m components.predictive_farm_intelligence.pfoi.cli scorecard --preset pfoi-1.1 --out logs/pfoi --exit-model lactation --k anchor_first --block development --intervals aci
+
+=== development block: targets (docs/targets.md), herd-level aggregates ===
+                                                n  accuracy  target_accuracy  skill best_benchmark  bias_pct  coverage80  coverage90  width90  deviance_ratio  target calibrated                                           reasons
+grain   series         horizon model
+daily   herd_milk      1       milk_baseline  348     0.970            0.950 -0.372            ets     0.003       0.784       0.889    0.195             NaN  missed        yes                             skill below condition
+                       7       milk_baseline  348     0.962            0.920 -0.069    persistence     0.009       0.778       0.886    0.237             NaN  missed        yes                             skill below condition
+                       14      milk_baseline  347     0.954            0.900 -0.017    persistence     0.016       0.780       0.875    0.304             NaN     met        yes
+monthly calvings       1       herd_engine     75     0.860            0.800  0.382    persistence     0.139       0.766       0.875    0.270             NaN     met        yes
+                       3       herd_engine     73     0.935            0.800  0.798         sarima     0.027       0.783       0.850    0.278             NaN     met        yes
+                       6       herd_engine     71     0.861            0.750  0.533         sarima     0.057       0.685       0.796    0.546             NaN     met         no
+                       12      herd_engine     65     0.767            0.650  0.293         sarima     0.139       0.833       0.952    0.742             NaN     met         no
+        culls          1       herd_engine     75     0.472              NaN  0.238    persistence    -0.086       0.754       0.860    5.030           0.537     met        yes
+                       3       herd_engine     73     0.466              NaN  0.221    persistence    -0.095       0.755       0.849    3.255           0.505     met         no
+                       6       herd_engine     71     0.441              NaN  0.268    persistence    -0.170       0.723       0.872    6.691           0.550  missed         no                       80% coverage outside 75-85%
+                       12      herd_engine     65     0.400              NaN  0.185    persistence    -0.259       0.714       0.857    8.507           0.520  missed         no                       80% coverage outside 75-85%
+        deaths         1       herd_engine     75     0.762              NaN -0.025    persistence    -0.013       0.734       0.859    1.210           1.023  missed         no  80% coverage outside 75-85%; deviance ratio >= 1
+                       3       herd_engine     73     0.725              NaN  0.203    persistence     0.001       0.683       0.817    1.257           0.469  missed         no                       80% coverage outside 75-85%
+                       6       herd_engine     71     0.670              NaN  0.249    persistence    -0.027       0.667       0.778    1.451           0.418  missed         no                       80% coverage outside 75-85%
+                       12      herd_engine     65     0.586              NaN  0.115    persistence    -0.084       0.571       0.643    2.281           0.669  missed         no                       80% coverage outside 75-85%
+        dry_offs       1       herd_engine     75     0.610            0.750  0.360    persistence    -0.025       0.797       0.844    2.056             NaN  missed         no                                    accuracy < 75%
+                       3       herd_engine     73     0.593            0.700  0.344    persistence    -0.087       0.750       0.833    2.555             NaN  missed         no                                    accuracy < 70%
+                       6       herd_engine     71     0.577            0.700  0.387    persistence    -0.115       0.778       0.833    2.859             NaN  missed         no                                    accuracy < 70%
+                       12      herd_engine     65     0.578            0.650  0.416    persistence    -0.014       0.810       0.833    2.021             NaN  missed         no                                    accuracy < 65%
+        herd_milk      1       milk_baseline   68     0.965            0.920  0.371    persistence     0.010       0.732       0.857    0.159             NaN     met         no
+                       3       milk_baseline   66     0.900            0.900  0.229    persistence     0.069       0.692       0.808    0.367             NaN  missed         no       accuracy < 90%; |bias| > 3%; width90 > 0.30
+                       6       milk_baseline   64     0.838            0.880  0.145    persistence     0.140       0.596       0.723    0.406             NaN  missed         no                       accuracy < 88%; |bias| > 3%
+                       12      milk_baseline   58     0.837            0.850  0.396    persistence     0.102       0.371       0.514    0.524             NaN  missed         no                       accuracy < 85%; |bias| > 3%
+        milking        1       herd_engine     75     0.979            0.970  0.139    persistence     0.005       0.766       0.875    0.093             NaN     met        yes
+                       3       herd_engine     73     0.953            0.950  0.292    persistence     0.021       0.733       0.817    0.208             NaN     met         no
+                       6       herd_engine     71     0.931            0.920  0.318    persistence     0.048       0.667       0.796    0.186             NaN     met         no
+                       12      herd_engine     65     0.932            0.880  0.545    persistence    -0.012       0.667       0.762    0.257             NaN     met         no
+        n_herd         1       herd_engine     75     0.993            0.980 -0.104    persistence     0.005       0.781       0.859    0.034             NaN     met        yes
+                       3       herd_engine     73     0.976            0.960 -0.140    persistence     0.012       0.767       0.850    0.095             NaN     met        yes
+                       6       herd_engine     71     0.963            0.940 -0.053    persistence     0.020       0.722       0.815    0.130             NaN  missed         no                             skill below condition
+                       12      herd_engine     65     0.953            0.900  0.176         sarima     0.027       0.690       0.786    0.161             NaN     met         no
+        real_abortions 1       herd_engine     75     0.424              NaN -0.037    persistence     0.033       0.778       0.873    2.505           0.881     met        yes
+                       3       herd_engine     73     0.369              NaN -0.021    persistence     0.042       0.729       0.881    3.035           0.916  missed         no                       80% coverage outside 75-85%
+                       6       herd_engine     71     0.308              NaN  0.175    persistence     0.071       0.717       0.868    3.594           0.634  missed         no                       80% coverage outside 75-85%
+                       12      herd_engine     65     0.228              NaN  0.048    persistence     0.183       0.714       0.833    3.045           0.648  missed         no                       80% coverage outside 75-85%
+        sales          1       herd_engine     75     0.381              NaN  0.120    persistence    -0.016       0.781       0.891    2.643           0.537     met        yes
+                       3       herd_engine     73     0.389              NaN  0.231    persistence     0.072       0.767       0.850    2.592           0.422     met        yes
+                       6       herd_engine     71     0.368              NaN  0.320    persistence     0.110       0.759       0.833    2.588           0.289     met         no
+                       12      herd_engine     65     0.264              NaN  0.135    persistence     0.216       0.667       0.786    2.454           0.505  missed         no                       80% coverage outside 75-85%
+weekly  herd_milk      1       milk_baseline  333     0.972            0.930 -0.103            ets     0.006       0.777       0.883    0.169             NaN     met        yes
+                       4       milk_baseline  330     0.948            0.900  0.127    persistence     0.026       0.771       0.886    0.297             NaN     met        yes
+                       13      milk_baseline  323     0.884            0.870  0.124    persistence     0.085       0.705       0.786    0.437             NaN     met         no
+rows met (target and calibrated): 14 of 42; not interpretable: 0
+
+=== other series and horizons (no target): accuracy and skill ===
+                                     accuracy                                             skill
+horizon                                    1      3      4      6      8      12     13      1      3      4      6      8      12     13
+block       grain   series
+development monthly ais                 0.786  0.772    NaN  0.741    NaN  0.730    NaN  -1.141 -0.260    NaN  0.013    NaN -0.162    NaN
+                    births              0.858  0.937    NaN  0.860    NaN  0.766    NaN   0.373  0.837    NaN  0.679    NaN  0.348    NaN
+                    calves              0.959  0.890    NaN  0.867    NaN  0.890    NaN   0.027  0.143    NaN  0.080    NaN  0.417    NaN
+                    calvings_heifer     0.886  0.879    NaN  0.289    NaN  0.357    NaN   0.693  0.839    NaN  0.273    NaN  0.247    NaN
+                    dry_open            0.414  0.314    NaN  0.284    NaN  0.276    NaN  -5.507 -1.827    NaN -0.765    NaN -0.305    NaN
+                    dry_pregnant        0.870  0.817    NaN  0.796    NaN  0.894    NaN  -1.363 -0.327    NaN -0.077    NaN  0.547    NaN
+                    external_entries    0.031  0.027    NaN  0.005    NaN -0.065    NaN   0.279  0.313    NaN  0.344    NaN  0.353    NaN
+                    heifers_open        0.868  0.819    NaN  0.766    NaN  0.833    NaN  -3.116 -0.469    NaN -0.081    NaN  0.311    NaN
+                    heifers_pregnant    0.771  0.707    NaN  0.611    NaN  0.742    NaN  -3.404 -0.294    NaN  0.065    NaN  0.453    NaN
+            weekly  ais                 0.772    NaN  0.766    NaN  0.759    NaN  0.752  -0.789    NaN -0.613    NaN -0.350    NaN -0.158
+                    births              0.762    NaN  0.826    NaN  0.844    NaN  0.852  -0.026    NaN  0.459    NaN  0.595    NaN  0.674
+                    calves              0.983    NaN  0.936    NaN  0.904    NaN  0.882  -0.086    NaN -0.036    NaN  0.053    NaN  0.109
+                    calvings            0.764    NaN  0.827    NaN  0.846    NaN  0.852  -0.031    NaN  0.457    NaN  0.595    NaN  0.672
+                    culls               0.097    NaN  0.084    NaN  0.086    NaN  0.087   0.166    NaN  0.147    NaN  0.268    NaN  0.251
+                    deaths              0.647    NaN  0.642    NaN  0.628    NaN  0.615   0.106    NaN  0.154    NaN  0.249    NaN  0.228
+                    dry_offs            0.062    NaN  0.066    NaN  0.055    NaN  0.044   0.302    NaN  0.201    NaN  0.181    NaN  0.221
+                    dry_open            0.432    NaN  0.388    NaN  0.343    NaN  0.307 -13.248    NaN -3.879    NaN -2.381    NaN -1.611
+                    dry_pregnant        0.883    NaN  0.858    NaN  0.832    NaN  0.813  -3.163    NaN -0.790    NaN -0.458    NaN -0.249
+                    external_entries   -0.257    NaN -0.254    NaN -0.257    NaN -0.264   0.290    NaN  0.267    NaN  0.251    NaN  0.290
+                    heifers_open        0.879    NaN  0.868    NaN  0.846    NaN  0.818 -12.275    NaN -1.903    NaN -0.794    NaN -0.404
+                    heifers_pregnant    0.770    NaN  0.760    NaN  0.730    NaN  0.685 -14.574    NaN -1.887    NaN -0.645    NaN -0.206
+                    herd_milk             NaN    NaN    NaN    NaN  0.917    NaN    NaN     NaN    NaN    NaN    NaN  0.136    NaN    NaN
+                    milking             0.989    NaN  0.970    NaN  0.958    NaN  0.948   0.047    NaN  0.141    NaN  0.196    NaN  0.259
+                    n_herd              0.997    NaN  0.988    NaN  0.981    NaN  0.974  -0.140    NaN -0.153    NaN -0.154    NaN -0.133
+                    real_abortions      0.196    NaN  0.182    NaN  0.170    NaN  0.136   0.047    NaN  0.133    NaN  0.087    NaN  0.134
+                    sales               0.099    NaN  0.096    NaN  0.090    NaN  0.086   0.055    NaN  0.088    NaN  0.204    NaN  0.165
+
+=== accuracy by record-quality band (targets use normal + degraded); n in brackets ===
+band                                     degraded         gap       normal
+block       grain   series    horizon
+development daily   herd_milk 1        0.854 (25)              0.972 (323)
+                              7        0.869 (22)              0.963 (326)
+                              14       0.834 (22)              0.956 (325)
+            monthly calvings  1         0.829 (2)   0.835 (9)   0.861 (73)
+                              3         0.936 (2)   0.925 (9)   0.935 (71)
+                              6         0.946 (2)   0.814 (8)   0.860 (69)
+                              12        0.509 (2)   0.848 (8)   0.771 (63)
+                    herd_milk 1         0.782 (2)               0.966 (66)
+                              3         0.705 (2)               0.901 (64)
+                              6         0.695 (2)               0.839 (62)
+                              12        0.648 (2)               0.838 (56)
+                    milking   1         0.966 (2)   0.976 (9)   0.979 (73)
+                              3         0.897 (2)   0.891 (9)   0.954 (71)
+                              6         0.808 (2)   0.826 (8)   0.933 (69)
+                              12        0.812 (2)   0.854 (8)   0.935 (63)
+                    n_herd    1         0.997 (2)   0.991 (9)   0.993 (73)
+                              3         0.974 (2)   0.976 (9)   0.976 (71)
+                              6         0.916 (2)   0.938 (8)   0.964 (69)
+                              12        0.969 (2)   0.941 (8)   0.953 (63)
+            weekly  calvings  1        0.782 (21)  0.759 (20)  0.763 (324)
+                              4        0.805 (21)  0.770 (20)  0.828 (321)
+                              8        0.857 (21)  0.783 (20)  0.845 (317)
+                              13       0.884 (21)  0.778 (18)  0.851 (314)
+                    herd_milk 1        0.895 (18)              0.973 (315)
+                              4        0.777 (18)              0.950 (312)
+                              8        0.694 (18)              0.920 (308)
+                              13       0.702 (18)              0.886 (305)
+                    milking   1        0.983 (21)  0.986 (20)  0.989 (324)
+                              4        0.958 (21)  0.933 (20)  0.971 (321)
+                              8        0.934 (21)  0.874 (20)  0.959 (317)
+                              13       0.907 (21)  0.814 (18)  0.950 (314)
+                    n_herd    1        0.997 (21)  0.996 (20)  0.997 (324)
+                              4        0.994 (21)  0.981 (20)  0.988 (321)
+                              8        0.989 (21)  0.969 (20)  0.980 (317)
+                              13       0.976 (21)  0.964 (18)  0.973 (314)
+
+=== accuracy by months from the latest break to the origin; n in brackets ===
+since_break                            0-2 months  3-5 months 6-11 months before any break
+block       grain   series    horizon
+development daily   herd_milk 1        0.912 (21)  0.899 (13)  0.913 (21)      0.972 (293)
+                              7        0.854 (22)  0.928 (13)  0.879 (21)      0.965 (292)
+                              14       0.787 (22)  0.908 (13)  0.837 (21)      0.959 (291)
+            monthly calvings  1         0.827 (8)   0.929 (3)   0.896 (5)       0.857 (68)
+                              3         0.935 (6)   0.948 (3)   0.964 (5)       0.932 (68)
+                              6         0.770 (6)   0.918 (3)   0.855 (2)       0.862 (68)
+                              12        0.716 (5)                               0.777 (68)
+                    herd_milk 1         0.867 (3)   0.983 (2)   0.830 (3)       0.967 (60)
+                              3         0.379 (4)   0.796 (2)   0.705 (2)       0.909 (58)
+                              6         0.448 (4)   0.695 (2)                   0.843 (58)
+                              12        0.648 (2)                               0.838 (56)
+                    milking   1         0.976 (8)   0.970 (3)   0.970 (5)       0.979 (68)
+                              3         0.937 (6)   0.892 (3)   0.916 (5)       0.952 (68)
+                              6         0.907 (6)   0.805 (3)   0.890 (2)       0.928 (68)
+                              12        0.771 (5)                               0.934 (68)
+                    n_herd    1         0.988 (8)   0.992 (3)   0.995 (5)       0.993 (68)
+                              3         0.952 (6)   0.970 (3)   0.981 (5)       0.978 (68)
+                              6         0.933 (6)   0.921 (3)   0.937 (2)       0.964 (68)
+                              12        0.925 (5)                               0.954 (68)
+            weekly  calvings  1        0.779 (34)  0.801 (13)  0.798 (22)      0.759 (296)
+                              4        0.779 (31)  0.797 (13)  0.820 (22)      0.828 (296)
+                              8        0.782 (27)  0.823 (13)  0.840 (22)      0.847 (296)
+                              13       0.779 (26)  0.896 (13)  0.848 (18)      0.851 (296)
+                    herd_milk 1        0.885 (19)  0.926 (12)  0.907 (19)      0.974 (283)
+                              4        0.674 (19)  0.883 (13)  0.808 (18)      0.954 (280)
+                              8        0.494 (20)  0.871 (13)  0.687 (17)      0.926 (276)
+                              13       0.372 (25)  0.865 (12)  0.655 (13)      0.895 (273)
+                    milking   1        0.987 (34)  0.983 (13)  0.982 (22)      0.989 (296)
+                              4        0.953 (31)  0.960 (13)  0.955 (22)      0.970 (296)
+                              8        0.939 (27)  0.922 (13)  0.932 (22)      0.958 (296)
+                              13       0.934 (26)  0.884 (13)  0.905 (18)      0.947 (296)
+                    n_herd    1        0.996 (34)  0.997 (13)  0.998 (22)      0.997 (296)
+                              4        0.980 (31)  0.992 (13)  0.994 (22)      0.988 (296)
+                              8        0.962 (27)  0.983 (13)  0.988 (22)      0.981 (296)
+                              13       0.949 (26)  0.964 (13)  0.980 (18)      0.975 (296)
+
+=== recovery targets (verified periods after a break) ===
+      block    series  grain  horizon since_break  n  accuracy  target_accuracy target
+development herd_milk weekly        4  0-2 months 19     0.674            0.900 missed
+
+Full table: logs/pfoi/scorecard_development_herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_xl_aci.csv (gitignored)
+
+/opt/anaconda3/bin/python -m components.predictive_farm_intelligence.pfoi.cli scorecard --preset pfoi-1.1 --out logs/pfoi --exit-model lactation --k anchor_first --block development --intervals aci --quality off
+
+=== development block: targets (docs/targets.md), herd-level aggregates ===
+                                                n  accuracy  target_accuracy  skill best_benchmark  bias_pct  coverage80  coverage90  width90  deviance_ratio  target calibrated                                      reasons
+grain   series         horizon model
+daily   herd_milk      1       milk_baseline  348     0.970            0.950 -0.372            ets     0.003       0.780       0.892    0.201             NaN  missed        yes                        skill below condition
+                       7       milk_baseline  348     0.962            0.920 -0.069    persistence     0.009       0.778       0.886    0.259             NaN  missed        yes                        skill below condition
+                       14      milk_baseline  347     0.954            0.900 -0.017    persistence     0.016       0.770       0.872    0.285             NaN     met        yes
+monthly calvings       1       herd_engine     84     0.858            0.800  0.370    persistence     0.141       0.778       0.875    0.285             NaN     met        yes
+                       3       herd_engine     82     0.934            0.800  0.793         sarima     0.026       0.779       0.868    0.265             NaN     met        yes
+                       6       herd_engine     79     0.857            0.750  0.485         sarima     0.045       0.677       0.774    0.647             NaN     met         no
+                       12      herd_engine     73     0.775            0.650  0.270         sarima     0.112       0.800       0.920    0.696             NaN     met        yes
+        culls          1       herd_engine     84     0.459              NaN  0.240    persistence    -0.107       0.754       0.846    4.682           0.538     met         no
+                       3       herd_engine     82     0.455              NaN  0.209    persistence    -0.117       0.754       0.852    2.820           0.499     met        yes
+                       6       herd_engine     79     0.432              NaN  0.255    persistence    -0.179       0.727       0.855    5.580           0.578  missed         no                  80% coverage outside 75-85%
+                       12      herd_engine     73     0.399              NaN  0.191    persistence    -0.270       0.721       0.837    7.443           0.535  missed         no                  80% coverage outside 75-85%
+        deaths         1       herd_engine     84     0.765              NaN -0.033    persistence    -0.012       0.750       0.875    1.158           1.052  missed        yes                          deviance ratio >= 1
+                       3       herd_engine     82     0.729              NaN  0.213    persistence     0.006       0.750       0.838    1.193           0.474     met         no
+                       6       herd_engine     79     0.675              NaN  0.269    persistence    -0.029       0.677       0.790    1.304           0.414  missed         no                  80% coverage outside 75-85%
+                       12      herd_engine     73     0.593              NaN  0.134    persistence    -0.085       0.620       0.680    2.084           0.661  missed         no                  80% coverage outside 75-85%
+        dry_offs       1       herd_engine     84     0.616            0.750  0.350    persistence    -0.042       0.806       0.861    2.040             NaN  missed        yes                               accuracy < 75%
+                       3       herd_engine     82     0.589            0.700  0.344    persistence    -0.113       0.765       0.853    2.272             NaN  missed        yes                               accuracy < 70%
+                       6       herd_engine     79     0.563            0.700  0.353    persistence    -0.143       0.774       0.855    2.326             NaN  missed        yes                               accuracy < 70%
+                       12      herd_engine     73     0.565            0.650  0.381    persistence    -0.050       0.740       0.820    1.861             NaN  missed         no                               accuracy < 65%
+        herd_milk      1       milk_baseline   68     0.965            0.920  0.371    persistence     0.010       0.732       0.857    0.161             NaN     met         no
+                       3       milk_baseline   66     0.900            0.900  0.229    persistence     0.069       0.673       0.769    0.341             NaN  missed         no  accuracy < 90%; |bias| > 3%; width90 > 0.30
+                       6       milk_baseline   64     0.838            0.880  0.145    persistence     0.140       0.574       0.702    0.399             NaN  missed         no                  accuracy < 88%; |bias| > 3%
+                       12      milk_baseline   58     0.837            0.850  0.396    persistence     0.102       0.343       0.486    0.491             NaN  missed         no                  accuracy < 85%; |bias| > 3%
+        milking        1       herd_engine     84     0.979            0.970  0.152    persistence     0.006       0.764       0.875    0.090             NaN     met        yes
+                       3       herd_engine     82     0.948            0.950  0.287    persistence     0.023       0.706       0.794    0.206             NaN  missed         no                               accuracy < 95%
+                       6       herd_engine     79     0.923            0.920  0.249         sarima     0.047       0.613       0.710    0.182             NaN     met         no
+                       12      herd_engine     73     0.926            0.880  0.495         sarima    -0.017       0.560       0.660    0.244             NaN     met         no
+        n_herd         1       herd_engine     84     0.993            0.980 -0.084    persistence     0.005       0.764       0.875    0.033             NaN     met        yes
+                       3       herd_engine     82     0.976            0.960 -0.120    persistence     0.012       0.735       0.838    0.098             NaN     met         no
+                       6       herd_engine     79     0.960            0.940 -0.090    persistence     0.017       0.629       0.758    0.126             NaN  missed         no                        skill below condition
+                       12      herd_engine     73     0.952            0.900  0.189         sarima     0.023       0.700       0.760    0.155             NaN     met         no
+        real_abortions 1       herd_engine     84     0.414              NaN -0.113    persistence    -0.045       0.761       0.859    2.446           1.070  missed        yes                          deviance ratio >= 1
+                       3       herd_engine     82     0.354              NaN -0.046    persistence    -0.046       0.716       0.851    2.665           0.959  missed         no                  80% coverage outside 75-85%
+                       6       herd_engine     79     0.308              NaN  0.159    persistence    -0.035       0.721       0.852    2.970           0.675  missed         no                  80% coverage outside 75-85%
+                       12      herd_engine     73     0.258              NaN  0.049    persistence     0.097       0.740       0.840    2.765           0.682  missed         no                  80% coverage outside 75-85%
+        sales          1       herd_engine     84     0.409              NaN  0.129    persistence    -0.043       0.792       0.889    2.535           0.549     met        yes
+                       3       herd_engine     82     0.417              NaN  0.204    persistence     0.050       0.765       0.882    2.259           0.439     met        yes
+                       6       herd_engine     79     0.404              NaN  0.323    persistence     0.079       0.774       0.855    2.455           0.295     met        yes
+                       12      herd_engine     73     0.321              NaN  0.176    persistence     0.150       0.740       0.860    2.233           0.499  missed         no                  80% coverage outside 75-85%
+weekly  herd_milk      1       milk_baseline  333     0.972            0.930 -0.103            ets     0.006       0.767       0.873    0.172             NaN     met        yes
+                       4       milk_baseline  330     0.948            0.900  0.127    persistence     0.026       0.750       0.861    0.271             NaN     met        yes
+                       13      milk_baseline  323     0.884            0.870  0.124    persistence     0.085       0.705       0.801    0.426             NaN     met         no
+rows met (target and calibrated): 14 of 42; not interpretable: 0
+
+=== other series and horizons (no target): accuracy and skill ===
+                                     accuracy                                             skill
+horizon                                    1      3      4      6      8      12     13      1      3      4      6      8      12     13
+block       grain   series
+development monthly ais                 0.773  0.753    NaN  0.728    NaN  0.712    NaN  -1.288 -0.379    NaN -0.056    NaN -0.160    NaN
+                    births              0.857  0.936    NaN  0.855    NaN  0.773    NaN   0.365  0.832    NaN  0.657    NaN  0.331    NaN
+                    calves              0.959  0.892    NaN  0.871    NaN  0.888    NaN   0.021  0.103    NaN  0.093    NaN  0.381    NaN
+                    calvings_heifer     0.881  0.863    NaN  0.284    NaN  0.351    NaN   0.682  0.812    NaN  0.242    NaN  0.233    NaN
+                    dry_open            0.391  0.315    NaN  0.284    NaN  0.231    NaN  -5.808 -1.766    NaN -0.827    NaN -0.407    NaN
+                    dry_pregnant        0.863  0.807    NaN  0.786    NaN  0.890    NaN  -1.471 -0.325    NaN -0.082    NaN  0.544    NaN
+                    external_entries    0.011  0.011    NaN  0.005    NaN -0.075    NaN   0.306  0.358    NaN  0.330    NaN  0.303    NaN
+                    heifers_open        0.883  0.839    NaN  0.792    NaN  0.834    NaN  -2.971 -0.419    NaN -0.023    NaN  0.284    NaN
+                    heifers_pregnant    0.772  0.695    NaN  0.597    NaN  0.702    NaN  -3.215 -0.265    NaN  0.103    NaN  0.409    NaN
+            weekly  ais                 0.764    NaN  0.755    NaN  0.746    NaN  0.741  -0.808    NaN -0.654    NaN -0.410    NaN -0.214
+                    births              0.761    NaN  0.823    NaN  0.842    NaN  0.849  -0.027    NaN  0.442    NaN  0.585    NaN  0.661
+                    calves              0.983    NaN  0.936    NaN  0.903    NaN  0.883  -0.102    NaN -0.060    NaN  0.029    NaN  0.096
+                    calvings            0.763    NaN  0.824    NaN  0.843    NaN  0.849  -0.031    NaN  0.440    NaN  0.584    NaN  0.659
+                    culls               0.107    NaN  0.094    NaN  0.097    NaN  0.098   0.148    NaN  0.161    NaN  0.264    NaN  0.243
+                    deaths              0.653    NaN  0.650    NaN  0.637    NaN  0.625   0.124    NaN  0.164    NaN  0.251    NaN  0.244
+                    dry_offs            0.075    NaN  0.076    NaN  0.064    NaN  0.047   0.307    NaN  0.208    NaN  0.193    NaN  0.232
+                    dry_open            0.422    NaN  0.379    NaN  0.339    NaN  0.312 -13.702    NaN -3.879    NaN -2.348    NaN -1.575
+                    dry_pregnant        0.879    NaN  0.851    NaN  0.821    NaN  0.799  -3.312    NaN -0.860    NaN -0.513    NaN -0.344
+                    external_entries   -0.274    NaN -0.272    NaN -0.274    NaN -0.276   0.279    NaN  0.303    NaN  0.279    NaN  0.320
+                    heifers_open        0.887    NaN  0.875    NaN  0.853    NaN  0.828 -11.785    NaN -1.808    NaN -0.751    NaN -0.354
+                    heifers_pregnant    0.773    NaN  0.760    NaN  0.726    NaN  0.677 -14.004    NaN -1.777    NaN -0.592    NaN -0.175
+                    herd_milk             NaN    NaN    NaN    NaN  0.917    NaN    NaN     NaN    NaN    NaN    NaN  0.136    NaN    NaN
+                    milking             0.988    NaN  0.969    NaN  0.955    NaN  0.943   0.050    NaN  0.133    NaN  0.186    NaN  0.227
+                    n_herd              0.997    NaN  0.988    NaN  0.980    NaN  0.973  -0.137    NaN -0.146    NaN -0.142    NaN -0.112
+                    real_abortions      0.206    NaN  0.190    NaN  0.177    NaN  0.141   0.047    NaN  0.132    NaN  0.083    NaN  0.121
+                    sales               0.111    NaN  0.103    NaN  0.099    NaN  0.094   0.087    NaN  0.076    NaN  0.192    NaN  0.174
+
+=== accuracy by months from the latest break to the origin; n in brackets ===
+since_break                            0-2 months  3-5 months 6-11 months before any break
+block       grain   series    horizon
+development daily   herd_milk 1        0.912 (21)  0.899 (13)  0.913 (21)      0.972 (293)
+                              7        0.854 (22)  0.928 (13)  0.879 (21)      0.965 (292)
+                              14       0.787 (22)  0.908 (13)  0.837 (21)      0.959 (291)
+            monthly calvings  1         0.827 (8)   0.929 (3)   0.896 (5)       0.857 (68)
+                              3         0.935 (6)   0.948 (3)   0.964 (5)       0.932 (68)
+                              6         0.770 (6)   0.918 (3)   0.855 (2)       0.862 (68)
+                              12        0.716 (5)                               0.777 (68)
+                    herd_milk 1         0.867 (3)   0.983 (2)   0.830 (3)       0.967 (60)
+                              3         0.379 (4)   0.796 (2)   0.705 (2)       0.909 (58)
+                              6         0.448 (4)   0.695 (2)                   0.843 (58)
+                              12        0.648 (2)                               0.838 (56)
+                    milking   1         0.976 (8)   0.970 (3)   0.970 (5)       0.979 (68)
+                              3         0.937 (6)   0.892 (3)   0.916 (5)       0.952 (68)
+                              6         0.907 (6)   0.805 (3)   0.890 (2)       0.928 (68)
+                              12        0.771 (5)                               0.934 (68)
+                    n_herd    1         0.988 (8)   0.992 (3)   0.995 (5)       0.993 (68)
+                              3         0.952 (6)   0.970 (3)   0.981 (5)       0.978 (68)
+                              6         0.933 (6)   0.921 (3)   0.937 (2)       0.964 (68)
+                              12        0.925 (5)                               0.954 (68)
+            weekly  calvings  1        0.779 (34)  0.801 (13)  0.798 (22)      0.759 (296)
+                              4        0.779 (31)  0.797 (13)  0.820 (22)      0.828 (296)
+                              8        0.782 (27)  0.823 (13)  0.840 (22)      0.847 (296)
+                              13       0.779 (26)  0.896 (13)  0.848 (18)      0.851 (296)
+                    herd_milk 1        0.885 (19)  0.926 (12)  0.907 (19)      0.974 (283)
+                              4        0.674 (19)  0.883 (13)  0.808 (18)      0.954 (280)
+                              8        0.494 (20)  0.871 (13)  0.687 (17)      0.926 (276)
+                              13       0.372 (25)  0.865 (12)  0.655 (13)      0.895 (273)
+                    milking   1        0.987 (34)  0.983 (13)  0.982 (22)      0.989 (296)
+                              4        0.953 (31)  0.960 (13)  0.955 (22)      0.970 (296)
+                              8        0.939 (27)  0.922 (13)  0.932 (22)      0.958 (296)
+                              13       0.934 (26)  0.884 (13)  0.905 (18)      0.947 (296)
+                    n_herd    1        0.996 (34)  0.997 (13)  0.998 (22)      0.997 (296)
+                              4        0.980 (31)  0.992 (13)  0.994 (22)      0.988 (296)
+                              8        0.962 (27)  0.983 (13)  0.988 (22)      0.981 (296)
+                              13       0.949 (26)  0.964 (13)  0.980 (18)      0.975 (296)
+
+=== recovery targets (verified periods after a break) ===
+      block    series  grain  horizon since_break  n  accuracy  target_accuracy target
+development herd_milk weekly        4  0-2 months 19     0.674            0.900 missed
+
+Full table: logs/pfoi/scorecard_development_herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_xl_aci_quality_off.csv (gitignored)
+
+/opt/anaconda3/bin/python -m components.predictive_farm_intelligence.pfoi.cli backtest-herd --preset pfoi-1.1 --out logs/pfoi --exit-model lactation --grain both --block posthoc --jobs 12
+POST-HOC: 2024-26 scores of a non-frozen version; report them as post-hoc.
+  monthly: origin 1/32 (2024-02-01)
+  monthly: origin 11/32 (2024-09-01)
+  monthly: origin 21/32 (2025-09-01)
+  monthly: origin 31/32 (2026-08-01)
+
+Fallback notes (monthly, number of origins affected):
+                                                                  note  n_origins
+                                                        conception cut         32
+                                                             dry clock         32
+                                                      exit calibration         32
+                                                         milking clock         32
+milking-cow exits by parity x DIM band x pregnancy (lactation records)         32
+                                                recency-weighted rates         32
+POST-HOC: 2024-26 scores of a non-frozen version; report them as post-hoc.
+  weekly: origin 1/138 (2024-07-29)
+  weekly: origin 11/138 (2024-03-11)
+  weekly: origin 21/138 (2024-01-15)
+  weekly: origin 31/138 (2024-05-27)
+  weekly: origin 41/138 (2024-10-07)
+  weekly: origin 51/138 (2024-12-16)
+  weekly: origin 61/138 (2025-02-24)
+  weekly: origin 71/138 (2025-05-05)
+  weekly: origin 81/138 (2025-07-14)
+  weekly: origin 91/138 (2025-09-22)
+  weekly: origin 101/138 (2025-12-01)
+  weekly: origin 111/138 (2026-02-09)
+  weekly: origin 121/138 (2026-04-20)
+  weekly: origin 131/138 (2026-06-29)
+
+Fallback notes (weekly, number of origins affected):
+                                                                  note  n_origins
+                                                        conception cut        138
+                                                             dry clock        138
+                                                      exit calibration        138
+                                                         milking clock        138
+milking-cow exits by parity x DIM band x pregnancy (lactation records)        138
+                                                recency-weighted rates        138
+
+MAE by horizon (posthoc block, herd level):
+model                              ets  herd_engine  herd_engine_corrected  persistence  sarima  n_origins
+grain   series         horizon
+monthly calvings       1         24.42        20.82                   8.64        13.12   16.48         31
+                       3         25.02        10.46                  12.19        15.98   26.04         29
+                       6         29.10        13.13                  15.91        21.72   31.22         26
+                       12        28.14        20.27                  21.51        23.81   22.48         20
+        milking        1         28.09        12.67                   9.84        13.18   29.54         31
+                       3         52.79        42.52                  33.78        42.85   81.56         29
+                       6         82.32        62.00                  64.56        81.10  152.10         26
+                       12       173.50        82.14                 123.18       131.44  222.86         20
+        n_herd         1         45.69        20.25                  22.90        19.20   58.32         31
+                       3        118.93       100.12                 114.18        85.93  171.99         29
+                       6        224.08       206.09                 225.15       159.87  327.02         26
+                       12       356.33       443.79                 426.01       204.55  564.31         20
+        real_abortions 1           NaN        10.12                  10.85         7.59     NaN         31
+                       3           NaN        10.17                  10.41        10.74     NaN         29
+                       6           NaN         9.92                   9.14         7.93     NaN         26
+                       12          NaN        10.36                   8.12         9.25     NaN         20
+weekly  calvings       1           NaN         8.89                   4.00         3.15     NaN        137
+                       4           NaN         3.63                   2.56         4.03     NaN        134
+                       8           NaN         3.26                   3.03         4.75     NaN        130
+                       13          NaN         3.14                   3.52         4.90     NaN        125
+        milking        1           NaN         6.85                   5.85         6.19     NaN        137
+                       4           NaN        21.70                  16.98        21.51     NaN        134
+                       8           NaN        35.37                  27.23        35.62     NaN        130
+                       13          NaN        46.37                  35.98        49.37     NaN        125
+        n_herd         1           NaN         6.72                   7.40         6.17     NaN        137
+                       4           NaN        33.89                  39.62        30.40     NaN        134
+                       8           NaN        71.32                  84.01        60.74     NaN        130
+                       13          NaN       119.43                 138.77        96.77     NaN        125
+        real_abortions 1           NaN         2.77                   2.97         2.98     NaN        137
+                       4           NaN         2.76                   2.95         2.90     NaN        134
+                       8           NaN         2.73                   2.87         3.18     NaN        130
+                       13          NaN         2.67                   2.67         3.45     NaN        125
+
+Full tables written to logs/pfoi/ (gitignored). Horizons: {'monthly': (1, 3, 6, 12), 'weekly': (1, 4, 8, 13), 'daily': (1, 7, 14)}
+
+/opt/anaconda3/bin/python -m components.predictive_farm_intelligence.pfoi.cli backtest-milk --preset pfoi-1.1 --out logs/pfoi --exit-model lactation --k anchor_first --grain both --block posthoc --jobs 12
+POST-HOC: 2024-26 scores of a non-frozen version; report them as post-hoc.
+  monthly: origin 1/32 (2024-01-01)
+  monthly: origin 11/32 (2025-06-01)
+  monthly: origin 21/32 (2025-02-01)
+  monthly: origin 31/32 (2026-05-01)
+
+Notes (monthly origins, number of origins):
+                                           note  n_origins
+                                          curve         26
+                                              k         52
+                                       k_window          8
+                                    no_window_k          9
+withheld (milk_withheld:no_trusted_recent_days)          6
+POST-HOC: 2024-26 scores of a non-frozen version; report them as post-hoc.
+  weekly: origin 1/138 (2024-05-06)
+  weekly: origin 11/138 (2024-06-24)
+  weekly: origin 21/138 (2024-02-26)
+  weekly: origin 31/138 (2024-07-29)
+  weekly: origin 41/138 (2024-11-18)
+  weekly: origin 51/138 (2024-12-16)
+  weekly: origin 61/138 (2025-04-28)
+  weekly: origin 71/138 (2025-07-07)
+  weekly: origin 81/138 (2025-08-04)
+  weekly: origin 91/138 (2025-11-24)
+  weekly: origin 101/138 (2025-11-10)
+  weekly: origin 111/138 (2026-02-09)
+  weekly: origin 121/138 (2026-03-30)
+  weekly: origin 131/138 (2026-07-20)
+
+Notes (weekly origins, number of origins):
+                                           note  n_origins
+                                          curve        116
+                                              k        232
+                                       k_window         37
+                                    no_window_k         43
+withheld (milk_withheld:no_trusted_recent_days)         22
+
+Done. Run milk-report with the same options to see the H1 table. Files in logs/pfoi/.
+
+/opt/anaconda3/bin/python -m components.predictive_farm_intelligence.pfoi.cli milk-report --preset pfoi-1.1 --out logs/pfoi --exit-model lactation --k anchor_first --block posthoc
+
+=== monthly (herd_fitted_p1_g0_kf, window 24) — litres per period ===
+MAE:
+model        ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        13008.0         9483.0                  13194.0      11997.0         21943.0
+3            NaN        44359.0                  49044.0      18664.0         41522.0
+6        23744.0        13326.0                  36214.0      19111.0         41522.0
+MAE ratio vs persistence (< 1 = better):
+model     ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        1.08           0.79                     1.10          1.0            1.83
+3         NaN           2.38                     2.63          1.0            2.22
+6        1.24           0.70                     1.89          1.0            2.17
+bias (forecast - actual):
+model        ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1       -13008.0         2389.3                   3391.8      -4862.3        -19578.7
+3            NaN        -1065.1                 -19431.4       -436.5        -41521.6
+6       -23744.1       -13326.0                 -36213.7     -19110.8        -41521.6
+MAPE %:
+model     ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        12.1            7.8                     10.9         10.0            17.2
+3         NaN           34.5                     37.6         14.7            32.1
+6        18.1           10.1                     27.8         14.9            32.1
+90% interval coverage %:
+model      ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        100.0           60.0                     80.0        100.0            75.0
+3          NaN           66.7                     66.7        100.0            50.0
+6        100.0           66.7                     66.7        100.0            50.0
+n periods scored:
+model    ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        2.0            5.0                      5.0          5.0             4.0
+3        NaN            3.0                      3.0          3.0             2.0
+6        2.0            3.0                      3.0          3.0             2.0
+
+=== monthly: COMMON PERIODS (all models) — MAE ratio vs persistence ===
+model    ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive  n_periods
+horizon
+1       1.18           0.81                     1.11         1.00            0.21          2
+6       1.38           0.99                     2.99         1.00            2.41          2
+
+=== daily (herd_fitted_p1_g0_kf, window 24) — litres per period ===
+MAE:
+model      ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        224.0          638.0                    688.0        656.0          1062.0
+7        402.0          803.0                    875.0        777.0          1029.0
+14       597.0          955.0                   1050.0        872.0          1052.0
+MAE ratio vs persistence (< 1 = better):
+model     ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        0.34           0.97                     1.05          1.0            1.62
+7        0.52           1.03                     1.13          1.0            1.32
+14       0.68           1.10                     1.21          1.0            1.21
+bias (forecast - actual):
+model      ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1         90.3          -83.5                    -45.0       -120.0          -738.7
+7        166.5         -135.3                   -110.6       -144.8          -814.0
+14       344.3         -118.0                   -137.2       -102.3          -864.3
+MAPE %:
+model     ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1         7.1           14.3                     15.8         14.7            26.0
+7        10.0           16.9                     19.0         16.0            23.9
+14       15.5           20.7                     23.4         18.6            24.4
+90% interval coverage %:
+model     ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        69.4           62.3                     57.4         59.0            70.4
+7        73.5           56.1                     54.4         56.1            69.2
+14       75.9           55.4                     50.0         60.7            64.0
+n periods scored:
+model     ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        36.0           61.0                     61.0         61.0            27.0
+7        34.0           57.0                     57.0         57.0            26.0
+14       29.0           56.0                     56.0         56.0            25.0
+
+=== weekly (herd_fitted_p1_g0_kf, window 24) — litres per period ===
+MAE:
+model       ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1         889.0         2195.0                   2413.0       2251.0          6599.0
+4           NaN         6075.0                   7394.0       4327.0          7376.0
+8        5308.0         7826.0                   8230.0       5822.0          9090.0
+13       5751.0         9007.0                  12118.0       4939.0         10568.0
+MAE ratio vs persistence (< 1 = better):
+model     ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        0.39           0.97                     1.07          1.0            2.93
+4         NaN           1.40                     1.71          1.0            1.70
+8        0.91           1.34                     1.41          1.0            1.56
+13       1.16           1.82                     2.45          1.0            2.14
+bias (forecast - actual):
+model       ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1         657.3          224.6                   -592.5        556.3         -5862.4
+4           NaN           43.9                  -2203.9       1053.6         -7018.7
+8       -3429.7         1339.3                  -2816.8       1884.4         -9090.5
+13      -5671.3          102.7                  -1910.1       1261.4        -10568.1
+MAPE %:
+model     ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1         3.1            7.6                      8.4          8.1            21.6
+4         NaN           21.1                     26.0         15.5            23.9
+8        18.8           27.1                     28.3         20.5            29.3
+13       18.5           32.4                     43.0         17.3            33.8
+90% interval coverage %:
+model      ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        100.0           81.6                     78.9         76.3            68.2
+4          NaN           62.9                     62.9         85.7            63.2
+8         66.7           63.3                     83.3         90.0            46.7
+13        83.3           64.3                     89.3         92.9            33.3
+n periods scored:
+model    ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive
+horizon
+1        6.0           38.0                     38.0         38.0            22.0
+4        NaN           35.0                     35.0         35.0            19.0
+8        3.0           30.0                     30.0         30.0            15.0
+13       6.0           28.0                     28.0         28.0            12.0
+
+=== daily: COMMON PERIODS (all models) — MAE ratio vs persistence ===
+model    ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive  n_periods
+horizon
+1       0.95           1.23                     1.35         1.00            4.07         22
+7       1.04           1.21                     1.49         1.00            3.98         20
+14      1.24           1.21                     1.69         1.00            3.13         17
+
+=== weekly: COMMON PERIODS (all models) — MAE ratio vs persistence ===
+model    ets  milk_baseline  milk_baseline_corrected  persistence  seasonal_naive  n_periods
+horizon
+1       0.56           0.66                     1.21         1.00            2.84          3
+13      0.30           0.85                     2.14         1.00            2.33          3
+
+/opt/anaconda3/bin/python -m components.predictive_farm_intelligence.pfoi.cli break-reset --herd-tag w24_ck_kn_rk_lag90_hl6_xl --milk-tag herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_xl --block posthoc --out logs/pfoi
+Breaks detected (herd size +/-10 % over 90 days, or milk back after 28+ days): 6; years: 2015, 2016, 2022, 2023, 2024, 2025
+
+=== correction layer with and without the break reset (POST-TEST DEVELOPMENT (2024-26 already inspected)) ===
+   series   grain  horizon                     model  n  accuracy  n_after  after_break
+herd_milk  weekly        4    milk_baseline_adaptive 35     0.587       16        0.308
+herd_milk  weekly        4 milk_baseline_adaptive_br 35     0.773       16        0.685
+herd_milk monthly        3    milk_baseline_adaptive  3     0.611        2        0.622
+herd_milk monthly        3 milk_baseline_adaptive_br  3     0.650        2        0.654
+  milking monthly        3     herd_engine_corrected 29     0.918       12        0.939
+  milking monthly        3  herd_engine_corrected_br 29     0.883       12        0.924
+  milking monthly        6     herd_engine_corrected 26     0.836       11        0.848
+  milking monthly        6  herd_engine_corrected_br 26     0.809       11        0.900
+   n_herd monthly        6     herd_engine_corrected 26     0.867       11        0.909
+   n_herd monthly        6  herd_engine_corrected_br 26     0.879       11        0.934
+   n_herd monthly       12     herd_engine_corrected 20     0.748        6        0.707
+   n_herd monthly       12  herd_engine_corrected_br 20     0.738        6        0.694
+ calvings monthly        3     herd_engine_corrected 29     0.686       12        0.667
+ calvings monthly        3  herd_engine_corrected_br 29     0.663       12        0.630
+
+Intervals remain unconfirmed until matched coverage AND width are reviewed. No outlook was published. Posthoc scores are post-test development.
 ```
 
 </details>

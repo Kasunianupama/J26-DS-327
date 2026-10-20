@@ -73,6 +73,7 @@ def evaluation_commands(exit_kept: bool, folder: Path, jobs: int) -> list[list[s
         command("break-reset", ["--herd-tag", tag, "--milk-tag", mtag, "--out", str(folder)]),
         command("scorecard", [*milk, "--block", "development", "--intervals", "empirical"]),
         command("scorecard", [*milk, "--block", "development", "--intervals", "aci"]),
+        command("scorecard", [*milk, "--block", "development", "--intervals", "aci", "--interval-quality", "off"]),
         command("backtest-herd", [*flags, "--grain", "both", "--block", "posthoc", "--jobs", str(jobs)]),
         command("backtest-milk", [*milk, "--grain", "both", "--block", "posthoc", "--jobs", str(jobs)]),
         command("milk-report", [*milk, "--block", "posthoc"]),
@@ -106,6 +107,16 @@ def main(argv=None) -> int:
         print("\n" + shlex.join(cmd), flush=True)
         if args.run:
             subprocess.run(cmd, check=True)
+            if cmd[3] == "backtest-milk" and "--block" not in cmd:
+                tag = "herd_fitted_p1_g0_kf_" + BASE_TAG + ("_xl" if keep else "")
+                for grain in HORIZONS:
+                    path = args.out / f"milk_backtest_errors_{grain}_{tag}.csv"
+                    try:
+                        e = pd.read_csv(path)
+                    except (OSError, ValueError) as err:
+                        raise RuntimeError("Development milk errors missing; posthoc stopped") from err
+                    if e.empty or "model" not in e or not (e["model"] == "milk_baseline").any():
+                        raise RuntimeError("Development milk errors incomplete; posthoc stopped")
             if cmd[3] == "break-reset" and "--block" not in cmd:
                 from .break_eval import verdict
                 tag = "herd_fitted_p1_g0_kf_" + BASE_TAG + ("_xl" if keep else "")
