@@ -101,6 +101,11 @@ export const SI: Record<string, string> = {
   'Reliability': 'විශ්වාසනීයත්වය',
 
   /* ---------------- charts */
+  'Timeline starts': 'කාලරේඛාව ආරම්භ වන්නේ',
+  'Reset timeline': 'කාලරේඛාව යළි සකසන්න',
+  'Full screen': 'සම්පූර්ණ තිරය',
+  'Close full screen': 'සම්පූර්ණ තිරය වසන්න',
+  'Click the chart to view full screen': 'සම්පූර්ණ තිරයෙන් බැලීමට ප්‍රස්තාරය ක්ලික් කරන්න',
   'Milk per day': 'දිනකට කිරි',
   'Herd population': 'ගව රංචුවේ සංඛ්‍යාව',
   'Forecast starts': 'පුරෝකථනය ආරම්භය',

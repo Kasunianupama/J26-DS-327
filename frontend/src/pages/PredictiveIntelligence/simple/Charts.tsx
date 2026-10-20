@@ -15,8 +15,10 @@ import { TipShell } from '../ui';
 import { useLang, useT, periodText } from './i18n';
 import { PickHint, PointExplanation, usePointPick } from './PointExplain';
 import {
-  Box, CHART_TICK, FORECAST_COLOR, HISTORY, Legend, MILK_COLOR, PLAIN_SERIES, SimpleTable, litres, useChartOrTable, whole, yearBefore,
+  CHART_TICK, FORECAST_COLOR, HISTORY, Legend, MILK_COLOR, PLAIN_SERIES, SimpleTable, litres, useChartOrTable, whole, yearBefore,
 } from './common';
+
+import { ChartView, useChartStart } from './ChartView';
 
 export interface MilkRow {
   period: string;
@@ -29,8 +31,8 @@ export interface MilkRow {
   lastYear: number | null;
 }
 
-export function milkRows(run: PfoiRun, grain: Grain, steps: number, label: (p: string) => string): MilkRow[] {
-  return timeline(run, grain, steps, HISTORY[grain]).map((p) => {
+export function milkRows(run: PfoiRun, grain: Grain, steps: number, label: (p: string) => string, history = HISTORY[grain]): MilkRow[] {
+  return timeline(run, grain, steps, history).map((p) => {
     const lyP = yearBefore(p.period, grain);
     const ly = actualRow(run, grain, lyP, 'milk_litres');
     return {
@@ -52,7 +54,8 @@ export function MilkChart() {
   const { lang } = useLang();
   const { grain, horizon } = usePfoi();
   const { asTable, toggle } = useChartOrTable();
-  const rows = useMemo(() => milkRows(run, grain, horizon, (p) => periodText(p, grain, lang, true)), [run, grain, horizon, lang]);
+  const { history, controls } = useChartStart(run, grain);
+  const rows = useMemo(() => milkRows(run, grain, horizon, (p) => periodText(p, grain, lang, true), history), [run, grain, horizon, lang, history]);
   const start = rows.find((r) => r.future)?.label;
   const realised = hasRealised(run);
   const future = rows.filter((r) => r.future);
@@ -60,10 +63,11 @@ export function MilkChart() {
   const pickedLabel = rows.find((r) => r.period === picked)?.label;
 
   return (
-    <Box title={`${t('Milk per day')}`} actions={toggle}>
+    <ChartView title={t('Milk per day')} actions={toggle} controls={controls} asTable={asTable}>
+      {(expanded) => <>
       {!asTable ? (
         <>
-          <div style={{ height: 280 }}>
+          <div style={{ height: expanded ? 'max(320px, calc(100dvh - 300px))' : 280 }}>
             <ResponsiveContainer>
               <ComposedChart data={rows} margin={{ top: 18, right: 12, bottom: 0, left: 0 }} onClick={onChartClick} className="pfie-mgr-clickchart">
                 <CartesianGrid stroke="#eef2f0" vertical={false} />
@@ -103,7 +107,8 @@ export function MilkChart() {
       )}
       <PickHint picked={picked} />
       {picked && <PointExplanation kind="milk" at={picked} onClose={clear} />}
-    </Box>
+    </>}
+    </ChartView>
   );
 }
 
@@ -132,15 +137,16 @@ export function HerdChart() {
   const { lang } = useLang();
   const { grain, horizon } = usePfoi();
   const { asTable, toggle } = useChartOrTable();
+  const { history, controls } = useChartStart(run, grain);
   const shown = GROUPS.filter((s) => isForecast(run, grain, s) || run.actuals.some((a) => a.grain === grain && a.series === s));
-  const rows = useMemo(() => timeline(run, grain, horizon, HISTORY[grain]).map((p) => {
+  const rows = useMemo(() => timeline(run, grain, horizon, history).map((p) => {
     const r: Record<string, number | string | boolean | null> = { period: p.period, label: periodText(p.period, grain, lang, true), future: p.future };
     shown.forEach((s) => {
       r[s] = p.future ? null : (p[s] as number | undefined) ?? null;
       r[`${s}_f`] = (p[`${s}_f`] as number | undefined) ?? null;
     });
     return r;
-  }), [run, grain, horizon, lang, shown.join()]);
+  }), [run, grain, horizon, lang, history, shown.join()]);
   const start = rows.find((r) => r.future)?.label as string | undefined;
   const { picked, pick, clear, onChartClick } = usePointPick();
   const pickedLabel = rows.find((r) => r.period === picked)?.label as string | undefined;
@@ -148,10 +154,11 @@ export function HerdChart() {
 
   if (!shown.length) return null;
   return (
-    <Box title={`${t('Herd population')}`} actions={toggle}>
+    <ChartView title={t('Herd population')} actions={toggle} controls={controls} asTable={asTable}>
+      {(expanded) => <>
       {!asTable ? (
         <>
-          <div style={{ height: 280 }}>
+          <div style={{ height: expanded ? 'max(320px, calc(100dvh - 300px))' : 280 }}>
             <ResponsiveContainer>
               <LineChart data={rows} margin={{ top: 18, right: 12, bottom: 0, left: 0 }} onClick={onChartClick} className="pfie-mgr-clickchart">
                 <CartesianGrid stroke="#eef2f0" vertical={false} />
@@ -184,6 +191,7 @@ export function HerdChart() {
       )}
       <PickHint picked={picked} />
       {picked && <PointExplanation kind="herd" at={picked} onClose={clear} />}
-    </Box>
+    </>}
+    </ChartView>
   );
 }
