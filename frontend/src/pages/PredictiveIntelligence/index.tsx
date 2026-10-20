@@ -1,252 +1,227 @@
 /**
- * Component 2 — Predictive Farm Intelligence.
+ * Component 1 — Predictive Farm Outlook Intelligence (PFOI).
  *
- * Five workspaces over one shared selection state, presented as a command deck:
- * a frosted header, a metric deck scoped to the current workspace, the priority
- * signals that point into it, and a full-width canvas. This is a hard-coded
- * prototype: all data is fictional synthetic scaffold data, and no backend,
- * model or DelPro integration is involved.
+ * Herd-level forecasts of milk, herd counts, herd events and mastitis for
+ * Farm X, each with its range and its explanation. Three workspaces share one
+ * grain / horizon / period selection. The page reads one `PfoiRun`; until the
+ * model writes `c1_output` that run is synthetic demo data and is labelled so.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
-  FARMS,
-  HERD,
-  HORIZONS,
-  PROFILES,
-  SEVERITY_META,
-  type HorizonId,
-} from '../../data/component2';
-import { C2Provider, useC2, type CapacityTab, type Workspace } from './state';
-import { PredictiveBackendProvider, usePredictiveBackend } from './backend';
-import { BackendStatus } from './BackendStatus';
-import { CowPanel } from './panels/CowPanel';
-import { TimelinePlayer } from './panels/TimelinePlayer';
-import { HerdStrip } from './panels/HerdFlow';
-import {
-  CohortDrawer,
-  FindingsDrawer,
-  FlowStageDrawer,
-  OutcomeReasoningDrawer,
-  ProductDrawer,
-  StructureDrawer,
-} from './panels/Drawers';
-import { findingsOpenCount } from './panels/Findings';
-import { Evidence } from './workspaces/Evidence';
+  GRAIN_LABEL, SEVERITY_META,
+  earliestActual, findings, firstTarget, horizonOptions, maxHorizon, periodLabel, type Grain,
+} from '../../data/pfoi';
+import { PfoiProvider, usePfoi, type HerdTab, type Workspace } from './state';
+import { RunProvider, useRun } from './source';
+import { ForecastInfo, RunStatus } from './RunStatus';
+import { FindingsDrawer, PointDrawer } from './panels/Drawers';
 import { FutureWorkspace } from './workspaces/Future';
-import { HerdGenetics } from './workspaces/HerdGenetics';
 import { MilkSupply } from './workspaces/MilkSupply';
-import { ProductsFinance } from './workspaces/ProductsFinance';
 import { Reproduction } from './workspaces/Reproduction';
 import { HerdOutcomes } from './workspaces/HerdOutcomes';
-import { Operations } from './workspaces/Operations';
-import { EmptyState, Tabs } from './ui';
+import { HerdGenetics } from './workspaces/HerdGenetics';
+import { Evidence } from './workspaces/Evidence';
+import { ModelEvaluation } from './workspaces/ModelEvaluation';
+import { Tabs } from './ui';
+import { DateField } from './DateField';
 import { Icon, type IconName } from './icons';
-import { MetricDeck, signalsFor } from './deck';
+import { MetricDeck } from './deck';
+import { OutcomeBar } from './panels/OutcomeBar';
+import { RecordStatusBanner } from './panels/Pp1Panels';
+import { ManagerView } from './ManagerView';
+import { useUser } from '../../context/UserContext';
 import './pfie.css';
 
 const WORKSPACES: { id: Workspace; label: string; icon: IconName }[] = [
-  { id: 'future', label: 'Farm Outlook', icon: 'outlook' },
-  { id: 'capacity', label: 'Herd & Production', icon: 'herd' },
-  { id: 'commerce', label: 'Products & Income', icon: 'products' },
-  { id: 'evidence', label: 'Forecast Confidence', icon: 'confidence' },
-  { id: 'operations', label: 'Daily Operations', icon: 'operations' },
+  { id: 'outlook', label: 'Farm Outlook', icon: 'outlook' },
+  { id: 'herd', label: 'Herd & Production', icon: 'herd' },
+  { id: 'confidence', label: 'Forecast Confidence', icon: 'confidence' },
 ];
 
-const CAPACITY_TABS: { id: CapacityTab; label: string }[] = [
+const HERD_TABS: { id: HerdTab; label: string }[] = [
   { id: 'milk', label: 'Milk supply' },
-  { id: 'reproduction', label: 'Reproduction & capacity' },
-  { id: 'outcomes', label: 'Herd outcomes & risk' },
-  { id: 'genetics', label: 'Herd profile & genetics' },
+  { id: 'flow', label: 'Herd count & movement' },
+  { id: 'events', label: 'Herd events' },
+  { id: 'generations', label: 'Generations' },
+];
+
+/* Farm staff open the simple view; vets and board members open the full page. */
+type View = 'simple' | 'detailed';
+const defaultView = (role: string): View => (role === 'farm_manager' || role === 'farm_worker' ? 'simple' : 'detailed');
+
+const GRAINS: { id: Grain; label: string }[] = [
+  { id: 'day', label: 'Day' },
+  { id: 'week', label: 'Week' },
+  { id: 'month', label: 'Month' },
 ];
 
 export default function PredictiveIntelligencePage() {
   return (
-    <C2Provider>
-      <BackendBridge>
+    <RunProvider>
+      <PfoiProvider>
         <Shell />
-      </BackendBridge>
-    </C2Provider>
+      </PfoiProvider>
+    </RunProvider>
   );
 }
 
-function BackendBridge({ children }: { children: React.ReactNode }) {
-  const { farm, horizon } = useC2();
-  return <PredictiveBackendProvider farmId={farm} horizon={horizon}>{children}</PredictiveBackendProvider>;
-}
-
 function Shell() {
-  const {
-    farm, horizon, setHorizon, workspace, capacityTab, go,
-    drawer, openDrawer, acknowledged, snoozed,
-  } = useC2();
-  const backend = usePredictiveBackend();
-
-  const findings = backend.snapshot?.findings;
-  const openFindings = findingsOpenCount(acknowledged, snoozed, findings);
+  const [evaluation, setEvaluation] = useState(false);
+  const { role } = useUser();
+  const [view, setView] = useState<View>(() => defaultView(role));
+  useEffect(() => { setView(defaultView(role)); }, [role]);
+  const simple = view === 'simple';
+  const { grain, setGrain, horizon, setHorizon, historyFrom, setHistoryFrom, workspace, herdTab, go, drawer, openDrawer, acknowledged } = usePfoi();
+  const run = useRun();
+  const openFindings = findings(run).filter((f) => !acknowledged.has(f.id)).length;
   const detailOpen = drawer.kind !== 'none';
-  const farms = backend.snapshot?.farms ?? FARMS;
-  const activeFarm = farms.find((f) => f.id === farm) ?? FARMS[0];
-  const [overviewOpen, setOverviewOpen] = useState(false);
+  /* Older runs publish 14 days and 13 weeks, pfoi-1.1.1 a full year: stay on a step this run has. */
+  const lastStep = maxHorizon(run, grain);
+  useEffect(() => {
+    if (horizon > lastStep) setHorizon(lastStep);
+  }, [horizon, lastStep, setHorizon]);
 
   return (
     <div className="pfie">
-      {/* ================= command header ================= */}
       <header className="pfie-head">
         <div className="pfie-bar">
           <div className="pfie-ident">
             <span className="pfie-ident-mark" aria-hidden><Icon name="spark" size={19} /></span>
             <div>
-              <h1>Predictive intelligence</h1>
-              <p>{activeFarm.name} · prototype</p>
+              <h1>Predictive Farm Outlook</h1>
+              <p>{simple ? 'Farm X · what to expect for the whole herd' : 'Farm X · herd level · Component 1'}</p>
             </div>
           </div>
 
           <span className="spacer" />
 
-          <CowSearch />
+          <span className="pfie-seg pfie-viewswitch" role="group" aria-label="Page view">
+            <button aria-pressed={simple} onClick={() => setView('simple')} title="The main numbers in plain words">Simple view</button>
+            <button aria-pressed={!simple} onClick={() => setView('detailed')} title="All charts, controls and model checks">Detailed view</button>
+          </span>
 
-          <button
-            className="pfie-btn pfie-findings-btn"
-            onClick={() => openDrawer({ kind: 'findings' })}
-          >
+          {!simple && <button className="pfie-btn pfie-findings-btn" onClick={() => openDrawer({ kind: 'findings' })}>
             <Icon name="flag" size={14} />
             Findings
             {openFindings > 0 && <span className="count">{openFindings}</span>}
-          </button>
+          </button>}
 
-          <BackendStatus />
+          {!simple && <RunStatus />}
         </div>
 
-        <nav className="pfie-nav" aria-label="Workspaces">
+        {!simple && <nav className="pfie-nav" aria-label="Workspaces">
           <div className="pfie-nav-tabs">
             {WORKSPACES.map((w) => (
-              <button
-                key={w.id}
-                aria-current={workspace === w.id ? 'page' : undefined}
-                onClick={() => go(w.id)}
-              >
+              <button key={w.id} aria-current={!evaluation && workspace === w.id ? 'page' : undefined} onClick={() => { setEvaluation(false); go(w.id); }}>
                 <Icon name={w.icon} size={15} />
                 {w.label}
               </button>
             ))}
+            <button aria-current={evaluation ? 'page' : undefined} onClick={() => setEvaluation(true)}>
+              <Icon name="confidence" size={15} />Model evaluation
+            </button>
           </div>
 
-          {/* Abbreviated so the workspace pills and the horizon share one row on
-              a 14-inch screen; the full label stays available to assistive tech. */}
-          <span className="pfie-seg compact" role="group" aria-label="Forecast horizon">
-            {HORIZONS.map((h) => (
-              <button
-                key={h.id}
-                aria-pressed={horizon === h.id}
-                aria-label={h.label}
-                title={h.label}
-                onClick={() => setHorizon(h.id as HorizonId)}
-              >
-                {h.id.toUpperCase()}
-              </button>
-            ))}
-          </span>
-        </nav>
+          {!evaluation && <span className="pfie-row tight pfie-horizon">
+            <span className="pfie-seg compact" role="group" aria-label="Forecast grain">
+              {GRAINS.map((g) => (
+                <button key={g.id} aria-pressed={grain === g.id} onClick={() => setGrain(g.id)}>{g.label}</button>
+              ))}
+            </span>
+            <span className="pfie-seg compact" role="group" aria-label="Forecast horizon">
+              {horizonOptions(run, grain).map((h) => (
+                <button
+                  key={h}
+                  aria-pressed={horizon === h}
+                  aria-label={`${h} ${h === 1 ? GRAIN_LABEL[grain].one : GRAIN_LABEL[grain].many} ahead`}
+                  title={`${h} ${h === 1 ? GRAIN_LABEL[grain].one : GRAIN_LABEL[grain].many} ahead`}
+                  onClick={() => setHorizon(h)}
+                >
+                  {h}{GRAIN_LABEL[grain].short}
+                </button>
+              ))}
+            </span>
+            <RangePickers
+              grain={grain}
+              horizon={horizon}
+              setHorizon={setHorizon}
+              historyFrom={historyFrom}
+              setHistoryFrom={setHistoryFrom}
+            />
+          </span>}
+        </nav>}
       </header>
 
       <div className="pfie-body">
-        {detailOpen ? (
+        {simple && !detailOpen && <ManagerView onDetailed={() => setView('detailed')} />}
+        {!simple && <ForecastInfo />}
+        {simple && !detailOpen ? null : detailOpen ? (
           <DetailPage />
-        ) : !activeFarm.populated ? (
-          <EmptyState title={`${activeFarm.name} has no data in this prototype`}>
-            Only {FARMS[0].name} is populated. Switch back to it in the farm selector to explore the
-            forecasts.
-          </EmptyState>
         ) : (
           <>
-            {/* ================= metric deck ================= */}
-            <MetricDeck />
+            {run.source === 'demo' && (
+              <div className="pfie-demo-banner" role="note">
+                <b>Demo data.</b> Every number on this page is synthetic. It has the shape of the planned
+                model outputs but is not Farm X data, not a forecast and not a backtest result.
+              </div>
+            )}
 
-            {/* ================= priority signals ================= */}
+            <RecordStatusBanner />
+
+            {evaluation ? <ModelEvaluation /> : <>
+            <OutcomeBar />
+            <MetricDeck />
             <SignalBand />
 
-            {/* ================= working canvas ================= */}
             <div className="pfie-canvas">
-              {/* Farm Outlook carries the full timeline inline, so the compact
-                  overview would only repeat it. */}
-              {workspace !== 'operations' && workspace !== 'future' && (
-                <section className={`pfie-overview${overviewOpen ? ' open' : ''}`}>
-                  <button
-                    className="pfie-overview-toggle"
-                    onClick={() => setOverviewOpen((open) => !open)}
-                    aria-expanded={overviewOpen}
-                    aria-controls="farm-overview-content"
-                  >
-                    <span className="pfie-overview-icon" aria-hidden>›</span>
-                    <span>
-                      <b>Farm timeline &amp; herd composition</b>
-                      <small>Recorded history, today, and the expected path</small>
-                    </span>
-                    <span className="pfie-overview-action">{overviewOpen ? 'Collapse' : 'Expand'}</span>
-                  </button>
-                  {overviewOpen && (
-                    <div id="farm-overview-content" className="pfie-overview-content">
-                      <TimelinePlayer />
-                      <HerdStrip />
-                    </div>
-                  )}
-                </section>
-              )}
-
-              {workspace === 'future' && <FutureWorkspace />}
-              {workspace === 'capacity' && (
+              {workspace === 'outlook' && <FutureWorkspace />}
+              {workspace === 'herd' && (
                 <>
-                  <Tabs tabs={CAPACITY_TABS} value={capacityTab} onChange={(t) => go('capacity', t)} />
-                  {capacityTab === 'milk' && <MilkSupply />}
-                  {capacityTab === 'reproduction' && <Reproduction />}
-                  {capacityTab === 'outcomes' && <HerdOutcomes />}
-                  {capacityTab === 'genetics' && <HerdGenetics />}
+                  <Tabs tabs={HERD_TABS} value={herdTab} onChange={(t) => go('herd', t)} />
+                  {herdTab === 'milk' && <MilkSupply />}
+                  {herdTab === 'flow' && <Reproduction />}
+                  {herdTab === 'events' && <HerdOutcomes />}
+                  {herdTab === 'generations' && <HerdGenetics />}
                 </>
               )}
-              {workspace === 'commerce' && <ProductsFinance />}
-              {workspace === 'evidence' && <Evidence />}
-              {workspace === 'operations' && <Operations />}
+              {workspace === 'confidence' && <Evidence />}
             </div>
+            </>}
           </>
         )}
 
-        {!detailOpen && <p className="pfie-disclaimer">
-          All figures are fictional sample prototype data. They are not NLDB records, not DelPro data, and do
-          not represent research findings. Component 2 is a predictive layer — animal records, event entry,
-          treatments and operational reporting remain in DelPro. The Operations workspace demonstrates how
-          acknowledgement, action and outcome evidence can be monitored without replacing those source systems.
-        </p>}
+        {!detailOpen && !simple && (
+          <p className="pfie-disclaimer">
+            Component 1 forecasts the herd as a whole: milk, herd counts, herd events and expected mastitis
+            episodes. It shows no individual animals. Animal records stay in DelPro; individual health detection
+            belongs to Component 3. Measured, derived and assumed values are tagged where they appear.
+          </p>
+        )}
       </div>
-
     </div>
   );
 }
 
-/** Routes the open detail state to the panel that knows how to render it. */
 function DetailPage() {
-  const { drawer } = useC2();
+  const { drawer } = usePfoi();
   switch (drawer.kind) {
-    case 'cow': return <CowPanel animalId={drawer.animalId} />;
-    case 'cohort': return <CohortDrawer groupKey={drawer.groupKey} value={drawer.value} />;
-    case 'structure': return <StructureDrawer date={drawer.date} domain={drawer.domain} />;
-    case 'outcome': return <OutcomeReasoningDrawer date={drawer.date} chart={drawer.chart} />;
-    case 'flow-stage': return <FlowStageDrawer stageId={drawer.stageId} />;
-    case 'product': return <ProductDrawer product={drawer.product} />;
+    case 'point': return <PointDrawer period={drawer.period} grain={drawer.grain} />;
     case 'findings': return <FindingsDrawer />;
     default: return null;
   }
 }
 
 /* ------------------------------------------------------------------ */
-/* Priority signals — the findings that point into this workspace.     */
+/* Priority signals: the findings that point into this workspace.      */
 
 function SignalBand() {
-  const {
-    workspace, acknowledged, snoozed, openDrawer, go, setSelectedDate, setSelectedMonth,
-  } = useC2();
-  const { snapshot } = usePredictiveBackend();
-  const signals = signalsFor(workspace, acknowledged, snoozed, snapshot?.findings);
+  const { workspace, acknowledged, openDrawer, go, setSelectedPeriod, setBreakdownMonth, setGrain } = usePfoi();
+  const run = useRun();
+  const signals = findings(run)
+    .filter((f) => !acknowledged.has(f.id))
+    .filter((f) => workspace === 'outlook' || f.link.workspace === workspace)
+    .slice(0, 3);
   if (signals.length === 0) return null;
 
   return (
@@ -260,7 +235,6 @@ function SignalBand() {
       <ul className="pfie-signals">
         {signals.map((f) => {
           const sev = SEVERITY_META[f.severity];
-          const link = f.links[0];
           return (
             <li key={f.id} className={`pfie-signal sev-${f.severity}`}>
               <span className="kind" style={{ color: sev.color }}>
@@ -268,18 +242,19 @@ function SignalBand() {
               </span>
               <b>{f.title}</b>
               <p>{f.summary}</p>
-              {link && (
-                <button
-                  className="pfie-btn ghost"
-                  onClick={() => {
-                    if (link.date) setSelectedDate(link.date);
-                    if (link.month) setSelectedMonth(link.month);
-                    go(link.workspace, link.tab);
-                  }}
-                >
-                  {link.label} <Icon name="arrowRight" size={13} />
-                </button>
-              )}
+              <button
+                className="pfie-btn ghost"
+                onClick={() => {
+                  if (f.link.period) {
+                    setGrain('month');
+                    setSelectedPeriod(f.link.period);
+                    setBreakdownMonth(f.link.period);
+                  }
+                  go(f.link.workspace, f.link.tab);
+                }}
+              >
+                {f.link.label} <Icon name="arrowRight" size={13} />
+              </button>
             </li>
           );
         })}
@@ -288,56 +263,48 @@ function SignalBand() {
   );
 }
 
-/* ------------------------------------------------------------------ */
 
-function CowSearch() {
-  const { search, setSearch, openDrawer } = useC2();
-  const [focused, setFocused] = useState(false);
-
-  const results = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (q.length < 2) return [];
-    return HERD.filter(
-      (a) =>
-        a.id.toLowerCase().includes(q) ||
-        a.tag.includes(q) ||
-        a.geneticGroup.toLowerCase().includes(q) ||
-        a.opGroup.toLowerCase().includes(q) ||
-        PROFILES[a.profile].name.toLowerCase().includes(q),
-    ).slice(0, 8);
-  }, [search]);
-
+/** Any published horizon, and recorded history from a chosen date (all history by default). */
+function RangePickers({ grain, horizon, setHorizon, historyFrom, setHistoryFrom }: {
+  grain: Grain; horizon: number; setHorizon: (h: number) => void;
+  historyFrom: string | null; setHistoryFrom: (d: string | null) => void;
+}) {
+  const run = useRun();
+  const unit = GRAIN_LABEL[grain];
+  const earliest = earliestActual(run, grain);
+  const first = firstTarget(run, grain);
+  const last = maxHorizon(run, grain);
   return (
-    <span className="pfie-search">
-      <Icon name="search" size={14} />
-      <input
-        type="search"
-        placeholder="Find a cow or cohort…"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setTimeout(() => setFocused(false), 160)}
-        aria-label="Search animals and cohorts"
-      />
-      {focused && results.length > 0 && (
-        <div className="pfie-search-results">
-          {results.map((a) => (
-            <button
-              key={a.id}
-              onClick={() => { openDrawer({ kind: 'cow', animalId: a.id }); setSearch(''); }}
-            >
-              <b>{a.id}</b>
-              <span style={{ color: 'var(--muted)' }}>
-                {' '}· {a.prodState} · {a.geneticGroup} · {PROFILES[a.profile].short}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-      {focused && search.trim().length >= 2 && results.length === 0 && (
-        <div className="pfie-search-results">
-          <p className="none">No animal or cohort matches “{search}”.</p>
-        </div>
+    <span className="pfie-row tight pfie-pickers">
+      <label className="pfie-pick" title={`Any step the model publishes (1–${last} ${unit.many}); the buttons are the scored ones`}>
+        Ahead
+        <input
+          type="number"
+          min={1}
+          max={last}
+          value={horizon}
+          aria-label={`Forecast steps ahead, 1 to ${last} ${unit.many}`}
+          onChange={(e) => {
+            const h = Math.round(Number(e.target.value));
+            if (Number.isFinite(h)) setHorizon(Math.min(last, Math.max(1, h)));
+          }}
+        />
+        {horizon === 1 ? unit.one : unit.many}
+      </label>
+      <span className="pfie-pick" title={`Show recorded history from this date (records start ${periodLabel(earliest, grain)})`}>
+        From
+        <DateField
+          label="Show history from"
+          value={historyFrom ?? earliest}
+          min={earliest}
+          max={first}
+          onChange={(d) => setHistoryFrom(d > earliest ? d : null)}
+        />
+      </span>
+      {historyFrom && (
+        <button className="pfie-btn pfie-pick-reset" onClick={() => setHistoryFrom(null)} title="Show all recorded history">
+          All history
+        </button>
       )}
     </span>
   );

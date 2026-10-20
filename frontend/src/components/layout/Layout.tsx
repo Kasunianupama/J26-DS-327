@@ -38,7 +38,7 @@ const navigation: {label: string; items: NavItem[]}[] = [
         icon: 'shield-emoji',
         subItems: [
           {to: '/risk-management/farm', label: 'Farm Dashboard', icon: 'farm'},
-          {to: '/risk-management/nldb', label: 'NLDB Dashboard', icon: 'chart'},
+          {to: '/risk-management/national', label: 'National Dashboard', icon: 'chart'},
         ],
       },
       {to: '/assistant', label: 'Digital agronomist', icon: 'sparkles'},
@@ -87,8 +87,8 @@ export function Layout() {
   const handleRoleChange = (newRole: typeof role) => {
     setRole(newRole);
     if (pathname.startsWith('/risk-management')) {
-      if (newRole === 'nldb_management') {
-        navigate('/risk-management/nldb');
+      if (newRole === 'board_management') {
+        navigate('/risk-management/national');
       } else {
         navigate('/risk-management/farm');
       }
@@ -164,7 +164,7 @@ export function Layout() {
             <option value="farm_worker">Farm worker</option>
             <option value="veterinarian">Veterinarian</option>
             <option value="farm_manager">Farm manager</option>
-            <option value="nldb_management">NLDB management</option>
+            <option value="board_management">Board management</option>
           </select>
         </label>
       </aside>

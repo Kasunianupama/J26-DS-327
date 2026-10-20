@@ -1,15 +1,17 @@
 /**
- * Capacity → Milk Supply (§10, §11).
+ * Component 1 (PFOI): Herd & Production → Milk supply.
  *
- * The contribution river decomposes expected milk into where it comes from, and
- * the waterfall reconciles any two dates on that river.
+ * The milk band of the timeline, two waterfalls (one past month, one future
+ * month) and the month-by-month change split by factor. All of it reads the
+ * attribution rows, whose parts add up exactly to each month's change.
  */
 
 import { useMemo, useState } from 'react';
 import {
-  Area,
-  AreaChart,
+  Bar,
   CartesianGrid,
+  ComposedChart,
+  Line,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -17,219 +19,114 @@ import {
   YAxis,
 } from 'recharts';
 import {
-  CONTRIBUTION_META,
-  DEFINING_MOVEMENT,
-  HORIZONS,
-  fmtInt,
-  layerSeries,
-  longDate,
-  milkWaterfall,
-  type GroupingKey,
-} from '../../../data/component2';
-import { useC2 } from '../state';
-import { Card, ConfidenceBadge, Note, Segmented, TipShell } from '../ui';
+  FACTOR_META,
+  MILK_FACTORS,
+  attributionMonths,
+  firstTarget,
+  fmtSigned,
+  milkBreakdown,
+  periodLabel,
+} from '../../../data/pfoi';
+import { usePfoi } from '../state';
+import { useRun } from '../source';
+import { Card, MonthlyOnly, KindTag, Note, TipShell, type TipRow } from '../ui';
+import { MasterTimeline } from '../panels/MasterTimeline';
+import { Waterfall } from '../panels/Waterfall';
 
-const GROUPINGS: { id: GroupingKey; label: string }[] = [
-  { id: 'Contribution type', label: 'Contribution' },
-  { id: 'Parity', label: 'Parity' },
-  { id: 'Genetic group', label: 'Genetics' },
-  { id: 'Operational group', label: 'Shed' },
-  { id: 'Lactation stage', label: 'Stage' },
-  { id: 'Prediction source', label: 'Evidence' },
-];
-
-const PALETTE = ['#1f6b4a', '#4d9070', '#87b8a0', '#5b7fa6', '#93aec9', '#b8860b', '#a44b3c', '#9aa8a2'];
+const FACTOR_COLORS: Record<string, string> = {
+  herd_size: '#9a4f27',
+  stage_mix: '#5b7fa6',
+  parity_mix: '#93aec9',
+  thi: '#a8770a',
+  mastitis: '#a44b3c',
+  residual: '#b9c7c0',
+  pregnancy_mix: '#8b6aa8',
+  yield_level: '#b5893a',
+};
 
 export function MilkSupply() {
-  const { horizon, selectedDate, setSelectedDate, compareDate, setCompareDate, openDrawer } = useC2();
-  const [grouping, setGrouping] = useState<GroupingKey>('Contribution type');
-
-  const days = HORIZONS.find((option) => option.id === horizon)?.days ?? 365;
-  const { rows, keys } = useMemo(() => layerSeries(grouping, days), [grouping, days]);
-
-  const rowAt = (iso: string) =>
-    rows.find((r, i) => String(r.start) <= iso && (!rows[i + 1] || String(rows[i + 1].start) > iso));
-  const selectedRow = rowAt(selectedDate);
-  const compareRow = compareDate ? rowAt(compareDate) : null;
-
-  const waterfall = useMemo(
-    () => (compareDate ? milkWaterfall(selectedDate, compareDate) : []),
-    [selectedDate, compareDate],
+  const { breakdownMonth } = usePfoi();
+  const run = useRun();
+  const months = attributionMonths(run);
+  const origin = firstTarget(run, 'month');
+  const past = months.filter((m) => m < origin);
+  const future = months.filter((m) => m >= origin);
+  const [pastMonth, setPastMonth] = useState(
+    breakdownMonth && breakdownMonth < origin ? breakdownMonth : past[past.length - 1],
   );
-  const maxAbs = Math.max(1, ...waterfall.filter((s) => s.kind !== 'anchor' && s.kind !== 'total').map((s) => Math.abs(s.value)));
-  const maxTotal = Math.max(1, ...waterfall.filter((s) => s.kind === 'anchor' || s.kind === 'total').map((s) => Math.abs(s.value)));
+  const [futureMonth, setFutureMonth] = useState(
+    breakdownMonth && breakdownMonth >= origin ? breakdownMonth : future[Math.min(future.length - 1, 2)],
+  );
+  const pastBd = pastMonth ? milkBreakdown(run, pastMonth) : null;
+  const futureBd = futureMonth ? milkBreakdown(run, futureMonth) : null;
+
+  const river = useMemo(() => months.map((m) => {
+    const bd = milkBreakdown(run, m);
+    const row: Record<string, number | string | boolean> = { period: m, short: periodLabel(m, 'month', true), future: m >= origin };
+    bd?.parts.forEach((p) => { row[p.factor] = Math.round(p.value * 10) / 10; });
+    row.total = bd ? Math.round((bd.end - bd.start) * 10) / 10 : 0;
+    return row;
+  }), [run, months, origin]);
+
+  // factors this run reports (the model run has no THI or mastitis factor yet)
+  const factors = useMemo(() => MILK_FACTORS.filter((f) => run.attribution.some(
+    (r) => r.series === 'milk_litres' && r.factor === f)), [run]);
+
+  const picker = (value: string | undefined, options: string[], onChange: (m: string) => void) => (
+    <select value={value} onChange={(e) => onChange(e.target.value)}>
+      {options.map((m) => <option key={m} value={m}>{periodLabel(m, 'month')}</option>)}
+    </select>
+  );
 
   return (
-    <div className="pfie-stack">
-      <Card
-        title="Milk contribution river"
-        sub="Expected milk through time, decomposed by where it comes from. Click a layer to open the animals behind it."
-        actions={
-          <>
-            <Segmented label="Group by" options={GROUPINGS} value={grouping} onChange={setGrouping} />
-            <button className="pfie-btn" onClick={() => setCompareDate(compareDate ? null : DEFINING_MOVEMENT.windowEnd)}>
-              {compareDate ? 'Clear second date' : 'Compare two dates'}
-            </button>
-          </>
-        }
-      >
-        <ResponsiveContainer width="100%" height={320}>
-          <AreaChart
-            data={rows}
-            margin={{ top: 12, right: 8, left: 0, bottom: 0 }}
-            onClick={(e) => {
-              const r = rows.find((x) => x.label === String(e?.activeLabel));
-              if (r) setSelectedDate(String(r.start));
-            }}
-          >
-            <defs>
-              <pattern id="pfieRiverA" width="6" height="6" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
-                <rect width="6" height="6" fill="#5b7fa6" />
-                <line x1="0" y1="0" x2="0" y2="6" stroke="#ffffff" strokeWidth="2.2" opacity="0.8" />
-              </pattern>
-              <pattern id="pfieRiverB" width="6" height="6" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
-                <rect width="6" height="6" fill="#93aec9" />
-                <line x1="0" y1="0" x2="0" y2="6" stroke="#ffffff" strokeWidth="2.6" opacity="0.9" />
-              </pattern>
-            </defs>
+    <div className="pfie-stack" style={{ gap: 20 }}>
+      <MasterTimeline bands={['milk', 'cows']} />
+
+      <div className="pfie-grid c2">
+        <Card title={<>A past month <MonthlyOnly /></>} sub="Recorded change, explained by the model, with what it could not explain" actions={picker(pastMonth, past, setPastMonth)}>
+          {pastBd ? <Waterfall breakdown={pastBd} /> : <p className="pfie-chart-note">No breakdown for this month.</p>}
+        </Card>
+        <Card title={<>A future month <MonthlyOnly /></>} sub="Forecast change, fully explained by construction" actions={picker(futureMonth, future, setFutureMonth)}>
+          {futureBd ? <Waterfall breakdown={futureBd} /> : <p className="pfie-chart-note">No breakdown for this month.</p>}
+        </Card>
+      </div>
+
+      <Card title={<>Month-by-month change, by factor <MonthlyOnly /></>} sub="Each bar is one month's change from the month before (L/day); the line is the total change">
+        <ResponsiveContainer width="100%" height={260}>
+          <ComposedChart data={river} stackOffset="sign" margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
             <CartesianGrid stroke="#eef2f0" vertical={false} />
-            <XAxis dataKey="label" tick={{ fontSize: 10, fill: '#93a29b' }} tickLine={false} axisLine={{ stroke: '#e2e9e5' }} minTickGap={24} />
-            <YAxis tick={{ fontSize: 10, fill: '#93a29b' }} tickLine={false} axisLine={false} width={54} tickFormatter={(v) => `${Math.round(Number(v) / 1000)}k`} />
-            <Tooltip content={<RiverTip grouping={grouping} groupCount={keys.length} />} />
-            {keys.map((k, i) => {
-              const meta = CONTRIBUTION_META[k as keyof typeof CONTRIBUTION_META];
-              const colour = meta?.color ?? PALETTE[i % PALETTE.length];
-              const fill = meta?.pattern
-                ? k.includes('predicted') ? 'url(#pfieRiverB)' : 'url(#pfieRiverA)'
-                : colour;
-              return (
-                <Area
-                  key={k}
-                  dataKey={k}
-                  stackId="river"
-                  name={k}
-                  stroke={colour}
-                  strokeWidth={1}
-                  fill={fill}
-                  fillOpacity={meta?.pattern ? 1 : 0.82}
-                  isAnimationActive={false}
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => openDrawer({ kind: 'cohort', groupKey: grouping, value: k })}
-                />
-              );
-            })}
-            {selectedRow && (
-              <ReferenceLine x={String(selectedRow.label)} stroke="#1d2b26" strokeWidth={2} strokeDasharray="4 3"
-                label={{ value: 'A', position: 'top', fontSize: 11, fontWeight: 700, fill: '#1d2b26' }} />
-            )}
-            {compareRow && (
-              <ReferenceLine x={String(compareRow.label)} stroke="#b8860b" strokeWidth={2} strokeDasharray="2 3"
-                label={{ value: 'B', position: 'top', fontSize: 11, fontWeight: 700, fill: '#a8770a' }} />
-            )}
-          </AreaChart>
+            <XAxis dataKey="short" tick={{ fontSize: 11, fill: '#70827a' }} minTickGap={16} />
+            <YAxis tick={{ fontSize: 11, fill: '#70827a' }} width={48} />
+            <ReferenceLine y={0} stroke="#93a29b" />
+            <ReferenceLine x={periodLabel(origin, 'month', true)} stroke="#5b7fa6" strokeDasharray="4 3" label={{ value: 'Origin', position: 'insideTopRight', fontSize: 10, fill: '#5b7fa6' }} />
+            {factors.map((f) => (
+              <Bar key={f} dataKey={f} stackId="s" fill={FACTOR_COLORS[f]} isAnimationActive={false} />
+            ))}
+            <Line dataKey="total" stroke="#17231f" strokeWidth={1.5} dot={{ r: 2 }} isAnimationActive={false} />
+            <Tooltip
+              content={({ active, payload }) => {
+                const p = payload?.[0]?.payload as Record<string, number | string | boolean> | undefined;
+                if (!active || !p) return null;
+                const rows: TipRow[] = factors
+                  .filter((f) => p.future !== true || f !== 'residual')
+                  .map((f) => [FACTOR_META[f].label, fmtSigned(Number(p[f] ?? 0), 1), FACTOR_COLORS[f]]);
+                rows.push(['Total change', fmtSigned(Number(p.total), 1)]);
+                return <TipShell title={periodLabel(String(p.period), 'month')} rows={rows} note={p.future ? 'Forecast month.' : 'Recorded month.'} />;
+              }}
+            />
+          </ComposedChart>
         </ResponsiveContainer>
-
         <div className="pfie-legend">
-          {keys.map((k, i) => {
-            const meta = CONTRIBUTION_META[k as keyof typeof CONTRIBUTION_META];
-            const colour = meta?.color ?? PALETTE[i % PALETTE.length];
-            return (
-              <span key={k}>
-                <i style={{ background: meta?.pattern ? `repeating-linear-gradient(45deg, ${colour} 0 2px, #fff 2px 4.5px)` : colour }} />
-                {k}
-              </span>
-            );
-          })}
-        </div>
-        <div style={{ marginTop: 12 }}>
-          <Note>
-            Solid fills come from animals already milking. Hatched fills depend on a calving that has not happened
-            yet, so they carry the widest range.
-          </Note>
+          {factors.map((f) => (
+            <span key={f}><i style={{ background: FACTOR_COLORS[f] }} />{FACTOR_META[f].label} <KindTag kind={FACTOR_META[f].kind} /></span>
+          ))}
         </div>
       </Card>
 
-      <Card
-        title="What changed between these dates?"
-        sub={
-          compareDate
-            ? `${longDate(selectedDate)} → ${longDate(compareDate)}. The steps reconcile to the river.`
-            : 'Pick a second date to reconcile the change between two points on the river.'
-        }
-        actions={compareDate ? <ConfidenceBadge level="Moderate" /> : undefined}
-      >
-        {!compareDate ? (
-          <div className="pfie-empty">
-            <b>No comparison selected</b>
-            Use “Compare two dates”, then click the river to move point A. Point B defaults to the end of the
-            October transition window.
-          </div>
-        ) : (
-          <div className="pfie-wf">
-            {waterfall.map((s) => {
-              const isEdge = s.kind === 'anchor' || s.kind === 'total';
-              const w = isEdge
-                ? (Math.abs(s.value) / maxTotal) * 100
-                : (Math.abs(s.value) / maxAbs) * 46;
-              return (
-                <div className={`step ${s.kind}`} key={s.label} title={s.detail}>
-                  <span className="nm">{s.label}</span>
-                  <span className="track">
-                    <span
-                      className={`fill ${s.kind}`}
-                      style={
-                        isEdge
-                          ? { left: 0, width: `${w}%` }
-                          : s.value >= 0
-                            ? { left: '50%', width: `${w}%` }
-                            : { right: '50%', width: `${w}%` }
-                      }
-                    />
-                  </span>
-                  <span className="v">
-                    {isEdge ? '' : s.value > 0 ? '+' : ''}
-                    {fmtInt(s.value)} L
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </Card>
+      <Note tone="info" title="Not shown yet: milk by parity and lactation stage.">
+        The planned outputs carry the factor split above but not milk per parity or stage group. Showing that
+        needs one more output table from the model (a decision for Step 6).
+      </Note>
     </div>
-  );
-}
-
-function RiverTip({
-  active, label, payload, grouping, groupCount,
-}: {
-  active?: boolean;
-  label?: string | number;
-  payload?: { dataKey?: string | number; value?: number }[];
-  grouping: GroupingKey;
-  groupCount: number;
-}) {
-  if (!active || !payload?.length) return null;
-  const total = payload.reduce((s, p) => s + (p.value ?? 0), 0);
-  const sorted = [...payload].sort((a, b) => (b.value ?? 0) - (a.value ?? 0)).filter((p) => (p.value ?? 0) > 0);
-  const transition = payload
-    .filter((p) => String(p.dataKey).includes('New entrants'))
-    .reduce((s, p) => s + (p.value ?? 0), 0);
-
-  return (
-    <TipShell
-      title={`Expected milk — ${label}`}
-      rows={[
-        ['Total', `${fmtInt(total)} L`],
-        ...sorted.slice(0, 5).map(
-          (p) => [String(p.dataKey), `${fmtInt(p.value ?? 0)} L · ${Math.round(((p.value ?? 0) / Math.max(1, total)) * 100)}%`] as [string, string],
-        ),
-      ]}
-      note={
-        grouping === 'Contribution type' && transition > 0
-          ? `${Math.round((transition / Math.max(1, total)) * 100)}% of this estimate depends on cows that have not calved yet. Click a layer for the animals behind it.`
-          : `Grouped by ${grouping.toLowerCase()} · ${groupCount} groups. Click a layer for the animals behind it.`
-      }
-    />
   );
 }

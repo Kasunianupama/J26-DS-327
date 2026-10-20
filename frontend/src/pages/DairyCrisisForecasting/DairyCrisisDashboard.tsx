@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useUser } from '../../context/UserContext';
-import { NLDBNationalDashboard } from './NLDBNationalDashboard';
+import { NationalDashboard } from './NationalDashboard';
 import { FarmLevelDashboard } from './FarmLevelDashboard';
 import './dairyCrisis.css';
 
@@ -12,13 +12,13 @@ export const DairyCrisisDashboard: React.FC = () => {
 
   // Determine active view mode based on URL route or role
   let isNationalView = false;
-  if (pathname.includes('/nldb')) {
+  if (pathname.includes('/national')) {
     isNationalView = true;
   } else if (pathname.includes('/farm')) {
     isNationalView = false;
   } else {
     // Default fallback based on role if navigating directly to /risk-management
-    isNationalView = role === 'nldb_management';
+    isNationalView = role === 'board_management';
   }
 
   const handleSelectFarm = (farmId: string) => {
@@ -28,7 +28,7 @@ export const DairyCrisisDashboard: React.FC = () => {
   return (
     <div className="dairy-crisis-workspace-only">
       {isNationalView ? (
-        <NLDBNationalDashboard onSelectFarm={handleSelectFarm} />
+        <NationalDashboard onSelectFarm={handleSelectFarm} />
       ) : (
         <FarmLevelDashboard
           selectedFarmId={selectedFarmId}

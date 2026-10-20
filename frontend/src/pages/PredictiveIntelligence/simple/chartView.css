@@ -1,0 +1,11 @@
+.pfie-chart-timeline { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 12px 0; font-size: 13px; }
+.pfie-chart-timeline label { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-weight: 600; }
+.pfie-chart-timeline input { font: inherit; color: inherit; background: white; border: 1px solid #dfe7e3; border-radius: 8px; padding: 7px 9px; }
+.pfie-chart-timeline button:disabled { opacity: .5; cursor: default; }
+.pfie-chart-preview { cursor: zoom-in; }
+.pfie-chart-dialog { position: fixed; inset: 0; width: 100vw; max-width: none; height: 100dvh; max-height: none; box-sizing: border-box; margin: 0; padding: 20px; border: 0; background: #f5f8f6; color: #17231f; overflow: auto; }
+.pfie-chart-dialog:not([open]) { display: none; }
+.pfie-chart-dialog::backdrop { background: #17231f99; }
+.pfie-chart-dialog > .pfie-mgr-card { min-height: 100%; box-sizing: border-box; }
+.pfie-chart-dialog .pfie-mgr-card-head { align-items: center; }
+@media (max-width: 600px) { .pfie-chart-dialog { padding: 8px; } }
