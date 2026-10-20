@@ -11,6 +11,7 @@ import {
   MODEL_LABEL,
   confidenceOf,
   flowTotals,
+  isForecast,
   fmt1,
   fmtInt,
   fmtPct,
@@ -36,7 +37,7 @@ function OutlookDeck() {
   const milking = headline(run, grain, horizon, 'milking');
   const herd = headline(run, grain, horizon, 'total_herd');
   const mastitis = headline(run, grain, horizon, 'mastitis_episodes');
-  const calvings = grain === 'day' ? null : flowTotals(run, grain, horizon, 'calvings');
+  const calvings = isForecast(run, grain, 'calvings') ? flowTotals(run, grain, horizon, 'calvings') : null;
   const dailyOnly = (label: string) => {
     const last = lastActual(run, 'week', label === 'Milking cows' ? 'milking' : 'total_herd');
     return last ? `Not forecast daily · last week ${fmtInt(last.value)} head` : 'Not forecast at daily grain';

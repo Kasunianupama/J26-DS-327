@@ -17,6 +17,7 @@ import {
   fmt1,
   fmtInt,
   forecastRow,
+  isForecast,
   milkBreakdown,
   periodLabel,
   periodStart,
@@ -77,7 +78,7 @@ export function PointDrawer({ period, grain }: { period: string; grain: Grain })
           <div>
             <div className="k">Milking cows</div>
             <div className="v">{milking !== null ? fmtInt(milking) : '—'}</div>
-            <div className="d">{milking === null && grain === 'day' ? 'Herd counts are forecast weekly and monthly' : 'Daily average'}</div>
+            <div className="d">{milking === null && future && !isForecast(run, grain, 'milking') ? 'Herd counts are forecast weekly and monthly' : 'Daily average'}</div>
           </div>
           <div>
             <div className="k">Milk per milking cow <KindTag kind="derived" /></div>
@@ -107,7 +108,7 @@ export function PointDrawer({ period, grain }: { period: string; grain: Grain })
               </tbody>
             </table>
           </div>
-          {grain === 'day' && future && <p className="pfie-chart-note">Only milk is forecast at daily grain.</p>}
+          {future && !isForecast(run, grain, 'milking') && <p className="pfie-chart-note">Only milk is forecast at this grain in this run.</p>}
         </Card>
 
         {breakdown ? (
@@ -120,7 +121,7 @@ export function PointDrawer({ period, grain }: { period: string; grain: Grain })
           </Note>
         )}
 
-        {future && grain !== 'day' && (
+        {future && isForecast(run, grain, 'calvings') && (
           <Card title="Herd events expected this period" sub="How much of each count is already known from records, and how much is an estimate from recent rates">
             <div className="pfie-flowlinks">
               {EVENT_SERIES.map((s) => {

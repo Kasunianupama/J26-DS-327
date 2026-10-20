@@ -15,7 +15,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { HORIZONS, fmt1, flowSplit, periodLabel, targetPeriod, type SeriesId } from '../../../data/pfoi';
+import { fmt1, flowSplit, isForecast, maxHorizon, periodLabel, targetPeriod, type SeriesId } from '../../../data/pfoi';
 import { usePfoi } from '../state';
 import { useRun } from '../source';
 import { Card, EmptyState, TipShell } from '../ui';
@@ -28,9 +28,10 @@ const PIPELINE: SeriesId[] = ['calvings', 'dry_offs'];
 export function Reproduction() {
   const { grain } = usePfoi();
   const run = useRun();
-  const maxH = HORIZONS[grain][HORIZONS[grain].length - 1];
+  const maxH = maxHorizon(run, grain);
+  const pipelineForecast = isForecast(run, grain, 'calvings');
 
-  const rows = grain === 'day' ? [] : Array.from({ length: maxH }, (_, i) => {
+  const rows = !pipelineForecast ? [] : Array.from({ length: maxH }, (_, i) => {
     const period = targetPeriod(run, grain, i + 1);
     const row: Record<string, number | string> = { period, short: periodLabel(period, grain, true) };
     PIPELINE.forEach((s) => {
@@ -51,7 +52,7 @@ export function Reproduction() {
         title="Calvings and dry-offs ahead"
         sub="Solid: already determined at the origin (recorded conceptions, scheduled dry-offs). Hatched: rate-driven."
       >
-        {grain === 'day' ? (
+        {!pipelineForecast ? (
           <EmptyState title="Forecast weekly and monthly">Switch the grain to Week or Month.</EmptyState>
         ) : (
           <ResponsiveContainer width="100%" height={240}>

@@ -24,6 +24,7 @@ import {
   addPeriods,
   fmt1,
   forecastRow,
+  isForecast,
   periodDays,
   periodLabel,
   targetPeriod,
@@ -38,13 +39,14 @@ export function HerdOutcomes() {
   const { grain, horizon } = usePfoi();
   const run = useRun();
 
-  const totals = grain === 'day' ? [] : EVENT_SERIES.map((s) => {
+  const eventsForecast = isForecast(run, grain, 'calvings');
+  const totals = !eventsForecast ? [] : EVENT_SERIES.map((s) => {
     let f = 0; let lo = 0; let hi = 0; let lastYear = 0; let lastYearKnown = true;
     for (let h = 1; h <= horizon; h++) {
       const p = targetPeriod(run, grain, h);
       const r = forecastRow(run, grain, p, s);
       if (r) { f += r.forecast; lo += r.lower; hi += r.upper; }
-      const ly = actualRow(run, grain, addPeriods(p, grain, grain === 'month' ? -12 : -52), s);
+      const ly = actualRow(run, grain, addPeriods(p, grain, grain === 'month' ? -12 : grain === 'week' ? -52 : -364), s);
       if (ly?.value != null) lastYear += ly.value; else lastYearKnown = false;
     }
     return { s, f, lo, hi, lastYear: lastYearKnown ? lastYear : null };
@@ -74,7 +76,7 @@ export function HerdOutcomes() {
         title={`Herd events over the next ${horizon} ${grain === 'week' ? 'weeks' : grain === 'month' ? 'months' : 'days'}`}
         sub="Forecast totals with a summed 5–95% range (conservative), against the same span a year earlier"
       >
-        {grain === 'day' ? (
+        {!eventsForecast ? (
           <EmptyState title="Herd events are forecast weekly and monthly">Switch the grain to Week or Month.</EmptyState>
         ) : (
           <div className="pfie-tablewrap">

@@ -2507,7 +2507,8 @@ main:has(> .pfie) {
 /* range pickers (horizon, history, from-date) */
 .pfie-pickers { gap: 8px; flex-wrap: wrap; }
 .pfie-pick { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #52665d; }
-.pfie-pick select, .pfie-pick input[type="date"] {
+.pfie-pick input[type="number"] { width: 4.5em; }
+.pfie-pick select, .pfie-pick input[type="date"], .pfie-pick input[type="number"] {
   font: inherit; font-size: 12px; color: #17231f; background: #fff;
   border: 1px solid #d6dfda; border-radius: 6px; padding: 3px 6px;
 }

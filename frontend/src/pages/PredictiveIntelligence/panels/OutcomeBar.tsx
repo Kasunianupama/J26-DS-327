@@ -9,8 +9,8 @@
  */
 
 import {
-  FORECAST_SERIES, GRAIN_LABEL, SERIES_META, TEST_BLOCK_START,
-  fmt1, fmtInt, hasRealised, longDate, outcomeScore, periodLabel, targetPeriod,
+  GRAIN_LABEL, SERIES_META, TEST_BLOCK_START,
+  fmt1, fmtInt, hasRealised, isForecast, longDate, outcomeScore, periodLabel, targetPeriod,
   type Grain, type OutcomeScore, type SeriesId,
 } from '../../../data/pfoi';
 import { usePfoi } from '../state';
@@ -28,7 +28,7 @@ export function OutcomeBar() {
     ? run.origin_date >= TEST_BLOCK_START ? 'test' : 'development'
     : 'published';
   const label = { test: 'Test-period comparison', development: 'Development comparison', published: 'Published outlook' }[kind];
-  const series = SCORED.filter((s) => FORECAST_SERIES[grain].includes(s));
+  const series = SCORED.filter((s) => isForecast(run, grain, s));
   const scores = realised
     ? series.map((s) => outcomeScore(run, grain, horizon, s)).filter((x): x is OutcomeScore => !!x)
     : [];

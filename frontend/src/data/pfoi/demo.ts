@@ -182,17 +182,20 @@ const firstTarget = (grain: Grain, origin: string = ORIGIN) => {
   const p = periodStart(origin, grain);
   return p < origin ? addPeriods(p, grain, 1) : p;
 };
-const MAX_H: Record<Grain, number> = { day: 14, week: 13, month: 12 };
+/* Shaped like a pfoi-1.1.1 run: 12 months at every grain. */
+const MAX_H: Record<Grain, number> = { day: 365, week: 52, month: 12 };
 
 function qualityFor(grain: Grain, h: number): QualityFlag {
-  if (grain === 'day') return h <= 7 ? 'high' : 'moderate';
-  if (grain === 'week') return h <= 4 ? 'high' : h <= 8 ? 'moderate' : 'limited';
+  if (grain === 'day') return h <= 7 ? 'high' : h <= 91 ? 'moderate' : 'limited';
+  if (grain === 'week') return h <= 4 ? 'high' : h <= 13 ? 'moderate' : 'limited';
   return h <= 2 ? 'high' : h <= 6 ? 'moderate' : 'limited';
 }
 
 function widthFor(grain: Grain, h: number, kind: 'milk' | 'stock') {
-  if (kind === 'milk') return grain === 'day' ? 0.04 + 0.004 * h : grain === 'week' ? 0.035 + 0.007 * h : 0.03 + 0.011 * h;
-  return grain === 'week' ? 0.008 + 0.004 * h : 0.012 + 0.009 * h;
+  /* widen with reach in months; single days carry extra day-to-day noise */
+  const months = grain === 'month' ? h : grain === 'week' ? h / 4.35 : h / 30.4;
+  if (kind === 'milk') return (grain === 'day' ? 0.06 : grain === 'week' ? 0.035 : 0.03) + 0.011 * months;
+  return (grain === 'day' ? 0.01 : 0.008) + 0.009 * months;
 }
 
 function seriesValue(series: SeriesId, ds: Day[], grain: Grain, start: string) {
@@ -362,12 +365,12 @@ function buildAttribution(origin: string = ORIGIN): AttributionRow[] {
   }
 
   /* Herd flows: how much of each forecast count is already fixed at the origin. */
-  (['week', 'month'] as Grain[]).forEach((grain) => {
+  (['day', 'week', 'month'] as Grain[]).forEach((grain) => {
     const first = firstTarget(grain, origin);
     for (let h = 1; h <= MAX_H[grain]; h++) {
       const start = addPeriods(first, grain, h - 1);
       const ds = daysIn(start, addPeriods(start, grain, 1));
-      const monthsAhead = grain === 'month' ? h - 0.5 : (h - 0.5) / 4.35;
+      const monthsAhead = grain === 'month' ? h - 0.5 : grain === 'week' ? (h - 0.5) / 4.35 : (h - 0.5) / 30.4;
       EVENTS.forEach((e) => {
         const f = sum(ds.map((d) => d.lambda[e]));
         const share = e === 'calvings' || e === 'entries'

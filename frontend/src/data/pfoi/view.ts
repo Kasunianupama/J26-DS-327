@@ -10,6 +10,7 @@ import {
   FACTOR_META,
   HISTORY_ALL,
   HISTORY_DEFAULT,
+  HORIZONS,
   MILK_FACTORS,
   QUALITY_TO_CONFIDENCE,
   STOCK_SERIES,
@@ -66,6 +67,38 @@ export function firstTarget(run: PfoiRun, grain: Grain) {
 
 export const targetPeriod = (run: PfoiRun, grain: Grain, horizon: number) =>
   addPeriods(firstTarget(run, grain), grain, horizon - 1);
+
+/* What a run publishes. pfoi-1.1.1 forecasts every series for 12 months at every grain;
+   earlier runs forecast 14 days (milk only) and 13 weeks. The page reads this from the run. */
+const reachCache = new WeakMap<PfoiRun, { max: Map<Grain, number>; series: Set<string> }>();
+
+function reachFor(run: PfoiRun) {
+  let r = reachCache.get(run);
+  if (!r) {
+    r = { max: new Map(), series: new Set() };
+    for (const row of run.outlook) {
+      if (row.origin_date !== run.origin_date) continue;
+      r.max.set(row.grain, Math.max(r.max.get(row.grain) ?? 0, row.horizon));
+      r.series.add(`${row.grain}|${row.series}`);
+    }
+    reachCache.set(run, r);
+  }
+  return r;
+}
+
+/** Last horizon the run publishes at this grain (at least 1). */
+export const maxHorizon = (run: PfoiRun, grain: Grain) => Math.max(1, reachFor(run).max.get(grain) ?? 1);
+
+/** True when the run forecasts this series at this grain. */
+export const isForecast = (run: PfoiRun, grain: Grain, series: SeriesId) => reachFor(run).series.has(`${grain}|${series}`);
+
+/** Quick horizon buttons this run can show: the preset steps it reaches, ending on its last step. */
+export function horizonOptions(run: PfoiRun, grain: Grain): number[] {
+  const max = maxHorizon(run, grain);
+  const opts = HORIZONS[grain].filter((h) => h <= max);
+  if (HORIZONS[grain].some((h) => h > max) && opts[opts.length - 1] !== max) opts.push(max);
+  return opts;
+}
 
 /** Milk is stored as litres in the period; every view shows litres per day. */
 export const perDay = (series: SeriesId, value: number, grain: Grain, period: string) =>

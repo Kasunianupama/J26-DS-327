@@ -13,6 +13,7 @@ import {
   fmt1,
   fmtInt,
   headline,
+  isForecast,
   lastActual,
   periodLabel,
   type SeriesId,
@@ -35,7 +36,7 @@ export function HerdStrip() {
   const { grain, horizon } = usePfoi();
   const run = useRun();
 
-  if (grain === 'day') {
+  if (!isForecast(run, grain, 'milking')) {
     return (
       <Card icon="herd" title="Herd flow">
         <EmptyState title="Herd flow is forecast weekly and monthly">

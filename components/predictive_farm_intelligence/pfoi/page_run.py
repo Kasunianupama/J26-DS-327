@@ -19,7 +19,7 @@ from .backtest_milk import summarise_milk
 from .data import DATA_START, add_months, check_before, month_start
 from .categories import STATES
 from .herd_engine import project
-from .outlook import OUTLOOK_HORIZONS, FrozenRun, interval_table
+from .outlook import RECONCILED_MODEL, FrozenRun, interval_table
 from .periods import period_bounds
 from .rates import ENTRY_FROM_STATES, EXIT_TO_STATES
 
@@ -98,13 +98,16 @@ def build_page_run(source, run: FrozenRun, attribution: pd.DataFrame,
     main_label, main_rate = rates[-1] if rates else ("no rate available", 0.0)
 
     outlook, corrections = [], []
+    horizons = run.horizons()
     for grain_model, grain in GRAIN.items():
-        for h in OUTLOOK_HORIZONS[grain_model]:
+        for h in horizons[grain_model]:
             s, e = period_bounds(run.starts[grain_model], grain_model, h)
             part = daily.loc[(dates >= s) & (dates < e)]
             if len(part) != (e - s).days:
                 continue
-            series_here = ["milk_litres"] if grain == "day" else list(SERIES) + ["mastitis_episodes"]
+            # pfoi-1.1.1 forecasts every series daily; earlier versions only milk
+            series_here = (["milk_litres"] if grain == "day" and not run.reconciled
+                           else list(SERIES) + ["mastitis_episodes"])
             for sid in series_here:
                 if sid == "mastitis_episodes":
                     cow_days = float(part["milking"].sum())
@@ -114,14 +117,18 @@ def build_page_run(source, run: FrozenRun, attribution: pd.DataFrame,
                 else:
                     cols, stock, (model, err_series) = SERIES[sid]
                     raw = _period_value(part, cols, stock)
-                    # pfoi-1.1.0 correction layer, column by column (identity for 1.0.0)
-                    f = raw if run.layer is None else sum(
-                        run.output(grain_model, c, h, _period_value(part, (c,), stock)) for c in cols)
+                    # correction layer column by column (identity for 1.0.0); for 1.1.1 the
+                    # reconciled path, whose months equal the 1.1.0 corrected months
+                    f = sum(run.period_value(grain_model, h, c, stock) for c in cols)
                     if abs(f - raw) > 1e-9:
                         corrections.append({"target_period": s.isoformat(), "grain": grain, "horizon": h,
                                             "series": sid, "structural": round(raw, 3),
                                             "correction": round(f - raw, 3)})
-                    model = run.interval_model(err_series, model)
+                    if run.reconciled and grain_model != "monthly":
+                        # the reconciled forecast's own errors at monthly forecast dates
+                        model, err_series = RECONCILED_MODEL, sid
+                    else:
+                        model = run.interval_model(err_series, model)
                     sub = q[(q["model"] == model) & (q["grain"] == grain_model) & (q["series"] == err_series)]
                     has = len(sub) > 0
                     if has:
@@ -148,8 +155,8 @@ def build_page_run(source, run: FrozenRun, attribution: pd.DataFrame,
     split = pd.DataFrame({"date": dates, "total": daily["calvings"].to_numpy(),
                           "determined": pipe["calvings"].to_numpy()})
     split["rate_driven"] = split["total"] - split["determined"]
-    for grain_model in ("weekly", "monthly"):
-        for h in OUTLOOK_HORIZONS[grain_model]:
+    for grain_model in ("daily", "weekly", "monthly") if run.reconciled else ("weekly", "monthly"):
+        for h in horizons[grain_model]:
             s, e = period_bounds(run.starts[grain_model], grain_model, h)
             part = split[(split["date"] >= s) & (split["date"] < e)]
             if len(part) != (e - s).days:
@@ -281,8 +288,7 @@ def _realised(source, run: FrozenRun, outlook: list[dict], until: date) -> list[
     rows = []
     for g in starts:
         rows += _milk_rows(t, g, starts[g], ends[g])
-        if g != "day":
-            rows += _herd_rows(panel, g, starts[g], ends[g])
+        rows += _herd_rows(panel, g, starts[g], ends[g])  # kept only where forecast (below)
     for r in health.itertuples(index=False):
         rows.append({"period": pd.Timestamp(r.month).date().isoformat(), "grain": "month",
                      "series": "mastitis_episodes", "value": float(r.mastitis_episodes),
@@ -328,8 +334,8 @@ def _moves(source, run: FrozenRun, panel: pd.DataFrame) -> list[dict]:
     Recorded by month: state transitions (incl. pregnant -> open as pregnancies lost for
     heifers and dry cows) and births. Recorded by day and week: dated moves from the
     lactation, calf and animal records; arrivals and pregnancies lost are herd totals there
-    (group "herd"), because their group is not dated. Forecast by week and month: the
-    herd engine's flows. The herd is not forecast daily."""
+    (group "herd"), because their group is not dated. Forecast by week and month (and by
+    day for pfoi-1.1.1): the herd engine's structural flows."""
     origin = run.origin
     rows: list[dict] = []
 
@@ -388,8 +394,9 @@ def _moves(source, run: FrozenRun, panel: pd.DataFrame) -> list[dict]:
 
     daily = run.daily
     dates = pd.to_datetime(daily["date"]).dt.date
-    for grain_model in ("weekly", "monthly"):
-        for h in OUTLOOK_HORIZONS[grain_model]:
+    horizons = run.horizons()
+    for grain_model in ("daily", "weekly", "monthly") if run.reconciled else ("weekly", "monthly"):
+        for h in horizons[grain_model]:
             s, e = period_bounds(run.starts[grain_model], grain_model, h)
             part = daily.loc[(dates >= s) & (dates < e)]
             if len(part) != (e - s).days:
@@ -428,10 +435,20 @@ def _replay(backtests, origin: date, meta: dict) -> list[dict]:
 
 
 def _backtest_rows(backtests) -> list[dict]:
+    """Scores per block x model x grain x horizon x series. With pfoi-1.1.1 path errors
+    (kind "path"), the model's day and week scores are those of the reconciled forecast that
+    is published (monthly forecast dates, every scored horizon up to 12 months)."""
     rows = []
+    path_blocks = {block for (kind, block), e in backtests.items()
+                   if kind == "path" and e is not None and len(e)}
     for (kind, block), e in backtests.items():
         if e is None or not len(e):
             continue
+        if kind == "path":
+            rows += _path_backtest_rows(e, block)
+            continue
+        if block in path_blocks:  # day/week model scores come from the reconciled path
+            e = e[~((e["grain"].isin(["daily", "weekly"])) & e["model"].isin(["milk_baseline", "herd_engine"]))]
         if kind == "milk":
             s = summarise_milk(e)
             s["series"] = "herd_milk"
@@ -449,6 +466,19 @@ def _backtest_rows(backtests) -> list[dict]:
                          "horizon": int(r.horizon), "series": BACKTEST_SERIES[r.series],
                          "mae": float(r.mae), "rmse": float(r.rmse), "bias": float(r.bias),
                          "coverage": None if pd.isna(r.cov) else float(r.cov), "n_origins": int(r.n)})
+    return rows
+
+
+def _path_backtest_rows(e: pd.DataFrame, block: str) -> list[dict]:
+    e = e[(e["model"] == RECONCILED_MODEL) & e["series"].isin(list(BACKTEST_SERIES.values()))]
+    rows = []
+    for (g, h, sid), x in e.groupby(["grain", "horizon", "series"]):
+        cov = x["covered"].dropna() if "covered" in x else pd.Series(dtype=float)
+        rows.append({"block": block, "model": "pfoi", "grain": GRAIN[g], "horizon": int(h), "series": sid,
+                     "mae": float(x["error"].abs().mean()), "rmse": float(np.sqrt((x["error"] ** 2).mean())),
+                     "bias": float(x["error"].mean()),
+                     "coverage": float(cov.astype(float).mean()) if len(cov) else None,
+                     "n_origins": int(len(x))})
     return rows
 
 

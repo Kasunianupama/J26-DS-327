@@ -50,11 +50,29 @@ V11_CORRECTED_HERD = ("milking", "n_herd", "calvings", "dry_offs")  # the series
 # Names kept for the commands already run while it was a candidate.
 CANDIDATE_VERSION, CANDIDATE_ENGINE, CANDIDATE_MILK = V11_VERSION, V11_ENGINE, V11_MILK
 
+# pfoi-1.1.1 (2026-10-20, decision by the user; docs/pfoi_1_1_1.md): pfoi-1.1.0 unchanged
+# (engine, milk model, correction layer, monthly outputs), published for the next 12 months
+# at every grain. Days are reconciled top-down ("option b"): each day is the structural day
+# times its month's correction factor, so days, weeks and months always add up; weeks are
+# sums of those days. Daily and weekly intervals come from the reconciled forecast's own
+# errors at monthly forecast dates (path_backtest).
+V111_VERSION = "pfoi-1.1.1"
+V111_FROZEN_ON = date(2026, 10, 20)
+V111_RECONCILIATION = "top_down_monthly"
+
 
 def v11_config_hash() -> str:
     blob = json.dumps({"engine": asdict(V11_ENGINE), "milk": asdict(V11_MILK),
                        "adaptive": asdict(V11_ADAPTIVE), "corrected_herd": V11_CORRECTED_HERD,
                        "version": V11_VERSION}, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()[:12]
+
+
+def v111_config_hash() -> str:
+    blob = json.dumps({"engine": asdict(V11_ENGINE), "milk": asdict(V11_MILK),
+                       "adaptive": asdict(V11_ADAPTIVE), "corrected_herd": V11_CORRECTED_HERD,
+                       "reconciliation": V111_RECONCILIATION, "version": V111_VERSION},
+                      sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
 
 

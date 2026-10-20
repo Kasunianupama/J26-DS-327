@@ -44,6 +44,10 @@ OUTLOOK_HORIZONS = {"daily": tuple(range(1, 15)), "weekly": tuple(range(1, 14)),
                     "monthly": tuple(range(1, 13))}
 HERD_SERIES = ("n_herd", "milking", "calvings", "dry_offs", "real_abortions")
 MILK_SERIES = "herd_milk"
+# pfoi-1.1.1: the reconciled forecast's own backtest errors (path_backtest), by page series
+RECONCILED_MODEL = "pfoi_reconciled"
+PAGE_SERIES_OF = {"herd_milk": "milk_litres", "n_herd": "total_herd", "milking": "milking",
+                  "calvings": "calvings", "dry_offs": "dry_offs", "real_abortions": "abortions"}
 LOW_RECORDING_K = 0.6  # recorded milk below 60 % of the curve-implied herd milk
 HISTORY_MONTHS = 24
 OUTLOOK_COLUMNS = ["origin_date", "target_period", "grain", "horizon", "series", "forecast",
@@ -172,6 +176,9 @@ class FrozenRun:
     flag: str
     version: str = MODEL_VERSION  # freeze.version_label of the configuration that ran
     layer: OutputLayer | None = None  # pfoi-1.1.0 corrections; None = structural forecast
+    # pfoi-1.1.1: 12 months at every grain, days reconciled top-down to the corrected months
+    reconciled: bool = False
+    _path: pd.DataFrame | None = None
 
     def output(self, grain: str, series: str, h: int, value: float) -> float:
         return value if self.layer is None else self.layer.adjust(grain, series, h, value)
@@ -179,18 +186,102 @@ class FrozenRun:
     def interval_model(self, series: str, structural: str) -> str:
         return structural if self.layer is None else self.layer.model_for(series, structural)
 
+    def horizons(self) -> dict[str, tuple[int, ...]]:
+        """Published horizons per grain: the fixed sets, or the whole 12-month path (1.1.1)."""
+        return path_horizons(self.origin, self.starts) if self.reconciled else OUTLOOK_HORIZONS
+
+    def path(self) -> pd.DataFrame:
+        """Daily forecast for the next 12 months: structural days times their month's
+        correction factor (``reconcile``); the structural days when there is no layer."""
+        if self._path is None:
+            self._path = reconcile(self)
+        return self._path
+
+    def period_value(self, grain: str, h: int, col: str, stock: bool) -> float | None:
+        """Published value of one daily column for one period: the reconciled path for
+        pfoi-1.1.1, else the structural period value passed through the correction layer.
+        None when the period is not complete."""
+        s, e = period_bounds(self.starts[grain], grain, h)
+        daily = self.path() if self.reconciled else self.daily
+        dates = pd.to_datetime(daily["date"]).dt.date
+        part = daily.loc[(dates >= s) & (dates < e), col]
+        if len(part) != (e - s).days:
+            return None
+        v = float(part.mean() if stock else part.sum())
+        return v if self.reconciled else self.output(grain, col, h, v)
+
+
+# Daily columns the published forecasts are made of (page and c1_output series).
+PATH_STOCKS = STOCK_SERIES + ("bulls", "unknown_state")
+PATH_EVENTS = ("calvings", "dry_offs", "real_abortions", "deaths", "culls", "sales", "external_entries")
+PATH_COLUMNS = (MILK_SERIES,) + PATH_STOCKS + PATH_EVENTS
+PATH_MONTHS = 12
+
+
+def path_end(origin: date) -> date:
+    return add_months(origin, PATH_MONTHS)
+
+
+def path_horizons(origin: date, starts: dict) -> dict[str, tuple[int, ...]]:
+    """Every day, every complete week (Monday start) and every month of the next 12 months."""
+    end = path_end(origin)
+    n_days = (end - origin).days
+    n_weeks = (end - starts["weekly"]).days // 7
+    return {"daily": tuple(range(1, n_days + 1)), "weekly": tuple(range(1, n_weeks + 1)),
+            "monthly": tuple(range(1, PATH_MONTHS + 1))}
+
+
+def reconcile(run: "FrozenRun") -> pd.DataFrame:
+    """Top-down reconciliation (pfoi-1.1.1, option b).
+
+    For each of the next 12 months and each output column, factor = corrected month /
+    structural month (the pfoi-1.1.0 monthly correction, ``run.output``), and every day of
+    that month is its structural value times the factor. If the structural month is zero
+    and the correction is not, the difference is spread evenly over the days. Days therefore
+    add up exactly to the corrected months; the engine's day-to-day shape is kept. Without a
+    correction layer the path is the structural forecast.
+    """
+    origin = run.origin
+    daily = run.daily
+    dates = pd.to_datetime(daily["date"]).dt.date
+    keep = (dates >= origin) & (dates < path_end(origin))
+    cols = [c for c in PATH_COLUMNS if c in daily.columns]
+    out = daily.loc[keep, ["date", *cols]].copy().reset_index(drop=True)
+    if run.layer is None:
+        return out
+    odates = pd.to_datetime(out["date"]).dt.date
+    for h in range(1, PATH_MONTHS + 1):
+        s, e = period_bounds(origin, "monthly", h)
+        rows = (odates >= s) & (odates < e)
+        n = int(rows.sum())
+        if n != (e - s).days:
+            raise ValueError(f"the engine run does not cover month {h} from {origin}")
+        for c in cols:
+            stock = c in PATH_STOCKS
+            values = out.loc[rows, c].astype(float)
+            structural = float(values.mean() if stock else values.sum())
+            corrected = run.output("monthly", c, h, structural)
+            if abs(structural) > 1e-12:
+                out.loc[rows, c] = values * (corrected / structural)
+            elif abs(corrected) > 1e-12:
+                out.loc[rows, c] = values + (corrected if stock else corrected / n)
+    return out
+
 
 def run_frozen(source, origin: date) -> FrozenRun:
     return run_model(source, origin, FROZEN_ENGINE, FROZEN_MILK)
 
 
-def run_model(source, origin: date, cfg: EngineConfig, mcfg: MilkConfig) -> FrozenRun:
-    """The outlook run for any configuration; only pfoi-1.0.0 (``run_frozen``) is published."""
+def run_model(source, origin: date, cfg: EngineConfig, mcfg: MilkConfig,
+              hist: MilkHistory | None = None, cache: dict | None = None) -> FrozenRun:
+    """The outlook run for any configuration; only pfoi-1.0.0 (``run_frozen``) is published.
+    ``hist`` / ``cache``: milk history loaded once for many origins (every use is cut at the
+    origin), as the backtests do."""
     if origin.day != 1:
         raise ValueError("the outlook origin must be the first day of a month")
-    hist = MilkHistory(cowdays=source.milking_cowdays(DATA_START, origin),
-                       target=source.target_daily(DATA_START, origin))
-    setup = prepare_milk(source, origin, mcfg, hist)
+    hist = hist or MilkHistory(cowdays=source.milking_cowdays(DATA_START, origin),
+                               target=source.target_daily(DATA_START, origin))
+    setup = prepare_milk(source, origin, mcfg, hist, cache)
     inputs = load_origin_inputs(source, origin, cfg)
     anchor_k(setup, hist.target_before(origin), inputs.state, mcfg)
     rates = estimate_rates(inputs.rate_inputs, cfg)
@@ -218,19 +309,19 @@ def build_outlook(source, origin: date, errors: pd.DataFrame | None = None,
     meta = dict(model_version=run.version, core_version=core_version)
 
     rows = []
-    for grain, horizons in OUTLOOK_HORIZONS.items():
+    for grain, horizons in run.horizons().items():
         for h in horizons:
-            s, e = period_bounds(starts[grain], grain, h)
-            part = daily.loc[(dates >= s) & (dates < e)]
-            if len(part) != (e - s).days:
-                continue
-            values = {MILK_SERIES: ("milk_baseline", float(part["herd_milk"].sum()))}
+            s, _ = period_bounds(starts[grain], grain, h)
+            values = {MILK_SERIES: ("milk_baseline", run.period_value(grain, h, MILK_SERIES, False))}
             for col in HERD_SERIES:
-                v = float(part[col].mean()) if col in STOCK_SERIES else float(part[col].sum())
-                values[col] = ("herd_engine", v)
+                values[col] = ("herd_engine", run.period_value(grain, h, col, col in STOCK_SERIES))
             for series, (model, v) in values.items():
-                v = run.output(grain, series, h, v)
-                iv = _interval(q, run.interval_model(series, model), grain, series, h)
+                if v is None:
+                    continue
+                if run.reconciled and grain != "monthly":
+                    iv = _interval(q, RECONCILED_MODEL, grain, PAGE_SERIES_OF[series], h)
+                else:
+                    iv = _interval(q, run.interval_model(series, model), grain, series, h)
                 lo, hi = (v * (1 + iv[0]), v * (1 + iv[1])) if iv else (np.nan, np.nan)
                 rows.append(dict(origin_date=origin, target_period=s, grain=grain, horizon=h,
                                  series=series, forecast=v, lower=max(lo, 0.0) if iv else np.nan,

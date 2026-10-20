@@ -7,10 +7,10 @@
  * model writes `c1_output` that run is synthetic demo data and is labelled so.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
-  GRAIN_LABEL, HORIZONS, MAX_HORIZON, SEVERITY_META,
-  earliestActual, findings, firstTarget, periodLabel, type Grain,
+  GRAIN_LABEL, SEVERITY_META,
+  earliestActual, findings, firstTarget, horizonOptions, maxHorizon, periodLabel, type Grain,
 } from '../../data/pfoi';
 import { PfoiProvider, usePfoi, type HerdTab, type Workspace } from './state';
 import { RunProvider, useRun } from './source';
@@ -65,6 +65,11 @@ function Shell() {
   const run = useRun();
   const openFindings = findings(run).filter((f) => !acknowledged.has(f.id)).length;
   const detailOpen = drawer.kind !== 'none';
+  /* Older runs publish 14 days and 13 weeks, pfoi-1.1.1 a full year: stay on a step this run has. */
+  const lastStep = maxHorizon(run, grain);
+  useEffect(() => {
+    if (horizon > lastStep) setHorizon(lastStep);
+  }, [horizon, lastStep, setHorizon]);
 
   return (
     <div className="pfie">
@@ -109,7 +114,7 @@ function Shell() {
               ))}
             </span>
             <span className="pfie-seg compact" role="group" aria-label="Forecast horizon">
-              {HORIZONS[grain].map((h) => (
+              {horizonOptions(run, grain).map((h) => (
                 <button
                   key={h}
                   aria-pressed={horizon === h}
@@ -249,15 +254,23 @@ function RangePickers({ grain, horizon, setHorizon, historyFrom, setHistoryFrom 
   const unit = GRAIN_LABEL[grain];
   const earliest = earliestActual(run, grain);
   const first = firstTarget(run, grain);
+  const last = maxHorizon(run, grain);
   return (
     <span className="pfie-row tight pfie-pickers">
-      <label className="pfie-pick" title="Any step the model publishes; the buttons are the backtested ones">
+      <label className="pfie-pick" title={`Any step the model publishes (1–${last} ${unit.many}); the buttons are the scored ones`}>
         Ahead
-        <select value={horizon} onChange={(e) => setHorizon(Number(e.target.value))}>
-          {Array.from({ length: MAX_HORIZON[grain] }, (_, i) => i + 1).map((h) => (
-            <option key={h} value={h}>{h} {h === 1 ? unit.one : unit.many}</option>
-          ))}
-        </select>
+        <input
+          type="number"
+          min={1}
+          max={last}
+          value={horizon}
+          aria-label={`Forecast steps ahead, 1 to ${last} ${unit.many}`}
+          onChange={(e) => {
+            const h = Math.round(Number(e.target.value));
+            if (Number.isFinite(h)) setHorizon(Math.min(last, Math.max(1, h)));
+          }}
+        />
+        {horizon === 1 ? unit.one : unit.many}
       </label>
       <span className="pfie-pick" title={`Show recorded history from this date (records start ${periodLabel(earliest, grain)})`}>
         From

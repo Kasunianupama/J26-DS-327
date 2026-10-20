@@ -13,6 +13,7 @@ import {
   addPeriods,
   confidenceOf,
   flowTotals,
+  isForecast,
   fmt1,
   fmtInt,
   forecastRow,
@@ -38,7 +39,7 @@ export function FutureWorkspace() {
   const milk = headline(run, grain, horizon, 'milk_litres');
   const milking = headline(run, grain, horizon, 'milking');
   const mastitis = headline(run, grain, horizon, 'mastitis_episodes');
-  const calvings = grain === 'day' ? null : flowTotals(run, grain, horizon, 'calvings');
+  const calvings = isForecast(run, grain, 'calvings') ? flowTotals(run, grain, horizon, 'calvings') : null;
   const reach = `${horizon} ${horizon === 1 ? GRAIN_LABEL[grain].one : GRAIN_LABEL[grain].many}`;
   const month = milk ? periodStart(milk.period, 'month') : null;
   const breakdown = month ? milkBreakdown(run, month) : null;

@@ -52,7 +52,7 @@ def _half_life(value: str | None) -> float | None:
 
 def _apply_preset(args: argparse.Namespace) -> None:
     """Fill the engine options from a named version preset (in place)."""
-    if getattr(args, "preset", None) not in ("pfoi-1.1", "candidate"):
+    if getattr(args, "preset", None) not in ("pfoi-1.1", "pfoi-1.1.1", "candidate"):
         return
     from .freeze import CANDIDATE_ENGINE as c
     args.window = "expanding" if c.window_months is None else str(c.window_months)
@@ -780,7 +780,106 @@ def _load_backtests(out: Path, herd_tag: str = "w12", milk_tag: str = "herd_fitt
     return found
 
 
+def _path_name(wtag: str, suffix: str = "") -> str:
+    return f"path_backtest_errors_{wtag}{suffix}.csv"
+
+
+def _load_path_backtests(out: Path, wtag: str) -> dict[tuple[str, str], pd.DataFrame | None]:
+    found = {}
+    for block, suffix in (("development", ""), ("posthoc", "_posthoc")):
+        path = out / _path_name(wtag, suffix)
+        if path.exists():
+            found[("path", block)] = pd.read_csv(path)
+        else:
+            print(f"NOTE: {path.name} not found (run backtest-path): no daily/weekly ranges "
+                  f"from the {block} block", file=sys.stderr)
+    return found
+
+
+def _cmd_backtest_path(args: argparse.Namespace) -> int:
+    """pfoi-1.1.1 path backtest; prints aggregates only."""
+    from .backtest_herd import development_origins as dev_origins
+    from .freeze import DATA_END, V11_ADAPTIVE, V11_CORRECTED_HERD, V11_MILK, final_test_origins
+    from .path_backtest import run_path_backtest, summarise_path
+
+    cfg, mcfg = _engine_cfg(args), V11_MILK
+    out = Path(args.out)
+    bt_dir = Path(args.backtests) if args.backtests else out
+    wtag = _wtag(args)
+    later = ("posthoc", "_posthoc")
+    backtests = _load_backtests(bt_dir, wtag, f"{mcfg.tag()}_{wtag}", later=later)
+    blocks = ("development",) if args.block == "development" else ("development", "posthoc")
+    present = [e for (_, b), e in backtests.items() if e is not None and b in blocks]
+    if not present:
+        raise SystemExit("no pfoi-1.1 backtest errors found: the correction layer needs them")
+    errors = pd.concat(present, ignore_index=True)
+    if args.block == "development":
+        origins, until, prior, suffix = dev_origins("monthly", every=args.every), TEST_START, None, ""
+    else:
+        prior_path = out / _path_name(wtag)
+        if not prior_path.exists():
+            raise SystemExit(f"{prior_path.name} not found: run the development block first")
+        origins, until, suffix = final_test_origins("monthly", every=args.every), DATA_END, "_posthoc"
+        prior = pd.read_csv(prior_path)
+        print("POST-HOC: 2024-26 scores of pfoi-1.1.1; report them as post-hoc.", file=sys.stderr)
+
+    def progress(i: int, n: int, origin: date) -> None:
+        if i % 6 == 0:
+            print(f"  origin {i + 1}/{n} ({origin})", file=sys.stderr)
+
+    e = run_path_backtest(_source(args), origins, errors, cfg, mcfg, V11_ADAPTIVE, V11_CORRECTED_HERD,
+                          score_until=until, block=args.block, prior=prior, progress=progress)
+    _save(e, out, _path_name(wtag, suffix))
+    s = summarise_path(e)
+    if not len(s):
+        print("no scored periods")
+        return 0
+    key = s[s["series"].isin(["milk_litres", "milking", "total_herd", "calvings"])]
+    pd.set_option("display.width", 200)
+    for sid, g in key.groupby("series"):
+        print(f"\n{sid} ({args.block}): n, MAE, MAPE %, bias, 90 % coverage % by grain x horizon x model")
+        print(g.drop(columns="series").round(3).to_string(index=False))
+    print(f"\n{len(e)} rows ({len(origins)} forecast dates) in {out / _path_name(wtag, suffix)} (gitignored)")
+    return 0
+
+
 def _cmd_build_outlook(args: argparse.Namespace) -> int:
+    """One or more forecast dates (``--origin`` takes several); returns the worst exit code."""
+    import copy
+
+    origins = args.origin if isinstance(args.origin, list) else [args.origin]
+    codes = []
+    for o in origins:
+        if len(origins) > 1:
+            print(f"\n=== forecast date {o} ===")
+        one = copy.copy(args)
+        one.origin = o
+        codes.append(_build_outlook_one(one))
+    if len(origins) > 1:
+        print(f"\n{sum(c == 0 for c in codes)}/{len(codes)} forecast dates built"
+              + ("; the others had no clean milk months to anchor k" if any(codes) else ""))
+    return max(codes)
+
+
+def _cmd_freeze_info(args: argparse.Namespace) -> int:
+    """Frozen versions, their configuration hashes and what each one publishes."""
+    from .freeze import (
+        V11_FROZEN_ON, V11_VERSION, V111_FROZEN_ON, V111_RECONCILIATION, V111_VERSION, config_hash,
+        v11_config_hash, v111_config_hash,
+    )
+    from . import MODEL_VERSION
+
+    rows = [(MODEL_VERSION, "2026-10-19", config_hash(), "default of every command; run-once final test"),
+            (V11_VERSION, V11_FROZEN_ON.isoformat(), v11_config_hash(),
+             "--preset pfoi-1.1: recency-weighted rates + correction layer; 14 days, 13 weeks, 12 months"),
+            (V111_VERSION, V111_FROZEN_ON.isoformat(), v111_config_hash(),
+             f"--preset pfoi-1.1.1: pfoi-1.1.0 for 12 months at every grain ({V111_RECONCILIATION})")]
+    for version, frozen, h, what in rows:
+        print(f"{version:12s} frozen {frozen}  config {h}  {what}")
+    return 0
+
+
+def _build_outlook_one(args: argparse.Namespace) -> int:
     import json
 
     from sqlalchemy import create_engine
@@ -788,8 +887,8 @@ def _cmd_build_outlook(args: argparse.Namespace) -> int:
     from .config import DatabaseSettings
     from .adaptive import adaptive_corrected
     from .freeze import (
-        DATA_END, V11_ADAPTIVE, V11_CORRECTED_HERD, V11_MILK, V11_VERSION, config_hash,
-        v11_config_hash,
+        DATA_END, V11_ADAPTIVE, V11_CORRECTED_HERD, V11_MILK, V11_VERSION, V111_VERSION, config_hash,
+        v11_config_hash, v111_config_hash,
     )
     from .outlook import (
         build_outlook, build_output_layer, run_frozen, run_model, write_outlook, write_run_document,
@@ -804,6 +903,9 @@ def _cmd_build_outlook(args: argparse.Namespace) -> int:
         source = _source(args)
         backtests = _load_backtests(bt_dir, _wtag(args), f"{mcfg.tag()}_{_wtag(args)}",
                                     later=("posthoc", "_posthoc"))
+        v111 = args.preset == "pfoi-1.1.1"
+        if v111:  # the reconciled path's own errors: daily and weekly ranges and scores
+            backtests.update(_load_path_backtests(bt_dir, _wtag(args)))
         present = [e for e in backtests.values() if e is not None]
         errors = pd.concat(present, ignore_index=True) if present else None
         if errors is not None:  # the adaptive milk model's own errors, for its intervals
@@ -817,8 +919,10 @@ def _cmd_build_outlook(args: argparse.Namespace) -> int:
         run.layer = build_output_layer(errors, origin, V11_ADAPTIVE, V11_CORRECTED_HERD)
         print(f"correction layer: {len(run.layer.herd_bias)} herd bias terms, "
               f"{len(run.layer.milk_level)} milk levels (from errors ended by {origin})")
-        dest = out / "outlook" / V11_VERSION
-        chash = v11_config_hash()
+        if v111:  # same model; 12 months at every grain, days reconciled to the months
+            run.reconciled, run.version = True, V111_VERSION
+        dest = out / "outlook" / run.version
+        chash = v111_config_hash() if v111 else v11_config_hash()
     else:
         source = SqlHerdSource.from_env()
         backtests = _load_backtests(bt_dir)
@@ -864,35 +968,41 @@ def _cmd_compare_runs(args: argparse.Namespace) -> int:
     """Score and plot both models at each forecast date; prints aggregates only."""
     import json
 
+    from . import MODEL_VERSION
     from .compare_runs import plot, score
-    from .freeze import CANDIDATE_VERSION
 
     out = Path(args.out)
     dest = out / "compare"
     dest.mkdir(parents=True, exist_ok=True)
+    # pfoi-1.0.0 documents sit in outlook/, later versions in outlook/<version>/
+    folder = lambda v: out / "outlook" if v == MODEL_VERSION else out / "outlook" / v  # noqa: E731
+    default = args.base == MODEL_VERSION and args.candidate == "pfoi-1.1.0" and args.grain == "month"
     tables = []
     for o in args.origins:
         origin = date.fromisoformat(o)
-        paths = (out / "outlook" / f"run_{origin:%Y%m}.json",
-                 out / "outlook" / CANDIDATE_VERSION / f"run_{origin:%Y%m}.json")
+        paths = (folder(args.base) / f"run_{origin:%Y%m}.json",
+                 folder(args.candidate) / f"run_{origin:%Y%m}.json")
         missing = [p for p in paths if not p.exists()]
         if missing:
             print(f"{origin}: missing {', '.join(str(p) for p in missing)} (run build-outlook first)")
             continue
         frozen, cand = (json.loads(p.read_text()) for p in paths)
-        plot(frozen, cand, origin, dest / f"compare_{origin:%Y%m}.png",
+        name = (f"compare_{origin:%Y%m}.png" if default
+                else f"compare_{args.grain}_{origin:%Y%m}_{args.base}_vs_{args.candidate}.png")
+        plot(frozen, cand, origin, dest / name, grain=args.grain,
              labels=(frozen.get("model_version", "frozen"), cand.get("model_version", "candidate")))
-        tables.append(score(frozen, cand).assign(origin=f"{origin:%Y-%m}"))
+        tables.append(score(frozen, cand, grain=args.grain).assign(origin=f"{origin:%Y-%m}"))
     if not tables:
         return 1
     t = pd.concat(tables, ignore_index=True).set_index(["origin", "series"])
     pd.set_option("display.width", 200)
-    print("\nRecorded months after each forecast date (monthly, 12 months ahead at most); "
+    print(f"\nRecorded {args.grain}s after each forecast date that both versions forecast "
+          f"({args.base} vs {args.candidate}; n_months = number of periods); "
           "MAE and bias: forecast - recorded; change_pct < 0 = candidate better;\n"
           "cover90 blank = that run has no 5-95 % range (no past errors); layer_candidate = "
           "mean correction-layer amount in the candidate's forecast")
     print(t.round(2).to_string())
-    print(f"\nCharts: {dest}/compare_<YYYYMM>.png (gitignored)")
+    print(f"\nCharts in {dest}/ (gitignored)")
     return 0
 
 
@@ -1081,20 +1191,40 @@ def main(argv: list[str] | None = None) -> int:
         milk_opts(p)
         p.set_defaults(func=func)
 
-    p = sub.add_parser("build-outlook", help="frozen-model outlook at one origin (CSV; --write to c1_output)")
-    p.add_argument("--origin", default="2026-08-01")
+    p = sub.add_parser("build-outlook", help="frozen-model outlook at one or more forecast dates "
+                                             "(CSV; --write to c1_output)")
+    p.add_argument("--origin", nargs="+", default=["2026-08-01"],
+                   help="YYYY-MM-01 forecast date(s); several are built one after another")
     p.add_argument("--out", default="logs/pfoi")
     p.add_argument("--write", action="store_true", help="replace this origin's rows in c1_output")
     p.add_argument("--backtests", default=None,
                    help="folder with the backtest error files for ranges and corrections "
                         "(default: --out; e.g. logs/pfoi_ref for pfoi-1.0.0)")
-    p.add_argument("--preset", default=None, choices=["pfoi-1.1", "candidate"],
+    p.add_argument("--preset", default=None, choices=["pfoi-1.1", "pfoi-1.1.1", "candidate"],
                    help="pfoi-1.1 (alias candidate) = frozen pfoi-1.1.0 with its correction layer, "
-                        "files in <out>/outlook/pfoi-1.1.0/; --write publishes it next to 1.0.0")
+                        "files in <out>/outlook/pfoi-1.1.0/; pfoi-1.1.1 = the same model published "
+                        "for 12 months at every grain (days reconciled to the corrected months; "
+                        "run backtest-path first); --write publishes it next to the others")
     p.set_defaults(func=_cmd_build_outlook)
 
-    p = sub.add_parser("compare-runs", help="frozen vs candidate at forecast dates (from build-outlook files)")
+    p = sub.add_parser("backtest-path", help="pfoi-1.1.1: score the reconciled days and weeks up to "
+                                             "12 months ahead at monthly forecast dates")
+    p.add_argument("--block", default="development", choices=["development", "posthoc"])
+    p.add_argument("--every", type=int, default=1)
+    p.add_argument("--out", default="logs/pfoi")
+    p.add_argument("--backtests", default=None,
+                   help="folder with the pfoi-1.1 milk and herd backtest errors (default: --out)")
+    p.set_defaults(func=_cmd_backtest_path, preset="pfoi-1.1.1")
+
+    p = sub.add_parser("freeze-info", help="frozen versions and their configuration hashes")
+    p.set_defaults(func=_cmd_freeze_info)
+
+    p = sub.add_parser("compare-runs", help="two versions at forecast dates (from build-outlook files)")
     p.add_argument("--origins", nargs="+", required=True, help="YYYY-MM-01 forecast dates")
+    p.add_argument("--base", default="pfoi-1.0.0", choices=["pfoi-1.0.0", "pfoi-1.1.0", "pfoi-1.1.1"])
+    p.add_argument("--candidate", default="pfoi-1.1.0", choices=["pfoi-1.1.0", "pfoi-1.1.1"])
+    p.add_argument("--grain", default="month", choices=["month", "week", "day"],
+                   help="day / week: the pfoi-1.1.1 daily and weekly path (earlier versions: 14 days, 13 weeks)")
     p.add_argument("--out", default="logs/pfoi")
     p.set_defaults(func=_cmd_compare_runs)
 

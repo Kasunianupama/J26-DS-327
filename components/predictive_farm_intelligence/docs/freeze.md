@@ -91,3 +91,34 @@ python -m components.predictive_farm_intelligence.pfoi.cli build-outlook --origi
 That writes `logs/pfoi/outlook/pfoi-1.1.0/`. Add `--write` to publish it next to pfoi-1.0.0
 in `c1_output` (keyed by forecast date and model version). The page shows the newest build
 for each date.
+
+# pfoi-1.1.1 (frozen 2026-10-20)
+
+**Configuration hash `727ca86ee28c`** (`freeze.v111_config_hash`; tested). Decided by the user
+on 2026-10-20 for PP1; design and evidence in `pfoi_1_1_1.md`. pfoi-1.0.0 (`3cbd28787fcb`)
+and pfoi-1.1.0 (`2a865a0c2687`) are unchanged.
+
+| Part | Frozen choice |
+|---|---|
+| Engine, milk model, correction layer | exactly pfoi-1.1.0 (monthly outputs identical, tested) |
+| Published horizons | every day (365/366), every complete Monday week (51/52) and every month of the next 12 months, all series |
+| Reconciliation | top-down (`top_down_monthly`): day = structural day × (corrected month / structural month); weeks from days |
+| Daily and weekly intervals | 5–95 % of the reconciled forecast's own past errors (`backtest-path`); none, and quality "limited", where those errors do not exist |
+| Monthly intervals | as pfoi-1.1.0 |
+
+**Evaluation status.** Same as pfoi-1.1.0: development block claimed (now also for days and
+weeks via `backtest-path`), 2024–26 post-hoc, months after 2026-08-20 the prospective
+holdout.
+
+**Commands** (repository root; aggregates only):
+
+```bash
+python -m components.predictive_farm_intelligence.pfoi.cli freeze-info
+python -m components.predictive_farm_intelligence.pfoi.cli backtest-path --block development
+python -m components.predictive_farm_intelligence.pfoi.cli backtest-path --block posthoc
+python -m components.predictive_farm_intelligence.pfoi.cli build-outlook --preset pfoi-1.1.1 --origin 2026-08-01
+python -m components.predictive_farm_intelligence.pfoi.cli build-outlook --preset pfoi-1.1.1 --origin 2026-08-01 --write
+```
+
+`--origin` takes several dates. Publish 1.1.1 for every forecast date the page already
+offers, so the date picker does not mix versions (the page shows the newest build per date).

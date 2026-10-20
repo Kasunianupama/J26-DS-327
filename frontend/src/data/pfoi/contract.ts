@@ -191,14 +191,16 @@ export interface PfoiRun {
 /* Vocabulary                                                          */
 /* ------------------------------------------------------------------ */
 
+/** Quick horizon buttons (the scored steps). A run shows only those it reaches (view.horizonOptions):
+ *  pfoi-1.1.1 publishes 12 months at every grain, earlier runs 14 days and 13 weeks. */
 export const HORIZONS: Record<Grain, number[]> = {
-  day: [1, 7, 14],
-  week: [1, 4, 8, 13],
+  day: [1, 7, 14, 30, 91, 182, 365],
+  week: [1, 4, 13, 26, 52],
   month: [1, 3, 6, 12],
 };
 
-/** Every step the model publishes (the quick buttons above are the backtested ones). */
-export const MAX_HORIZON: Record<Grain, number> = { day: 14, week: 13, month: 12 };
+/** Upper bound of any published step; the run's own last step is view.maxHorizon. */
+export const MAX_HORIZON: Record<Grain, number> = { day: 366, week: 52, month: 12 };
 
 /** History shown before the origin, in periods; -1 = all recorded history. */
 export const HISTORY_ALL = -1;
@@ -215,9 +217,11 @@ export const GRAIN_LABEL: Record<Grain, { one: string; many: string; short: stri
   month: { one: 'month', many: 'months', short: 'm' },
 };
 
-/** Series that are forecast at each grain. Daily horizons cover milk only. */
+/** Series the demo run forecasts at each grain (a real run: view.isForecast). pfoi-1.1.1
+ *  forecasts every series daily; earlier runs only milk. */
 export const FORECAST_SERIES: Record<Grain, SeriesId[]> = {
-  day: ['milk_litres'],
+  day: ['milk_litres', 'milking', 'dry', 'heifers', 'calves', 'other', 'total_herd', 'calvings', 'dry_offs',
+    'abortions', 'deaths', 'culls_sales', 'entries', 'mastitis_episodes'],
   week: ['milk_litres', 'milking', 'dry', 'heifers', 'calves', 'other', 'total_herd', 'calvings', 'dry_offs',
     'abortions', 'deaths', 'culls_sales', 'entries', 'mastitis_episodes'],
   month: ['milk_litres', 'milking', 'dry', 'heifers', 'calves', 'other', 'total_herd', 'calvings', 'dry_offs',

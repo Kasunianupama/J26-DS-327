@@ -38,6 +38,7 @@ import {
   periodLabel,
   periodsUntilOrigin,
   hasRealised,
+  isForecast,
   sourceSwitch,
   timeline,
   type Grain,
@@ -81,6 +82,8 @@ export function MasterTimeline({ bands = ['milk', 'cows', 'herd', 'events'], pla
   const points = useTimelinePoints();
   const run = useRun();
   const realised = hasRealised(run);
+  /* pfoi-1.1.1 forecasts the herd daily; earlier runs only weekly and monthly */
+  const herdDaily = isForecast(run, grain, 'milking');
   const origin = points.find((p) => p.future)?.period ?? null;
   const switchAt = sourceSwitch(points);
   const gaps = useMemo(() => gapRuns(points), [points]);
@@ -186,11 +189,17 @@ export function MasterTimeline({ bands = ['milk', 'cows', 'herd', 'events'], pla
           {milkMode === 'per_cow' && (
             <p className="pfie-chart-note">
               Per cow = herd milk in the {grain} ÷ average milking cows in the {grain} <KindTag kind="derived" />.
-              {grain === 'day' ? ' Milking cows are not forecast daily, so there is no per-cow forecast at this grain.' : ' The forecast has no range here, because the herd and milk ranges are not joint.'}
+              {!herdDaily ? ' Milking cows are not forecast daily, so there is no per-cow forecast at this grain.' : ' The forecast has no range here, because the herd and milk ranges are not joint.'}
             </p>
           )}
           {grain === 'month' && (
             <p className="pfie-chart-note">Monthly amounts also move with the number of days in the month (February is always lower); the tooltip gives the daily average too.</p>
+          )}
+          {grain !== 'month' && isForecast(run, 'day', 'milking') && (
+            <p className="pfie-chart-note">
+              Each day and week is the model&apos;s expected path, scaled so the days add up exactly to each month&apos;s forecast.
+              It follows the herd and lactation stages, not day-to-day swings, so the 5–95% range is what to read far ahead.
+            </p>
           )}
         </div>
       )}
@@ -216,7 +225,7 @@ export function MasterTimeline({ bands = ['milk', 'cows', 'herd', 'events'], pla
             <span><i className="dash" />Forecast, with 5–95% range</span>
             {realised && <OutcomeLegend color={SERIES_META.milking.color} />}
           </div>
-          {grain === 'day' && <p className="pfie-chart-note">Herd counts are forecast weekly and monthly; the daily view shows the record only.</p>}
+          {!herdDaily && <p className="pfie-chart-note">Herd counts are forecast weekly and monthly; the daily view shows the record only.</p>}
         </div>
       )}
 
@@ -246,7 +255,7 @@ export function MasterTimeline({ bands = ['milk', 'cows', 'herd', 'events'], pla
           </div>
           <p className="pfie-chart-note">
             The groups do not overlap: total herd = cows + heifers + calves + bulls &amp; other. Each is drawn as its own line so its movement is readable on its own.
-            {grain === 'day' ? ' Herd counts are forecast weekly and monthly; the daily view shows the record only.' : ''}
+            {!herdDaily ? ' Herd counts are forecast weekly and monthly; the daily view shows the record only.' : ''}
           </p>
         </div>
       )}
@@ -290,7 +299,7 @@ export function MasterTimeline({ bands = ['milk', 'cows', 'herd', 'events'], pla
               <span><i style={{ background: '#34483f', borderRadius: '50%', width: 8, height: 8 }} />Recorded outcome of each event type (dots, not stacked; not seen by the model)</span>
             </div>
           )}
-          {grain === 'day' && <p className="pfie-chart-note">Herd events are forecast weekly and monthly; the daily view shows the record only.</p>}
+          {!isForecast(run, grain, 'calvings') && <p className="pfie-chart-note">Herd events are forecast weekly and monthly; the daily view shows the record only.</p>}
         </div>
       )}
 
