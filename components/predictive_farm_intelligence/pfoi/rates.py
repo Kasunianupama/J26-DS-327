@@ -57,6 +57,10 @@ class RateInputs:
     young_exits: pd.DataFrame = field(
         default_factory=lambda: pd.DataFrame(columns=["sex", "exit_type", "exits"]))
     births_by_sex: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=["sex", "n"]))
+    # M7: cow_open by 10-day DIM bin (dim_band = bin start); None = no within-band shape
+    cow_open_dim: pd.DataFrame | None = None
+    # exit fix: month, parity_group, dim_band, preg (0/1), days, exits; None = state exits
+    milking_exits: pd.DataFrame | None = None
 
 
 def eb_shrink(events, exposure, prior_rate: float | None = None,
@@ -254,6 +258,8 @@ def recency_weighted(inp: RateInputs, half_life: float) -> tuple[RateInputs, flo
             co[c] = co[c].astype(float) * mean_w
     return replace(
         inp,
+        milking_exits=(weigh(inp.milking_exits, ["days", "exits"])
+                       if inp.milking_exits is not None else None),
         exposure=weigh(inp.exposure, ["animal_days"]),
         transitions=weigh(inp.transitions, ["n_moved"]),
         panel=panel,
@@ -262,8 +268,76 @@ def recency_weighted(inp: RateInputs, half_life: float) -> tuple[RateInputs, flo
     ), mean_w
 
 
+MIN_SHAPE_CONCEPTIONS = 5  # per DIM band; fewer and the band stays flat
+
+
+def conception_dim_shape(cow_open_dim: pd.DataFrame, n_dim: int = 1000, bin_width: int = 10,
+                         min_conceptions: int = MIN_SHAPE_CONCEPTIONS) -> np.ndarray:
+    """Multiplier of the cow conception rate per day in milk (M7).
+
+    Rate per 10-day bin = conceptions / open days (all parities), relative to its DIM band's
+    rate (``categories.DIM_BAND_BOUNDS``), so the open-day weighted mean of the multiplier
+    within each band is 1 and the band rates are unchanged. Bands with fewer than
+    ``min_conceptions`` stay flat (multiplier 1)."""
+    from .categories import DIM_BAND_BOUNDS
+
+    shape = np.ones(n_dim)
+    if cow_open_dim is None or not len(cow_open_dim):
+        return shape
+    g = cow_open_dim.groupby(cow_open_dim["dim_band"].astype(int))[["open_days", "conceptions"]].sum()
+    last_bin = int(g.index.max())
+    for lo, hi in DIM_BAND_BOUNDS:
+        hi = n_dim - 1 if hi is None else min(hi, n_dim - 1)
+        rate, w = np.zeros(n_dim), np.zeros(n_dim)  # bin rate and open days per day
+        for start, r in g.iterrows():
+            a = int(start)
+            b = a + bin_width - 1 if a < last_bin else n_dim - 1
+            a2, b2 = max(a, lo), min(b, hi)
+            if a2 > b2 or r["open_days"] <= 0:
+                continue
+            rate[a2:b2 + 1] = r["conceptions"] / r["open_days"]
+            w[a2:b2 + 1] = r["open_days"] / (b - a + 1)
+        seg = slice(lo, hi + 1)
+        days, conc = w[seg].sum(), (rate[seg] * w[seg]).sum()
+        if conc < min_conceptions or days <= 0:
+            continue
+        band_rate = conc / days
+        shape[seg] = np.where(w[seg] > 0, rate[seg] / band_rate, 1.0)
+    return shape
+
+
+FAST_FLOWS = ("exit", "calf_exit_by_sex", "early_deaths_per_calving", "conc_heifer", "conc_dry",
+              "conc_cow", "abortion", "heifer_loss", "dry_loss", "milk_exit_cell")
+
+
+def milking_exit_cells(me: pd.DataFrame, default_prior: float) -> np.ndarray:
+    """Daily exit hazard of milking cows by parity group x DIM band x pregnancy status
+    (open 0, pregnant 1), from dated lactation exits; each cell is shrunk toward the
+    pooled milking exit rate (beta-binomial, as the other rates). Parity 'unknown' gets
+    the pooled rate per band and status."""
+    cells = np.zeros((len(COW_PARITIES), len(DIM_BANDS), 2))
+    if me is None or not len(me) or me["days"].sum() <= 0:
+        return cells
+    pooled = float(me["exits"].sum() / me["days"].sum())
+    g = me.groupby(["parity_group", "dim_band", "preg"])[["exits", "days"]].sum()
+    for b, band in enumerate(DIM_BANDS):
+        for st in (0, 1):
+            ev = np.array([g["exits"].get((p, band, st), 0.0) for p in COW_PARITIES])
+            ex = np.array([g["days"].get((p, band, st), 0.0) for p in COW_PARITIES])
+            cells[:, b, st] = eb_shrink(ev, ex, prior_rate=pooled, default_prior=default_prior)
+    cells[COW_PARITIES.index("unknown")] = cells[:3].mean(axis=0) if cells[:3].any() else pooled
+    return cells
+
+
 def estimate_rates(inp: RateInputs, cfg: EngineConfig | None = None) -> RateSet:
     cfg = cfg or EngineConfig()
+    if cfg.fast_half_life_months:  # 1b: fast flows from a shorter half-life, the rest as before
+        base = replace(cfg, fast_half_life_months=None)
+        slow = estimate_rates(inp, base)
+        fast = estimate_rates(inp, replace(base, rate_half_life_months=cfg.fast_half_life_months))
+        return replace(slow, **{f: getattr(fast, f) for f in FAST_FLOWS},
+                       notes=slow.notes + (f"fast half-life {cfg.fast_half_life_months:g} months for "
+                                           "abortions, losses, exits and conceptions",))
     notes: list[str] = []
     if cfg.rate_half_life_months is not None:
         inp, _ = recency_weighted(inp, cfg.rate_half_life_months)
@@ -477,7 +551,14 @@ def estimate_rates(inp: RateInputs, cfg: EngineConfig | None = None) -> RateSet:
         entry_shares=entry_shares,
         entry_dim=cfg.entry_dim,
         entry_gestation=cfg.entry_gestation,
-        notes=tuple(notes),
+        conc_dim_shape=(conception_dim_shape(inp.cow_open_dim) if inp.cow_open_dim is not None
+                        else None),
+        milk_exit_cell=(milking_exit_cells(inp.milking_exits, cfg.default_prior_days)
+                        if inp.milking_exits is not None else None),
+        notes=tuple(notes + (["conception rate shaped by days in milk within each band (M7)"]
+                             if inp.cow_open_dim is not None else [])
+                    + (["milking-cow exits by parity x DIM band x pregnancy (lactation records)"]
+                       if inp.milking_exits is not None else [])),
     )
 
 

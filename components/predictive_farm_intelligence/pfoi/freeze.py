@@ -32,7 +32,25 @@ FROZEN_MILK = MilkConfig(curve_mode="herd_fitted", pregnancy_factor=True,
 # of the hash while they keep that value, so the frozen hash (and its run-once markers)
 # does not change; any other value changes the hash.
 LEGACY_ENGINE_VALUES = {"conception_cut": "origin", "cell_table": "day_cell",
-                        "conception_known": "lag", "rate_half_life_months": None}
+                        "conception_known": "lag", "rate_half_life_months": None,
+                        "conception_dim_shape": False, "fast_half_life_months": None,
+                        "milking_exit_model": "state"}
+# Engine options added after pfoi-1.1.0: left out of the 1.1.x hashes at their default.
+NEW_ENGINE_VALUES = {"conception_dim_shape": False, "fast_half_life_months": None,
+                     "milking_exit_model": "state"}
+
+
+def v11_engine_dict(engine: EngineConfig) -> dict:
+    return {k: v for k, v in asdict(engine).items()
+            if not (k in NEW_ENGINE_VALUES and v == NEW_ENGINE_VALUES[k])}
+# Milk options added after pfoi-1.1.0 (docs/pp1_plan.md M3), same rule.
+LEGACY_MILK_VALUES = {"anchor_gate": False}
+
+
+def milk_hash_dict(milk: MilkConfig) -> dict:
+    """Milk configuration as hashed: options at their legacy value are left out."""
+    return {k: v for k, v in asdict(milk).items()
+            if not (k in LEGACY_MILK_VALUES and v == LEGACY_MILK_VALUES[k])}
 
 # pfoi-1.1.0, frozen 2026-10-20 (docs/pfoi_1_1_candidate.md, decision by the user). Chosen on
 # the development block (nested CV); its 2024-26 scores are post-hoc, and months published
@@ -62,14 +80,14 @@ V111_RECONCILIATION = "top_down_monthly"
 
 
 def v11_config_hash() -> str:
-    blob = json.dumps({"engine": asdict(V11_ENGINE), "milk": asdict(V11_MILK),
+    blob = json.dumps({"engine": v11_engine_dict(V11_ENGINE), "milk": milk_hash_dict(V11_MILK),
                        "adaptive": asdict(V11_ADAPTIVE), "corrected_herd": V11_CORRECTED_HERD,
                        "version": V11_VERSION}, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
 
 
 def v111_config_hash() -> str:
-    blob = json.dumps({"engine": asdict(V11_ENGINE), "milk": asdict(V11_MILK),
+    blob = json.dumps({"engine": v11_engine_dict(V11_ENGINE), "milk": milk_hash_dict(V11_MILK),
                        "adaptive": asdict(V11_ADAPTIVE), "corrected_herd": V11_CORRECTED_HERD,
                        "reconciliation": V111_RECONCILIATION, "version": V111_VERSION},
                       sort_keys=True, default=str)
@@ -79,7 +97,7 @@ def v111_config_hash() -> str:
 def config_hash(engine: EngineConfig = FROZEN_ENGINE, milk: MilkConfig = FROZEN_MILK) -> str:
     eng = {k: v for k, v in asdict(engine).items()
            if not (k in LEGACY_ENGINE_VALUES and v == LEGACY_ENGINE_VALUES[k])}
-    blob = json.dumps({"engine": eng, "milk": asdict(milk), "version": MODEL_VERSION},
+    blob = json.dumps({"engine": eng, "milk": milk_hash_dict(milk), "version": MODEL_VERSION},
                       sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
 

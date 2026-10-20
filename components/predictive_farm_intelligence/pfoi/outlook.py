@@ -36,7 +36,9 @@ from .data import DATA_START, add_months, check_before, load_origin_inputs, mont
 from .config import EngineConfig
 from .freeze import FROZEN_ENGINE, FROZEN_MILK, version_label
 from .herd_engine import project
-from .milk_baseline import MilkConfig, MilkHistory, anchor_k, monthly_target, prepare_milk
+from .milk_baseline import (
+    MilkConfig, MilkHistory, MilkWithheld, anchor_k, monthly_target, prepare_milk,
+)
 from .periods import period_bounds
 from .rates import estimate_rates
 
@@ -78,6 +80,38 @@ def interval_table(errors: pd.DataFrame, origin: date) -> pd.DataFrame:
     g = e.groupby(["model", "grain", "series", "horizon"])["rel"]
     out = pd.DataFrame({"q_lo": g.quantile(0.05), "q_hi": g.quantile(0.95), "n": g.size()}).reset_index()
     return out[out["n"] >= 12]
+
+
+MILK_INTERVAL_SERIES = ("herd_milk", "milk_litres")
+
+
+def run_interval_table(errors: pd.DataFrame | None, run: "FrozenRun") -> pd.DataFrame:
+    """Interval table for a run: the published quantiles, or (PP1 development, M4) adaptive
+    conformal ranges scaled by record quality, with milk ranges widened by staleness.
+
+    M4 keep rule (docs/pp1_plan.md, development scorecard 2026-10-20): adaptive ranges for
+    daily and weekly milk and for every herd series; monthly milk keeps the quantile ranges,
+    because the adaptive ones covered less at 3 and 6 months."""
+    q = interval_table(errors, run.origin)
+    opts = run.interval_opts
+    if not opts or errors is None or not len(errors):
+        return q
+    from .intervals import aci_interval_next, widen_relative
+
+    if opts.get("aci"):
+        keep_quantiles = errors["series"].isin(MILK_INTERVAL_SERIES) & (errors["grain"] == "monthly")
+        a = aci_interval_next(errors[~keep_quantiles], run.origin, quality=opts.get("quality"))
+        keys = ["model", "grain", "series", "horizon"]
+        if len(a):
+            replaced = q.merge(a[keys], on=keys, how="left", indicator=True)["_merge"].eq("both").to_numpy()
+            q = pd.concat([q[~replaced], a], ignore_index=True)
+    scale, stale = opts.get("scale"), opts.get("stale_days", np.nan)
+    if scale is not None:
+        is_milk = q["series"].isin(MILK_INTERVAL_SERIES)
+        for i in q.index[is_milk]:
+            f = scale.factor(q.at[i, "grain"], int(q.at[i, "horizon"]), stale)
+            q.at[i, "q_lo"], q.at[i, "q_hi"] = widen_relative(q.at[i, "q_lo"], q.at[i, "q_hi"], f)
+    return q
 
 
 def _interval(q: pd.DataFrame, model: str, grain: str, series: str, h: int):
@@ -130,8 +164,9 @@ class OutputLayer:
 
 
 def build_output_layer(errors: pd.DataFrame | None, origin: date, adaptive_cfg,
-                       herd_series: tuple[str, ...]) -> OutputLayer:
-    """The correction layer at ``origin`` from backtest errors (only those ended by it)."""
+                       herd_series: tuple[str, ...], breaks: list | None = None) -> OutputLayer:
+    """The correction layer at ``origin`` from backtest errors (only those ended by it).
+    ``breaks`` (PP1 1a): only errors from forecast dates after the latest known break."""
     from .adaptive import level_at
     from .error_tools import CORRECTION_LOOKBACK_DAYS, CORRECTION_MIN_ERRORS
 
@@ -142,6 +177,12 @@ def build_output_layer(errors: pd.DataFrame | None, origin: date, adaptive_cfg,
         e["_end"] = pd.to_datetime(e["period_end"])
         o = pd.Timestamp(origin)
         known = e[e["_end"] <= o]
+        if breaks:
+            from .breaks import latest_break
+            b = latest_break(origin, breaks)
+            if b is not None:
+                e = e[e["_o"] >= pd.Timestamp(b)]
+                known = known[known["_o"] >= pd.Timestamp(b)]
         h = known[(known["model"] == "herd_engine") & known["series"].isin(herd_series)
                   & (known["_o"] >= o - pd.Timedelta(days=CORRECTION_LOOKBACK_DAYS))]
         for (g, sr, hz), grp in h.groupby(["grain", "series", "horizon"]):
@@ -179,6 +220,10 @@ class FrozenRun:
     # pfoi-1.1.1: 12 months at every grain, days reconciled top-down to the corrected months
     reconciled: bool = False
     _path: pd.DataFrame | None = None
+    # PP1 development (docs/pp1_plan.md M1, M4): None keeps the published behaviour.
+    # Keys: "aci" (bool), "quality" (daily_quality frame), "stale_days", "scale" (StalenessScale)
+    interval_opts: dict | None = None
+    milk_withheld: str | None = None  # reason code when no trusted milk level exists (M1)
 
     def output(self, grain: str, series: str, h: int, value: float) -> float:
         return value if self.layer is None else self.layer.adjust(grain, series, h, value)
@@ -201,6 +246,8 @@ class FrozenRun:
         """Published value of one daily column for one period: the reconciled path for
         pfoi-1.1.1, else the structural period value passed through the correction layer.
         None when the period is not complete."""
+        if col == MILK_SERIES and self.milk_withheld:  # never publish a withheld level as 0
+            return None
         s, e = period_bounds(self.starts[grain], grain, h)
         daily = self.path() if self.reconciled else self.daily
         dates = pd.to_datetime(daily["date"]).dt.date
@@ -283,7 +330,12 @@ def run_model(source, origin: date, cfg: EngineConfig, mcfg: MilkConfig,
                                target=source.target_daily(DATA_START, origin))
     setup = prepare_milk(source, origin, mcfg, hist, cache)
     inputs = load_origin_inputs(source, origin, cfg)
-    anchor_k(setup, hist.target_before(origin), inputs.state, mcfg)
+    withheld = None
+    try:
+        anchor_k(setup, hist.target_before(origin), inputs.state, mcfg)
+    except MilkWithheld as w:  # M1: no trusted milk level; the herd forecast still runs
+        withheld = w.reason
+        setup.flags.append(w.reason)
     rates = estimate_rates(inputs.rate_inputs, cfg)
     starts = period_starts(origin)
     horizon_days = max((period_bounds(starts[g], g, max(h))[1] - origin).days
@@ -291,11 +343,11 @@ def run_model(source, origin: date, cfg: EngineConfig, mcfg: MilkConfig,
     proj = project(inputs.state, rates, horizon_days, milk_curve=setup.arrays, record_milk_mix=True)
     daily = proj.daily.assign(herd_milk=setup.k * proj.daily["curve_litres"])
     flags = list(setup.flags)
-    if setup.k < LOW_RECORDING_K:
+    if np.isfinite(setup.k) and setup.k < LOW_RECORDING_K:
         flags.append("low_recording")
     flag = ";".join(sorted(set(flags))) or "ok"
     return FrozenRun(origin, hist, setup, inputs, rates, proj, daily, starts, horizon_days, flag,
-                     version_label(cfg, mcfg))
+                     version_label(cfg, mcfg), milk_withheld=withheld)
 
 
 def build_outlook(source, origin: date, errors: pd.DataFrame | None = None,
@@ -305,7 +357,7 @@ def build_outlook(source, origin: date, errors: pd.DataFrame | None = None,
     hist, setup, inputs, rates, proj = run.hist, run.setup, run.inputs, run.rates, run.proj
     daily, starts, horizon_days, flag = run.daily, run.starts, run.horizon_days, run.flag
     dates = pd.to_datetime(daily["date"]).dt.date
-    q = interval_table(errors, origin)
+    q = run_interval_table(errors, run)
     meta = dict(model_version=run.version, core_version=core_version)
 
     rows = []
@@ -316,7 +368,7 @@ def build_outlook(source, origin: date, errors: pd.DataFrame | None = None,
             for col in HERD_SERIES:
                 values[col] = ("herd_engine", run.period_value(grain, h, col, col in STOCK_SERIES))
             for series, (model, v) in values.items():
-                if v is None:
+                if v is None or not np.isfinite(v):  # e.g. milk withheld (M1)
                     continue
                 if run.reconciled and grain != "monthly":
                     iv = _interval(q, RECONCILED_MODEL, grain, PAGE_SERIES_OF[series], h)
@@ -334,8 +386,9 @@ def build_outlook(source, origin: date, errors: pd.DataFrame | None = None,
     actual = pd.DataFrame({"litres_per_day": good["litres"] / good["ok_days"], "source": good["source"]})
     cowdays = hist.cowdays_before(month_start(origin), origin)
     milk_past = explain_past_milk(cowdays, actual, setup.curve, origin, months=12)
-    milk_future = explain_forecast_milk(proj.milk_mix, list(dates), setup.k, setup.curve,
-                                        starting_mix(inputs.state, origin), origin)
+    milk_future = (explain_forecast_milk(proj.milk_mix, list(dates), setup.k, setup.curve,
+                                         starting_mix(inputs.state, origin), origin)
+                   if run.milk_withheld is None else milk_past.iloc[0:0])
     milk_attr = pd.concat([milk_past, milk_future], ignore_index=True)
     milk_attr = milk_attr[milk_attr["factor"] != "skipped"]
     herd_attr = herd_flows(daily, origin).assign(kind="forecast")

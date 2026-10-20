@@ -19,7 +19,8 @@ from .backtest_milk import summarise_milk
 from .data import DATA_START, add_months, check_before, month_start
 from .categories import STATES
 from .herd_engine import project
-from .outlook import RECONCILED_MODEL, FrozenRun, interval_table
+from .outlook import RECONCILED_MODEL, FrozenRun, run_interval_table
+from .record_status import record_status
 from .periods import period_bounds
 from .rates import ENTRY_FROM_STATES, EXIT_TO_STATES
 
@@ -78,13 +79,16 @@ def _weekly_start(d: date) -> date:
 
 def build_page_run(source, run: FrozenRun, attribution: pd.DataFrame,
                    backtests: dict[tuple[str, str], pd.DataFrame], core_version: str | None,
-                   realised_until: date | None = None) -> dict:
+                   realised_until: date | None = None, evidence: dict | None = None,
+                   interval_errors: pd.DataFrame | None = None) -> dict:
     """``realised_until`` (first day without data, e.g. ``freeze.DATA_END``) adds the recorded
     outcomes of the forecast periods for display and scoring; ``None`` leaves them out."""
     origin = run.origin
     all_errors = pd.concat([e for e in backtests.values() if e is not None and len(e)], ignore_index=True) \
         if any(e is not None and len(e) for e in backtests.values()) else None
-    q = interval_table(all_errors, origin)
+    # ``interval_errors``: the errors the outlook tables used, which include the correction
+    # layer's own models (e.g. milk_baseline_adaptive); without them those series get no range
+    q = run_interval_table(interval_errors if interval_errors is not None else all_errors, run)
     meta = {"model_version": run.version, "core_version": core_version or "unknown"}
     daily = run.daily
     dates = pd.to_datetime(daily["date"]).dt.date
@@ -116,10 +120,14 @@ def build_page_run(source, run: FrozenRun, attribution: pd.DataFrame,
                     has = True
                 else:
                     cols, stock, (model, err_series) = SERIES[sid]
+                    if run.milk_withheld and "herd_milk" in cols:  # M1: nothing published
+                        continue
                     raw = _period_value(part, cols, stock)
                     # correction layer column by column (identity for 1.0.0); for 1.1.1 the
                     # reconciled path, whose months equal the 1.1.0 corrected months
                     f = sum(run.period_value(grain_model, h, c, stock) for c in cols)
+                    if not np.isfinite(f):  # milk withheld (M1): no number is published
+                        continue
                     if abs(f - raw) > 1e-9:
                         corrections.append({"target_period": s.isoformat(), "grain": grain, "horizon": h,
                                             "series": sid, "structural": round(raw, 3),
@@ -194,7 +202,115 @@ def build_page_run(source, run: FrozenRun, attribution: pd.DataFrame,
         "fertility": _fertility(source),
         "coverage": _coverage(source, origin),
         "mastitis_rate_period": main_label,
+        # PP1 development keys (docs/pp1_plan.md M1/M4; PFOI_OUTLOOK_CHANGES.md). Optional:
+        # older documents lack them and the page shows "not available for this run".
+        "record_status": record_status(run.hist.target_before(origin), panel, origin,
+                                       run.milk_withheld),
+        "withheld": _withheld(run),
+        "interval_method": _interval_method(run),
+        # only PP1 development builds (evidence given); frozen documents are unchanged
+        **(_pp1_sections(source, origin, evidence, outlook) if evidence is not None else {}),
     }
+
+
+def _records(frame) -> list[dict]:
+    """JSON-safe records of an aggregate table (NaN -> None)."""
+    if frame is None or not len(frame):
+        return []
+    f = frame.copy()
+    for c in f.columns:
+        if pd.api.types.is_datetime64_any_dtype(f[c]):
+            f[c] = f[c].dt.date.astype(str)
+    f = f.astype(object).where(pd.notna(f), None)
+    out = []
+    for r in f.to_dict("records"):
+        out.append({k: (round(v, 4) if isinstance(v, float) else
+                        (v.isoformat() if isinstance(v, date) else v)) for k, v in r.items()})
+    return out
+
+
+SCENARIO_SERIES = {"herd_milk": "milk_litres", "milking": "milking", "n_herd": "total_herd"}
+
+
+def _scenarios(outlook_rows: list[dict], summary: pd.DataFrame | None) -> list[dict]:
+    """1c: monthly forecasts of milk, milking cows and total herd under "like last time"
+    scenarios (median response after earlier episodes of each kind, with its range and the
+    number of episodes). What happened before, not a forecast that it will happen."""
+    from .scenarios import KIND_LABELS, apply_scenario, narrative
+
+    if summary is None or not len(summary) or not outlook_rows:
+        return []
+    o = pd.DataFrame(outlook_rows)
+    o = o[o["grain"] == "month"]
+    rows = []
+    for model_series, page_series in SCENARIO_SERIES.items():
+        ss = summary[summary["series"] == model_series] if "series" in summary else summary
+        base = o[o["series"] == page_series]
+        if not len(ss) or not len(base):
+            continue
+        base = base.assign(grain="monthly")[["grain", "horizon", "target_period", "forecast"]]
+        for kind in ss["kind"].unique():
+            res = apply_scenario(base, ss.drop(columns=["series"], errors="ignore"), kind)
+            res = res[res["median"].notna()]
+            sentence = narrative(ss, kind, "monthly", 3, series_label={
+                "herd_milk": "herd milk", "milking": "milking cows", "n_herd": "total herd"}[model_series])
+            for r in res.itertuples(index=False):
+                rows.append({"kind": kind, "label": KIND_LABELS.get(kind, kind), "series": page_series,
+                             "target_period": r.target_period, "horizon": int(r.horizon),
+                             "forecast": round(float(r.forecast), 3),
+                             "scenario": round(float(r.scenario_forecast), 3),
+                             "low": round(float(r.scenario_low), 3), "high": round(float(r.scenario_high), 3),
+                             "n_episodes": int(r.n), "sentence": sentence})
+    return rows
+
+
+def _pp1_sections(source, origin: date, evidence: dict, outlook_rows: list[dict] | None = None) -> dict:
+    """PP1 development sections (docs/pp1_frontend_plan.md F3-F8). Each is optional: a source
+    without the loader, or a missing evidence file, gives an empty section, which the page
+    shows as "not available for this run". All are herd-level aggregates."""
+    out = {}
+    if hasattr(source, "repro_steps"):  # F5, M7
+        from .repro_timing import repro_table
+        steps = source.repro_steps(origin)
+        out["repro_timing"] = _records(repro_table(steps, ("period",)))
+    if all(hasattr(source, m) for m in ("generation_yield", "generation_days", "repro_steps")):  # F6, M8
+        from .generation_outcomes import generation_outcomes
+        alarms = source.generation_alarms(origin) if hasattr(source, "generation_alarms") else None
+        out["generation_outcomes"] = _records(generation_outcomes(
+            source.generation_yield(origin), source.generation_days(origin),
+            source.repro_steps(origin), alarms))
+    if hasattr(source, "driver_daily"):  # F4, M5
+        from .drivers import heat_outlook
+        out["heat"] = heat_outlook(source.driver_daily(DATA_START, origin), origin)
+    out["scenarios"] = _scenarios(outlook_rows or [], evidence.get("scenarios"))  # 1c
+    out["outage_simulation"] = _records(evidence.get("outage"))   # F3, M2
+    out["evidence_ladder"] = _records(evidence.get("ladder"))     # F7
+    out["feature_registry"] = _records(evidence.get("registry"))  # F8, M6
+    return out
+
+
+def _withheld(run: FrozenRun) -> list[dict]:
+    """Series and periods with no published forecast, and why (M1)."""
+    if not run.milk_withheld:
+        return []
+    out = []
+    for grain_model, hs in run.horizons().items():
+        if not hs:
+            continue
+        s, _ = period_bounds(run.starts[grain_model], grain_model, min(hs))
+        _, e = period_bounds(run.starts[grain_model], grain_model, max(hs))
+        out.append({"series": "milk_litres", "grain": GRAIN[grain_model], "from": s.isoformat(),
+                    "to": e.isoformat(), "reason": run.milk_withheld})
+    return out
+
+
+def _interval_method(run: FrozenRun) -> dict:
+    opts = run.interval_opts or {}
+    scale = opts.get("scale")
+    stale = opts.get("stale_days")
+    return {"milk": "aci_quality_band" if opts.get("aci") else "empirical_quantiles",
+            "staleness_scale": getattr(scale, "source", "not used"),
+            "staleness_days": None if stale is None or not np.isfinite(stale) else float(stale)}
 
 
 KEY_OF = {"day": lambda d: d, "week": _weekly_start, "month": lambda d: d.replace(day=1)}

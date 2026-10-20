@@ -285,6 +285,8 @@ def main(argv=None) -> int:
                    help="weekly origins score weeks and days; monthly origins score months")
     p.add_argument("--preset", default="pfoi-1.1", choices=["pfoi-1.1", "pfoi-1.0"])
     p.add_argument("--k", default="anchor_first", choices=["anchor_first", "anchored"])
+    p.add_argument("--anchor-gate", default="off", choices=["on", "off"],
+                   help="M3: anchor only on verified days")
     p.add_argument("--gaps", type=int, nargs="+", default=list(GAPS))
     p.add_argument("--resumed", type=int, nargs="+", default=list(RESUMED))
     p.add_argument("--every", type=int, default=1, help="use every n-th origin")
@@ -293,7 +295,7 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
 
     cfg = V11_ENGINE if args.preset == "pfoi-1.1" else FROZEN_ENGINE
-    milk_cfg = MilkConfig(k_mode=args.k)
+    milk_cfg = MilkConfig(k_mode=args.k, anchor_gate=args.anchor_gate == "on")
     factory = partial(SqlHerdSource.from_env, cell_table=cfg.cell_table,
                       conception_known=cfg.conception_known)
     source = factory()  # user-run only; tests use synthetic sources

@@ -493,8 +493,76 @@ export function findings(run: PfoiRun): Finding[] {
       link: { label: 'See data coverage', workspace: 'confidence' },
     });
   }
+
+  /* F9: record status (M1/M4). */
+  const rs = run.record_status;
+  if (rs?.status === 'withheld') {
+    out.unshift({
+      id: 'milk-withheld',
+      kind: 'Data limitation',
+      severity: 'attention',
+      title: 'No milk forecast for this date: records are missing',
+      summary: `${rs.reason_text ?? 'There is no trusted recent milk level.'} Last trusted milk day: ${rs.last_trusted_day ?? 'none'}.`,
+      confidence: 'Limited',
+      link: { label: 'See the record checks', workspace: 'outlook' },
+    });
+  } else if (rs?.status === 'stale') {
+    const failed = rs.checks.filter((c) => c.ok === false).map((c) => c.check.replace('_', ' '));
+    out.unshift({
+      id: 'milk-stale',
+      kind: 'Data limitation',
+      severity: 'attention',
+      title: `Milk records need care${rs.staleness_days !== null ? `: last trusted day ${rs.staleness_days} days ago` : ''}`,
+      summary: `Failed check${failed.length === 1 ? '' : 's'}: ${failed.join(', ') || 'none'}. Milk ranges are wider until trusted records return.`,
+      confidence: 'Moderate',
+      link: { label: 'See the record checks', workspace: 'outlook' },
+    });
+  }
+
+  /* F9: heat ahead, from the usual weather of past years (not a weather forecast). */
+  const h = run.heat;
+  if (h && h.knot_p75 !== null) {
+    const next30 = h.climatology.slice(0, 30);
+    const hotDays = next30.filter((c) => c.p50 > (h.knot_p75 as number)).length;
+    if (hotDays >= 7 || (h.hot_run_days ?? 0) >= 3) {
+      out.push({
+        id: 'heat-ahead',
+        kind: 'Upcoming',
+        severity: 'routine',
+        title: hotDays >= 7 ? `Usually hot weeks ahead: ${hotDays} of the next 30 days` : `A hot spell is running: ${h.hot_run_days} days above this herd's usual peak heat`,
+        summary: `Based on past years at this time (climatology), not a weather forecast. Heat above the herd's 75th percentile of daily max THI (${h.knot_p75}). Weather available up to ${h.last_weather_day}.`,
+        confidence: 'Moderate',
+        link: { label: 'See the heat outlook', workspace: 'outlook' },
+      });
+    }
+  }
+
+  /* F9: sensors are watched but not yet used. */
+  const reg = run.feature_registry ?? [];
+  const waiting = reg.filter((r) => /alarm|sensor|expected|attach|low_yield/.test(r.feature) && !(r.active ?? 0));
+  if (waiting.length) {
+    out.push({
+      id: 'sensors-shadow',
+      kind: 'Data limitation',
+      severity: 'routine',
+      title: `${waiting.length} sensor signal${waiting.length === 1 ? ' is' : 's are'} watched but not used yet`,
+      summary: 'The milking-session sensors started recently, so there are too few months to learn from. Their signals stay in shadow mode until enough evidence builds up. Alarms are signals, not diagnoses.',
+      confidence: 'Limited',
+      link: { label: 'See model evaluation', workspace: 'confidence' },
+    });
+  }
   return out;
 }
+
+/** Plain-language label of a model-evidence status (set by the run, shown as a badge). */
+export const STATUS_META: Record<string, { label: string; tone: 'ok' | 'caution' | 'muted' | 'concern' }> = {
+  development: { label: 'Evaluated · development', tone: 'ok' },
+  'post-test development': { label: 'Post-test development', tone: 'caution' },
+  'not interpretable': { label: 'Not interpretable (n < 12)', tone: 'muted' },
+  oracle: { label: 'Oracle · analysis only', tone: 'concern' },
+  'implemented, not yet evaluated': { label: 'Implemented, not yet evaluated', tone: 'muted' },
+  'cannot be validated with current data': { label: 'Cannot be validated yet', tone: 'muted' },
+};
 
 function flowlessSum(run: PfoiRun, series: SeriesId) {
   let total = 0;

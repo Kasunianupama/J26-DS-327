@@ -28,12 +28,17 @@ def _known_mask(origins: np.ndarray, ends: np.ndarray, i: int, lookback_days: in
 def bias_corrected(errors: pd.DataFrame, base_model: str = "herd_engine",
                    new_model: str | None = None,
                    lookback_days: int = CORRECTION_LOOKBACK_DAYS,
-                   min_errors: int = CORRECTION_MIN_ERRORS) -> pd.DataFrame:
+                   min_errors: int = CORRECTION_MIN_ERRORS,
+                   breaks: list | None = None) -> pd.DataFrame:
     """Forecasts of ``base_model`` minus its own mean past error (same grain, series, horizon).
 
     Only errors whose target period had ended by the origin, from origins in the previous
     ``lookback_days``, are used. With fewer than ``min_errors`` the raw forecast is kept.
+    With ``breaks`` (``breaks.detect_breaks``), only errors from origins on or after the
+    latest break known at the origin are used (PP1 improvement 1a).
     """
+    from .breaks import since_mask
+
     new_model = new_model or f"{base_model}_corrected"
     eng = errors[errors["model"] == base_model]
     out = []
@@ -45,6 +50,8 @@ def bias_corrected(errors: pd.DataFrame, base_model: str = "herd_engine",
         corr = np.zeros(len(g))
         for i in range(len(g)):
             mask = _known_mask(origins, ends, i, lookback_days)
+            if breaks:
+                mask &= since_mask(origins, origins[i], breaks)
             if mask.sum() >= min_errors:
                 corr[i] = err[mask].mean()
         c = g.copy()

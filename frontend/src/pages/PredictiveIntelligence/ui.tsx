@@ -455,9 +455,12 @@ export function Gauge({
   sub,
   size = 132,
   tone = 'brand',
+  face,
 }: {
   pct: number;
   caption: ReactNode;
+  /** Shown in the middle instead of the percentage, for ordinal levels that have no measured percent. */
+  face?: ReactNode;
   sub?: ReactNode;
   size?: number;
   tone?: 'brand' | 'pred' | 'caution' | 'concern';
@@ -487,7 +490,7 @@ export function Gauge({
         </g>
       </svg>
       <div className="pfie-gauge-face">
-        <b>{Math.round(pct)}<i>%</i></b>
+        <b>{face ?? <>{Math.round(pct)}<i>%</i></>}</b>
         <span>{caption}</span>
       </div>
       {sub && <p className="pfie-gauge-sub">{sub}</p>}

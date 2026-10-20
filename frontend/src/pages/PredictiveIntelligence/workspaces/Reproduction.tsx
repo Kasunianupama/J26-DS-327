@@ -22,6 +22,7 @@ import { Card, EmptyState, TipShell } from '../ui';
 import { HerdStrip } from '../panels/HerdFlow';
 import { MasterTimeline } from '../panels/MasterTimeline';
 import { HerdMovement } from '../panels/HerdMovement';
+import { ReproTimeline } from '../panels/Pp1Panels';
 
 const PIPELINE: SeriesId[] = ['calvings', 'dry_offs'];
 
@@ -98,6 +99,8 @@ export function Reproduction() {
           <span><i className="hatch" />Rate-driven part</span>
         </div>
       </Card>
+
+      <ReproTimeline />
     </div>
   );
 }

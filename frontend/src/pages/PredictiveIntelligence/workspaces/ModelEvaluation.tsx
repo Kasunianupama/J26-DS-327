@@ -1,28 +1,31 @@
+/**
+ * Component 1 (PFOI): Model evaluation.
+ *
+ * Which model additions help (evidence ladder, F7), what happens when milk records stop
+ * (simulated outages, F3) and which signals the model already uses (F8). Every result
+ * carries the status the model run gave it; development and post-test numbers stay apart.
+ */
+
 import { useRun } from '../source';
-import { Card, Note } from '../ui';
+import { Note } from '../ui';
+import { EvidenceLadder, OutageRecovery, SensorRegistry } from '../panels/Pp1Panels';
 
 export function ModelEvaluation() {
   const run = useRun();
   return (
     <div className="pfie-stack" style={{ gap: 20 }}>
-      <Card title="Model evaluation" sub="Development evaluation · 2019–2023 · Candidate configurations">
-        <p>
-          This evaluation compares candidate configurations on historical forecasts from 2019–2023.
-          It does not establish the accuracy of the displayed outlook or explain every discrepancy in a 2026 forecast.
-        </p>
-      </Card>
-      <Note tone="info" title="Candidate results are not supplied to this prototype.">
-        No candidate accuracy figures or selected configuration are available in the published run.
-        The Forecast Confidence view reports the displayed {run.source === 'demo' ? 'synthetic demo' : run.model_version} run's
-        backtest figures separately.
+      <Note tone="info" title="How to read model evaluation.">
+        Design choices were made on 2017–2023 (development). 2024–26 has already been looked at, so results there
+        are labelled post-test development, not an untouched test. Each result carries its status badge and its n.
       </Note>
-      <Card title="Before publishing a replacement outlook" sub="A candidate evaluation does not update the displayed forecast">
-        <p>
-          Select and freeze a configuration, generate an outlook with that configuration, and publish it with its
-          model version and data cutoff. Report evaluation dates, horizons, scoreable period counts and record-quality
-          exclusions alongside its metrics. Identify any previously inspected test periods as post-hoc evaluation.
-        </p>
-      </Card>
+      {run.source === 'demo' && (
+        <Note tone="concern" title="These are demo numbers, not results.">
+          Every value below is synthetic and shows only how the evaluation will be reported.
+        </Note>
+      )}
+      <EvidenceLadder />
+      <OutageRecovery />
+      <SensorRegistry />
     </div>
   );
 }

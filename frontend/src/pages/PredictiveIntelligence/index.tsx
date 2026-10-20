@@ -28,6 +28,9 @@ import { DateField } from './DateField';
 import { Icon, type IconName } from './icons';
 import { MetricDeck } from './deck';
 import { OutcomeBar } from './panels/OutcomeBar';
+import { RecordStatusBanner } from './panels/Pp1Panels';
+import { ManagerView } from './ManagerView';
+import { useUser } from '../../context/UserContext';
 import './pfie.css';
 
 const WORKSPACES: { id: Workspace; label: string; icon: IconName }[] = [
@@ -42,6 +45,10 @@ const HERD_TABS: { id: HerdTab; label: string }[] = [
   { id: 'events', label: 'Herd events' },
   { id: 'generations', label: 'Generations' },
 ];
+
+/* Farm staff open the simple view; vets and board members open the full page. */
+type View = 'simple' | 'detailed';
+const defaultView = (role: string): View => (role === 'farm_manager' || role === 'farm_worker' ? 'simple' : 'detailed');
 
 const GRAINS: { id: Grain; label: string }[] = [
   { id: 'day', label: 'Day' },
@@ -61,6 +68,10 @@ export default function PredictiveIntelligencePage() {
 
 function Shell() {
   const [evaluation, setEvaluation] = useState(false);
+  const { role } = useUser();
+  const [view, setView] = useState<View>(() => defaultView(role));
+  useEffect(() => { setView(defaultView(role)); }, [role]);
+  const simple = view === 'simple';
   const { grain, setGrain, horizon, setHorizon, historyFrom, setHistoryFrom, workspace, herdTab, go, drawer, openDrawer, acknowledged } = usePfoi();
   const run = useRun();
   const openFindings = findings(run).filter((f) => !acknowledged.has(f.id)).length;
@@ -79,22 +90,27 @@ function Shell() {
             <span className="pfie-ident-mark" aria-hidden><Icon name="spark" size={19} /></span>
             <div>
               <h1>Predictive Farm Outlook</h1>
-              <p>Farm X · herd level · Component 1</p>
+              <p>{simple ? 'Farm X · what to expect for the whole herd' : 'Farm X · herd level · Component 1'}</p>
             </div>
           </div>
 
           <span className="spacer" />
 
-          <button className="pfie-btn pfie-findings-btn" onClick={() => openDrawer({ kind: 'findings' })}>
+          <span className="pfie-seg pfie-viewswitch" role="group" aria-label="Page view">
+            <button aria-pressed={simple} onClick={() => setView('simple')} title="The main numbers in plain words">Simple view</button>
+            <button aria-pressed={!simple} onClick={() => setView('detailed')} title="All charts, controls and model checks">Detailed view</button>
+          </span>
+
+          {!simple && <button className="pfie-btn pfie-findings-btn" onClick={() => openDrawer({ kind: 'findings' })}>
             <Icon name="flag" size={14} />
             Findings
             {openFindings > 0 && <span className="count">{openFindings}</span>}
-          </button>
+          </button>}
 
-          <RunStatus />
+          {!simple && <RunStatus />}
         </div>
 
-        <nav className="pfie-nav" aria-label="Workspaces">
+        {!simple && <nav className="pfie-nav" aria-label="Workspaces">
           <div className="pfie-nav-tabs">
             {WORKSPACES.map((w) => (
               <button key={w.id} aria-current={!evaluation && workspace === w.id ? 'page' : undefined} onClick={() => { setEvaluation(false); go(w.id); }}>
@@ -134,12 +150,13 @@ function Shell() {
               setHistoryFrom={setHistoryFrom}
             />
           </span>}
-        </nav>
+        </nav>}
       </header>
 
       <div className="pfie-body">
-        <ForecastInfo />
-        {detailOpen ? (
+        {simple && !detailOpen && <ManagerView onDetailed={() => setView('detailed')} />}
+        {!simple && <ForecastInfo />}
+        {simple && !detailOpen ? null : detailOpen ? (
           <DetailPage />
         ) : (
           <>
@@ -149,6 +166,8 @@ function Shell() {
                 model outputs but is not Farm X data, not a forecast and not a backtest result.
               </div>
             )}
+
+            <RecordStatusBanner />
 
             {evaluation ? <ModelEvaluation /> : <>
             <OutcomeBar />
@@ -172,7 +191,7 @@ function Shell() {
           </>
         )}
 
-        {!detailOpen && (
+        {!detailOpen && !simple && (
           <p className="pfie-disclaimer">
             Component 1 forecasts the herd as a whole: milk, herd counts, herd events and expected mastitis
             episodes. It shows no individual animals. Animal records stay in DelPro; individual health detection

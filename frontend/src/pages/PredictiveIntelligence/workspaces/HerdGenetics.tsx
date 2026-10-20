@@ -24,6 +24,7 @@ import {
 import { firstTarget, fmtPct, periodLabel } from '../../../data/pfoi';
 import { useRun } from '../source';
 import { Card, MonthlyOnly, KindTag, Note, TipShell } from '../ui';
+import { GenerationOutcomes } from '../panels/Pp1Panels';
 
 const GENS = ['0', '1', '2', '3+'] as const;
 const GEN_COLORS: Record<(typeof GENS)[number], string> = { '0': '#34483f', '1': '#9a4f27', '2': '#5b7fa6', '3+': '#a8770a' };
@@ -115,6 +116,8 @@ export function HerdGenetics() {
         Pooling all years can reverse the direction of a generation effect (Simpson's paradox), so fertility is
         shown within each period. Generation is used to project the herd's makeup; it is not a milk multiplier.
       </Note>
+
+      <GenerationOutcomes />
     </div>
   );
 }

@@ -49,6 +49,18 @@ class EngineConfig:
     # rates only slowly. A number: each month's exposure and events are weighted by
     # 0.5 ** (age in months / half-life), the last complete month having weight 1.
     rate_half_life_months: float | None = None
+    # M7 (docs/pp1_plan.md): within each DIM band, shape the cow conception rate by days in
+    # milk (10-day bins, measured in the rate window, normalised so the band rate is kept).
+    # False (every frozen version): one constant rate per band.
+    conception_dim_shape: bool = False
+    # PP1 improvement 1b: a shorter recency half-life (months) for the flows that shift
+    # fastest (abortions, pregnancy losses, exits, conceptions); the other rates keep
+    # rate_half_life_months. None (every frozen version): one half-life for all rates.
+    fast_half_life_months: float | None = None
+    # PP1 exit fix: "state" (every frozen version) = one exit rate per herd state;
+    # "lactation" = milking-cow exits measured from dated lactation records by parity x DIM
+    # band x pregnancy status (open cows late in lactation leave far more often).
+    milking_exit_model: str = "state"
     # Pseudo-exposure used for shrinkage when the method-of-moments estimate fails.
     default_prior_days: float = 3650.0
     # Where external entries go when the transition table does not say.

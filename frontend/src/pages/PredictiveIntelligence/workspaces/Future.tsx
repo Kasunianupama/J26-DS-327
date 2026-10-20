@@ -8,6 +8,7 @@
  */
 
 import {
+  CONFIDENCE_META,
   GRAIN_LABEL,
   actualRow,
   addPeriods,
@@ -30,7 +31,9 @@ import { Icon } from '../icons';
 import { MasterTimeline } from '../panels/MasterTimeline';
 import { ContributionChart } from '../panels/ContributionChart';
 import { FindingsList } from '../panels/Findings';
+import { HeatOutlook, MilkWithheldCard, ScenarioBands } from '../panels/Pp1Panels';
 
+/* The arc only places the level on the dial; it is not a measured percentage, so the face shows the level, not a number. */
 const CONFIDENCE_ARC: Record<Confidence, number> = { High: 86, Moderate: 58, Limited: 30 };
 
 export function FutureWorkspace() {
@@ -54,6 +57,7 @@ export function FutureWorkspace() {
   return (
     <div className="pfie-stack" style={{ gap: 20 }}>
       <MasterTimeline />
+      <MilkWithheldCard />
 
       {milk && (
         <section className="pfie-brief">
@@ -64,7 +68,7 @@ export function FutureWorkspace() {
                 In {periodLabel(milk.period, grain)}, milk is expected at about <b>{fmtInt(milk.value)} L/day</b>{' '}
                 (likely {fmtInt(milk.lower)}–{fmtInt(milk.upper)})
                 {milk.changePct !== null && milk.baselinePeriod && (
-                  <>, <b>{Math.abs(milk.changePct).toFixed(1)}% {milk.changePct < 0 ? 'lower' : 'higher'}</b> than {periodLabel(milk.baselinePeriod, grain)}</>
+                  <>, <b>{Math.abs(milk.changePct).toFixed(1)}% {milk.changePct < 0 ? 'lower' : 'higher'}</b> than {periodLabel(milk.baselinePeriod, grain)}, the last recorded {GRAIN_LABEL[grain].one}</>
                 )}
                 .
                 {milking && <> About <b>{fmtInt(milking.value)} cows</b> are expected in milk.</>}
@@ -81,7 +85,7 @@ export function FutureWorkspace() {
               </div>
             </div>
             <div className="pfie-brief-gauge">
-              <Gauge pct={CONFIDENCE_ARC[conf]} caption={conf} size={158} sub="Forecast quality" />
+              <Gauge pct={CONFIDENCE_ARC[conf]} face={CONFIDENCE_META[conf].mark} caption={conf} size={158} sub="Forecast quality" />
             </div>
           </div>
         </section>
@@ -91,7 +95,7 @@ export function FutureWorkspace() {
         <Card
           icon={breakdown.end >= breakdown.start ? 'trendUp' : 'trendDown'}
           title={<>Why milk changes into {periodLabel(month, 'month')} <MonthlyOnly /></>}
-          sub={`Compared with ${periodLabel(prevMonth!, 'month')}, average litres per day`}
+          sub={`Only the last step, from ${periodLabel(prevMonth!, 'month')} to ${periodLabel(month, 'month')}, in average litres per day. The change since the last recorded month is in the outlook above.`}
           actions={
             <button className="pfie-btn primary" onClick={() => { setBreakdownMonth(month); go('herd', 'milk'); }}>
               Open the full breakdown
@@ -113,6 +117,10 @@ export function FutureWorkspace() {
           </div>
         </Card>
       )}
+
+      <ScenarioBands />
+
+      <HeatOutlook />
 
       <Card icon="flag" title="Findings" sub="Herd-level findings computed from this run.">
         <FindingsList />

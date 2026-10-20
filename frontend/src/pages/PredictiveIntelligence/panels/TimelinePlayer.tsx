@@ -61,7 +61,7 @@ export function TimelinePlayer({ points }: { points: TimelinePoint[] }) {
         </button>
         <button className="pfie-btn ghost" onClick={() => step(1)} aria-label="Next period">›</button>
         <button className="pfie-btn ghost" onClick={() => { setPlaying(false); setSelectedPeriod(points[originIdx]?.period ?? null); }}>
-          Jump to origin
+          Jump to forecast start
         </button>
         <label className="pfie-pick" title="Jump to the period that contains this date">
           Date

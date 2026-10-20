@@ -60,10 +60,14 @@ class MilkConfig:
     generation_factor: bool = False
     k_months: int = 12
     k_mode: str = "anchored"  # anchored | window | anchor_first
+    # M3 (docs/pp1_plan.md): anchor only on verified days (targets.md rule: unverified milk,
+    # identified share < 0.2 or > 20 L per milking cow, never sets k). False = pfoi-1.1.0.
+    anchor_gate: bool = False
 
     def tag(self) -> str:
         return (f"{self.curve_mode}_p{int(self.pregnancy_factor)}"
-                f"_g{int(self.generation_factor)}_k{K_TAG[self.k_mode]}")
+                f"_g{int(self.generation_factor)}_k{K_TAG[self.k_mode]}"
+                + ("g" if self.anchor_gate else ""))
 
 
 def calibration_window(origin: date, months: int = 12) -> tuple[date, date]:
@@ -241,6 +245,23 @@ def prepare_milk(source, origin: date, cfg: MilkConfig, hist: MilkHistory,
                      target_source=src, flags=flags, notes=notes)
 
 
+def trusted_days(t: pd.DataFrame, start_state) -> pd.Series:
+    """Days whose milk may set the level (M3): not unverified by the agreed rule
+    (docs/targets.md): identified share of DelPro milk at least 0.2 where it is recorded,
+    and at most 20 litres per milking cow of the starting herd (known at the origin)."""
+    from .episodes import MAX_LITRES_PER_COW_DAY, VERIFIED_MIN_SHARE
+
+    cows = float(start_state.milk_open.sum() + start_state.milk_preg.sum())
+    litres = pd.to_numeric(t["target_litres"], errors="coerce")
+    plausible = (litres / cows <= MAX_LITRES_PER_COW_DAY) if cows > 0 else pd.Series(False, index=t.index)
+    share = pd.to_numeric(t.get("identified_share"), errors="coerce") if "identified_share" in t else None
+    identified = pd.Series(True, index=t.index)
+    if share is not None:
+        delpro = t["target_source"] == "delpro"
+        identified = ~(delpro & share.notna() & (share < VERIFIED_MIN_SHARE))
+    return plausible.fillna(False) & identified
+
+
 def anchor_k(setup: MilkSetup, target_hist: pd.DataFrame, start_state, cfg: MilkConfig) -> MilkSetup:
     """Replace k by the anchored k (see module docstring); modifies and returns ``setup``."""
     if cfg.k_mode not in ("anchored", "anchor_first"):
@@ -252,6 +273,11 @@ def anchor_k(setup: MilkSetup, target_hist: pd.DataFrame, start_state, cfg: Milk
           & (t["date"] < origin) & (t["date"] >= origin - timedelta(days=ANCHOR_LOOKBACK_DAYS)))
     if setup.target_source is not None:
         ok &= t["target_source"] == setup.target_source
+    if cfg.anchor_gate:
+        before = int(ok.sum())
+        ok &= trusted_days(t, start_state)
+        if before > int(ok.sum()):
+            setup.notes.append(f"anchor gate: {before - int(ok.sum())} unverified recent days left out")
     recent = t[ok].sort_values("date").tail(ANCHOR_DAYS)
     start_litres = setup.arrays.litres(start_state)
     if len(recent) < ANCHOR_MIN_DAYS or start_litres <= 0:

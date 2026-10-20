@@ -75,6 +75,8 @@ class HerdSource(Protocol):
     def transitions(self, start: date, month_end: date) -> pd.DataFrame: ...
     def panel_months(self, start: date, origin: date) -> pd.DataFrame: ...
     def cow_open(self, start: date, known_until: date, origin: date | None = None) -> pd.DataFrame: ...
+    def cow_open_dim(self, start: date, known_until: date, origin: date | None = None) -> pd.DataFrame: ...
+    def milking_exits(self, start: date, known_until: date, origin: date) -> pd.DataFrame: ...
     def preg_milking_days(self, start: date, known_until: date, origin: date) -> pd.DataFrame: ...
     def dryoff_gest(self, start: date, known_until: date, origin: date) -> pd.DataFrame: ...
     def gestation(self, start: date, origin: date) -> pd.DataFrame: ...
@@ -138,6 +140,10 @@ def load_origin_inputs(source: HerdSource, origin: date, cfg: EngineConfig) -> O
         young_days=check_before(source.young_days(ws, origin), origin, "young_days"),
         young_exits=check_before(source.young_exits(ws, origin), origin, "young_exits"),
         births_by_sex=check_before(source.births_by_sex(ws, origin), origin, "births_by_sex"),
+        cow_open_dim=(check_before(source.cow_open_dim(ws, known_until, origin=origin), known_until,
+                                   "cow_open_dim") if cfg.conception_dim_shape else None),
+        milking_exits=(check_before(source.milking_exits(ws, known_until, origin), origin,
+                                    "milking_exits") if cfg.milking_exit_model == "lactation" else None),
     )
 
     cells = check_before(source.cells_on(asof), origin, "cells_on")
@@ -277,6 +283,12 @@ _GENERATION = (
 _BANDS = (
     "bands(dim_band, lo, hi) AS (VALUES ('0-60', 0, 60), ('61-150', 61, 150), "
     "('151-305', 151, 305), ('305+', 306, 100000))"
+)
+# 10-day DIM bins for the within-band conception shape (M7); the last bin is 400+
+DIM_BIN_WIDTH = 10
+_DIM_BINS = (
+    "bands(dim_band, lo, hi) AS (SELECT (g * 10)::text, g * 10, g * 10 + 9 "
+    "FROM generate_series(0, 39) AS g UNION ALL SELECT '400', 400, 100000)"
 )
 
 
@@ -497,8 +509,15 @@ class SqlHerdSource:
         )
 
     def cow_open(self, start: date, known_until: date, origin: date | None = None) -> pd.DataFrame:
+        return self._cow_open(start, known_until, origin, _BANDS)
+
+    def cow_open_dim(self, start: date, known_until: date, origin: date | None = None) -> pd.DataFrame:
+        """``cow_open`` by 10-day DIM bin (``dim_band`` = bin start, '400' = 400+), M7."""
+        return self._cow_open(start, known_until, origin, _DIM_BINS)
+
+    def _cow_open(self, start: date, known_until: date, origin: date | None, bands: str) -> pd.DataFrame:
         return self._q(
-            f"""WITH {_lac_cte(self.core, self._rec)}, {_BANDS},
+            f"""WITH {_lac_cte(self.core, self._rec)}, {bands},
                 iv AS (
                     SELECT *, GREATEST(calving_date, CAST(:start AS date)) AS s,
                            LEAST(milk_end, COALESCE(conc, 'infinity'::date),
@@ -527,6 +546,48 @@ class SqlHerdSource:
                 GROUP BY 1, 2""",
             start=start, known_until=known_until,
             **({"origin": origin or known_until} if self._rec else {}),
+        )
+
+    def milking_exits(self, start: date, known_until: date, origin: date) -> pd.DataFrame:
+        """Milking-cow exposure and exits in [start, origin) by month x parity x DIM band x
+        pregnancy status (exit fix). A cow counts as pregnant from its conception date once
+        that conception is known (same rule as ``cow_open``); an exit counts when the
+        animal's exit date ends its milking interval. Herd-level counts only."""
+        return self._q(
+            f"""WITH {_lac_cte(self.core, self._rec)}, {_BANDS},
+                m AS (SELECT generate_series(date_trunc('month', CAST(:start AS date)),
+                                             CAST(:origin AS date) - 1, interval '1 month')::date AS m0),
+                iv AS (
+                    SELECT parity_group, calving_date AS c, conc, exit_date, milk_end,
+                           GREATEST(calving_date, CAST(:start AS date)) AS s,
+                           LEAST(milk_end, CAST(:origin AS date)) AS e
+                    FROM lac
+                    WHERE calving_date < CAST(:origin AS date) AND milk_end > CAST(:start AS date)),
+                seg AS (
+                    SELECT parity_group, c, 0 AS preg, s, LEAST(e, COALESCE(conc, 'infinity'::date)) AS e
+                    FROM iv
+                    UNION ALL
+                    SELECT parity_group, c, 1, GREATEST(s, conc), e FROM iv WHERE conc IS NOT NULL),
+                expo AS (
+                    SELECT m.m0 AS month, seg.parity_group, b.dim_band, seg.preg,
+                           SUM(GREATEST(0, LEAST(seg.e, (m.m0 + interval '1 month')::date, seg.c + b.hi + 1)
+                                           - GREATEST(seg.s, m.m0, seg.c + b.lo)))::float AS days
+                    FROM seg CROSS JOIN bands b
+                    JOIN m ON m.m0 < seg.e AND (m.m0 + interval '1 month')::date > seg.s
+                    WHERE seg.e > seg.s
+                    GROUP BY 1, 2, 3, 4),
+                ex AS (
+                    SELECT date_trunc('month', iv.exit_date)::date AS month, iv.parity_group, b.dim_band,
+                           CASE WHEN iv.conc IS NOT NULL AND iv.conc <= iv.exit_date THEN 1 ELSE 0 END AS preg,
+                           COUNT(*)::float AS exits
+                    FROM iv JOIN bands b ON (iv.exit_date - iv.c) BETWEEN b.lo AND b.hi
+                    WHERE iv.exit_date IS NOT NULL AND iv.exit_date = iv.milk_end
+                      AND iv.exit_date >= CAST(:start AS date) AND iv.exit_date < CAST(:origin AS date)
+                    GROUP BY 1, 2, 3, 4)
+                SELECT expo.month, expo.parity_group, expo.dim_band, expo.preg, expo.days,
+                       COALESCE(ex.exits, 0)::float AS exits, expo.month AS max_date
+                FROM expo LEFT JOIN ex USING (month, parity_group, dim_band, preg)""",
+            start=start, known_until=known_until, origin=origin,
         )
 
     def preg_milking_days(self, start: date, known_until: date, origin: date) -> pd.DataFrame:
@@ -873,6 +934,73 @@ class SqlHerdSource:
         frame["date"] = pd.to_datetime(frame["date"]).dt.date
         return frame
 
+    def sensor_daily(self, start: date, end: date) -> pd.DataFrame:
+        """Herd-level daily summaries of the milking-session sensors (M6), computed in SQL from
+        ``core.milk_session``; no animal key leaves the database. Per day:
+
+        * ``sess`` sessions, ``sess_linked`` sessions tied to an animal (coverage);
+        * ``cows_milked`` animals milked; ``cows_blood`` / ``cows_cond`` with a blood or a
+          conductivity alarm that day; ``cows_both`` with both;
+        * ``cows_persistent``: animals with an alarm on at least 3 of the last 7 days;
+        * ``sess_attach``: sessions with a kick-off, re-attach or manual detach;
+          ``sess_low_yield``: sessions flagged low yield;
+        * ``litres``, ``expected_litres``: recorded and DelPro-expected session litres;
+        * ``entry_lag_p50``: median days from milking to record entry (reporting delay).
+
+        Alarms are sensor signals, not diagnoses; days without sessions are absent (missing),
+        never zero."""
+        frame = self._q(
+            f"""WITH s AS (
+                    SELECT milk_date, animal_key, COALESCE(is_unlinked_animal, false) AS unlinked,
+                           COALESCE(blood_alarm, false) AS blood,
+                           COALESCE(conductivity_alarm, false) AS cond,
+                           (COALESCE(kick_offs, 0) > 0 OR COALESCE(no_of_reattaches, 0) > 0
+                            OR COALESCE(manual_detach, false)) AS attach,
+                           COALESCE(low_yield, false) AS low_yield,
+                           yield_litres, expected_litres,
+                           EXTRACT(EPOCH FROM (entered_ts - milk_date::timestamp)) / 86400.0 AS lag_d
+                    FROM {self.core}.milk_session
+                    WHERE milk_date >= CAST(:start AS date) - 6 AND milk_date < CAST(:end AS date)
+                      AND NOT COALESCE(is_placeholder, false) AND NOT COALESCE(is_bad_date, false)),
+                cow AS (
+                    SELECT milk_date, animal_key, BOOL_OR(blood) AS blood, BOOL_OR(cond) AS cond
+                    FROM s WHERE NOT unlinked GROUP BY 1, 2),
+                pers AS (
+                    SELECT milk_date, animal_key,
+                           COUNT(*) FILTER (WHERE blood OR cond) OVER (
+                               PARTITION BY animal_key ORDER BY milk_date
+                               RANGE BETWEEN INTERVAL '6 days' PRECEDING AND CURRENT ROW) AS alarm_days
+                    FROM cow),
+                d AS (
+                    SELECT milk_date, COUNT(*)::float AS sess,
+                           SUM(CASE WHEN NOT unlinked THEN 1 ELSE 0 END)::float AS sess_linked,
+                           SUM(CASE WHEN attach THEN 1 ELSE 0 END)::float AS sess_attach,
+                           SUM(CASE WHEN low_yield THEN 1 ELSE 0 END)::float AS sess_low_yield,
+                           SUM(yield_litres)::float AS litres,
+                           SUM(CASE WHEN expected_litres > 0 THEN expected_litres END)::float AS expected_litres,
+                           SUM(CASE WHEN expected_litres > 0 THEN yield_litres END)::float AS litres_with_expected,
+                           percentile_cont(0.5) WITHIN GROUP (ORDER BY lag_d) AS entry_lag_p50
+                    FROM s GROUP BY 1),
+                c AS (
+                    SELECT cow.milk_date, COUNT(*)::float AS cows_milked,
+                           SUM(CASE WHEN cow.blood THEN 1 ELSE 0 END)::float AS cows_blood,
+                           SUM(CASE WHEN cow.cond THEN 1 ELSE 0 END)::float AS cows_cond,
+                           SUM(CASE WHEN cow.blood AND cow.cond THEN 1 ELSE 0 END)::float AS cows_both,
+                           SUM(CASE WHEN pers.alarm_days >= 3 THEN 1 ELSE 0 END)::float AS cows_persistent
+                    FROM cow JOIN pers USING (milk_date, animal_key) GROUP BY 1)
+                SELECT d.milk_date AS date, d.sess, d.sess_linked, d.sess_attach, d.sess_low_yield,
+                       d.litres, d.expected_litres, d.litres_with_expected, d.entry_lag_p50,
+                       COALESCE(c.cows_milked, 0) AS cows_milked, COALESCE(c.cows_blood, 0) AS cows_blood,
+                       COALESCE(c.cows_cond, 0) AS cows_cond, COALESCE(c.cows_both, 0) AS cows_both,
+                       COALESCE(c.cows_persistent, 0) AS cows_persistent
+                FROM d LEFT JOIN c USING (milk_date)
+                WHERE d.milk_date >= CAST(:start AS date)
+                ORDER BY 1""",
+            start=start, end=end,
+        )
+        frame["date"] = pd.to_datetime(frame["date"]).dt.date
+        return frame
+
     def health_months(self, start: date, end: date) -> pd.DataFrame:
         """Herd-level mastitis and udder/teat episodes per month in [start, end)."""
         return self._q(
@@ -883,6 +1011,174 @@ class SqlHerdSource:
                 WHERE date >= CAST(:start AS date) AND date < CAST(:end AS date)
                 GROUP BY month ORDER BY month""",
             start=start, end=end,
+        )
+
+    def repro_steps(self, asof: date) -> pd.DataFrame:
+        """Reproductive steps of every lactation that started before ``asof`` (M7), as counts
+        by calving period, parity group, generation group, step, day and status. Aggregates
+        only. Only facts known before ``asof``: a conception counts once its
+        ``conception_known_date`` is before ``asof``; everything later is censored.
+
+        Steps (days from calving unless noted):
+        * ``first_ai``: first recorded insemination; ``left_herd`` if the cow left first;
+          ``censored`` if neither happened before the next calving / ``asof`` (no recorded
+          service is not proof that none happened);
+        * ``conception``: the known conception that led to the next calving;
+        * ``pregnancy``: days from conception to its outcome: ``calved``, ``lost`` (abortion),
+          ``left_herd`` or ``censored`` (still pregnant at ``asof``);
+        * ``calving_interval``: days to the next calving (event) or ``censored``.
+        """
+        return self._q(
+            f"""WITH lac AS (
+                    SELECT l.animal_key, l.calving_date AS c, {_PARITY} AS parity_group,
+                           {_GENERATION} AS generation_group,
+                           CASE WHEN l.calving_date < DATE '2020-01-01' THEN '2015-2019'
+                                WHEN l.calving_date < DATE '2023-01-01' THEN '2020-2022'
+                                ELSE '2023-2026' END AS period,
+                           CASE WHEN l.conception_date > l.calving_date
+                                     AND l.conception_known_date < CAST(:asof AS date)
+                                THEN l.conception_date END AS conc,
+                           COALESCE(l.aborted, false) AS aborted,
+                           LEAD(l.calving_date) OVER (PARTITION BY l.animal_key
+                                                      ORDER BY l.calving_date) AS next_c,
+                           a.exit_date
+                    FROM {self.core}.lactation l
+                    LEFT JOIN {self.core}.animal a ON a.animal_key = l.animal_key
+                    WHERE COALESCE(l.is_bad_date, false) = false
+                      AND l.calving_date < CAST(:asof AS date)),
+                obs AS (
+                    SELECT lac.*,
+                           CASE WHEN next_c < CAST(:asof AS date) THEN next_c END AS next_known,
+                           CASE WHEN exit_date < CAST(:asof AS date) THEN exit_date END AS exit_known,
+                           LEAST(COALESCE(next_c, 'infinity'::date), COALESCE(exit_date, 'infinity'::date),
+                                 CAST(:asof AS date)) AS obs_end
+                    FROM lac),
+                ai AS (
+                    SELECT o.animal_key, o.c, MIN(i.insemination_date) AS first_ai
+                    FROM obs o JOIN {self.core}.insemination i ON i.animal_key = o.animal_key
+                    WHERE i.insemination_date > o.c AND i.insemination_date < o.obs_end
+                      AND COALESCE(i.is_bad_date, false) = false
+                    GROUP BY 1, 2),
+                steps AS (
+                    SELECT o.period, o.parity_group, o.generation_group, 'first_ai' AS step,
+                           CASE WHEN ai.first_ai IS NOT NULL THEN ai.first_ai - o.c
+                                ELSE o.obs_end - o.c END AS day,
+                           CASE WHEN ai.first_ai IS NOT NULL THEN 'event'
+                                WHEN o.exit_known IS NOT NULL AND o.exit_known = o.obs_end THEN 'left_herd'
+                                ELSE 'censored' END AS status
+                    FROM obs o LEFT JOIN ai ON ai.animal_key = o.animal_key AND ai.c = o.c
+                    UNION ALL
+                    SELECT period, parity_group, generation_group, 'conception',
+                           CASE WHEN conc IS NOT NULL THEN conc - c ELSE obs_end - c END,
+                           CASE WHEN conc IS NOT NULL THEN 'event'
+                                WHEN exit_known IS NOT NULL AND exit_known = obs_end THEN 'left_herd'
+                                ELSE 'censored' END
+                    FROM obs
+                    UNION ALL
+                    SELECT period, parity_group, generation_group, 'pregnancy',
+                           CASE WHEN next_known IS NOT NULL THEN next_known - conc
+                                ELSE obs_end - conc END,
+                           CASE WHEN next_known IS NOT NULL THEN 'calved'
+                                WHEN aborted THEN 'lost'
+                                WHEN exit_known IS NOT NULL AND exit_known = obs_end THEN 'left_herd'
+                                ELSE 'censored' END
+                    FROM obs WHERE conc IS NOT NULL
+                    UNION ALL
+                    SELECT period, parity_group, generation_group, 'calving_interval',
+                           CASE WHEN next_known IS NOT NULL THEN next_known - c ELSE obs_end - c END,
+                           CASE WHEN next_known IS NOT NULL THEN 'event'
+                                WHEN exit_known IS NOT NULL AND exit_known = obs_end THEN 'left_herd'
+                                ELSE 'censored' END
+                    FROM obs)
+                SELECT period, parity_group, generation_group, step,
+                       LEAST(GREATEST(day, 0), 999) AS day, status, COUNT(*)::float AS n
+                FROM steps GROUP BY 1, 2, 3, 4, 5, 6""",
+            asof=asof,
+        )
+
+    # M8: generation outcomes (descriptive, aggregates only) ---------------------------------
+    _PERIOD_OF = ("CASE WHEN {d} < DATE '2020-01-01' THEN '2015-2019' "
+                  "WHEN {d} < DATE '2023-01-01' THEN '2020-2022' ELSE '2023-2026' END")
+
+    def generation_yield(self, asof: date) -> pd.DataFrame:
+        """Reliable cow-day yield by period x generation x parity x DIM band x heat band, so
+        generations can be compared within the same strata. Heat band = that day's max THI
+        against the herd's 75th / 90th percentile over all complete weather days
+        (descriptive). Also milking cow-days per stratum from ``day_cell`` for coverage."""
+        period = self._PERIOD_OF.format(d="d.milk_date")
+        return self._q(
+            f"""WITH q AS (
+                    SELECT percentile_cont(0.75) WITHIN GROUP (ORDER BY thi_max) AS p75,
+                           percentile_cont(0.90) WITHIN GROUP (ORDER BY thi_max) AS p90
+                    FROM {self.mi}.day_panel
+                    WHERE weather_is_complete AND date < CAST(:asof AS date)),
+                y AS (
+                    SELECT {period} AS period,
+                           CASE WHEN a.generation IS NULL THEN 'unknown' WHEN a.generation >= 3 THEN '3+'
+                                ELSE a.generation::text END AS generation_group,
+                           CASE WHEN d.lactation_no = 1 THEN '1' WHEN d.lactation_no = 2 THEN '2'
+                                WHEN d.lactation_no >= 3 THEN '3+' ELSE 'unknown' END AS parity_group,
+                           CASE WHEN d.dim <= 60 THEN '0-60' WHEN d.dim <= 150 THEN '61-150'
+                                WHEN d.dim <= 305 THEN '151-305' ELSE '305+' END AS dim_band,
+                           CASE WHEN NOT COALESCE(p.weather_is_complete, false) THEN 'unknown'
+                                WHEN p.thi_max > q.p90 THEN 'above_p90'
+                                WHEN p.thi_max > q.p75 THEN 'p75_p90' ELSE 'below_p75' END AS heat_band,
+                           d.yield_litres
+                    FROM {self.core}.cow_day d
+                    LEFT JOIN {self.core}.animal a ON a.animal_key = d.animal_key
+                    LEFT JOIN {self.mi}.day_panel p ON p.date = d.milk_date
+                    CROSS JOIN q
+                    WHERE d.milk_date < CAST(:asof AS date) AND d.is_reliable
+                      AND NOT COALESCE(d.is_spike, false) AND NOT COALESCE(d.is_missing_yield, false)
+                      AND NOT COALESCE(d.is_placeholder, false)
+                      AND d.yield_litres > 0 AND d.dim BETWEEN 1 AND 400)
+                SELECT period, generation_group, parity_group, dim_band, heat_band,
+                       COUNT(*)::float AS cow_days, SUM(yield_litres)::float AS litres
+                FROM y GROUP BY 1, 2, 3, 4, 5""",
+            asof=asof,
+        )
+
+    def generation_days(self, asof: date) -> pd.DataFrame:
+        """Animal-days by period x generation x parity x state from the cell table (for
+        productive / non-productive time and yield-record coverage)."""
+        period = self._PERIOD_OF.format(d="date")
+        return self._q(
+            f"""SELECT {period} AS period, generation_group, parity_group, state,
+                       SUM(n_animals)::float AS animal_days
+                FROM {self.mi}.{self.cell_table}
+                WHERE date < CAST(:asof AS date)
+                GROUP BY 1, 2, 3, 4""",
+            asof=asof,
+        )
+
+    def generation_alarms(self, asof: date) -> pd.DataFrame:
+        """Session-sensor alarm persistence by period x generation (sensor era only): milked
+        cow-days, cow-days with an alarm, cow-days in a run of >= 3 alarm days in 7.
+        Signals, not diagnoses."""
+        period = self._PERIOD_OF.format(d="milk_date")
+        return self._q(
+            f"""WITH cow AS (
+                    SELECT milk_date, animal_key, BOOL_OR(COALESCE(blood_alarm, false)
+                                                          OR COALESCE(conductivity_alarm, false)) AS alarm
+                    FROM {self.core}.milk_session
+                    WHERE milk_date < CAST(:asof AS date) AND NOT COALESCE(is_unlinked_animal, false)
+                      AND NOT COALESCE(is_placeholder, false) AND NOT COALESCE(is_bad_date, false)
+                    GROUP BY 1, 2),
+                w AS (
+                    SELECT milk_date, animal_key, alarm,
+                           COUNT(*) FILTER (WHERE alarm) OVER (
+                               PARTITION BY animal_key ORDER BY milk_date
+                               RANGE BETWEEN INTERVAL '6 days' PRECEDING AND CURRENT ROW) AS alarm_days
+                    FROM cow)
+                SELECT {period} AS period,
+                       CASE WHEN a.generation IS NULL THEN 'unknown' WHEN a.generation >= 3 THEN '3+'
+                            ELSE a.generation::text END AS generation_group,
+                       COUNT(*)::float AS cow_days,
+                       SUM(CASE WHEN w.alarm THEN 1 ELSE 0 END)::float AS alarm_cow_days,
+                       SUM(CASE WHEN w.alarm_days >= 3 THEN 1 ELSE 0 END)::float AS persistent_cow_days
+                FROM w LEFT JOIN {self.core}.animal a ON a.animal_key = w.animal_key
+                GROUP BY 1, 2""",
+            asof=asof,
         )
 
     def generation_fertility(self) -> pd.DataFrame:

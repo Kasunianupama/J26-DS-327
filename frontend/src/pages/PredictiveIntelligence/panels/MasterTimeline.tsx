@@ -87,6 +87,12 @@ export function MasterTimeline({ bands = ['milk', 'cows', 'herd', 'events'], pla
   const origin = points.find((p) => p.future)?.period ?? null;
   const switchAt = sourceSwitch(points);
   const gaps = useMemo(() => gapRuns(points), [points]);
+  /* F2: milk forecast withheld (no trusted milk level): hatch the forecast span, no line */
+  const milkWithheld = (run.withheld ?? []).some((w) => w.series === 'milk_litres');
+  const futureSpan = useMemo(() => {
+    const f = points.filter((p) => p.future);
+    return f.length ? [f[0].period, f[f.length - 1].period] as const : null;
+  }, [points]);
   const [events, setEvents] = useState<SeriesId[]>(['calvings', 'dry_offs', 'abortions']);
   const [milkMode, setMilkMode] = useState<MilkMode>('total');
   const [overlay, setOverlay] = useState<{ milking: boolean; total_herd: boolean }>({ milking: true, total_herd: true });
@@ -160,6 +166,12 @@ export function MasterTimeline({ bands = ['milk', 'cows', 'herd', 'events'], pla
               {gaps.map(([a, b]) => (
                 <ReferenceArea key={a} x1={a} x2={b} fill="url(#pfieDots)" fillOpacity={1} stroke="none" />
               ))}
+              {milkWithheld && futureSpan && (
+                <ReferenceArea
+                  x1={futureSpan[0]} x2={futureSpan[1]} fill="url(#pfieHatchLight)" fillOpacity={1} stroke="none"
+                  label={{ value: 'Milk forecast withheld: no trusted milk records', position: 'insideTop', fontSize: 11, fill: '#34483f' }}
+                />
+              )}
               {axes(milkUnit)}
               {(overlay.milking || overlay.total_herd) && (
                 <YAxis yAxisId="head" orientation="right" tick={{ fontSize: 11, fill: '#70827a' }} width={44} tickFormatter={(v: number) => fmtInt(v)} label={{ value: 'head', angle: 90, position: 'insideRight', fontSize: 10, fill: '#70827a' }} />
@@ -185,6 +197,7 @@ export function MasterTimeline({ bands = ['milk', 'cows', 'herd', 'events'], pla
             {overlay.milking && <span><i style={{ background: SERIES_META.milking.color, height: 2 }} />Milking cows (right axis)</span>}
             {overlay.total_herd && <span><i style={{ background: SERIES_META.total_herd.color, height: 2 }} />Total herd (right axis)</span>}
             <span><i style={{ backgroundImage: 'radial-gradient(#93aec9 1.2px, #f2f5f8 1.3px)', backgroundSize: '6px 6px' }} />Data gap or flagged record</span>
+            {milkWithheld && <span><i className="hatch" />Milk forecast withheld</span>}
           </div>
           {milkMode === 'per_cow' && (
             <p className="pfie-chart-note">

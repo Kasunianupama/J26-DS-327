@@ -197,6 +197,11 @@ class RateSet:
     entry_dim: int = 100
     entry_gestation: int = 150
     notes: tuple[str, ...] = ()
+    # M7: multiplier of the cow conception rate per day in milk (N_DIM,); None = flat bands
+    conc_dim_shape: np.ndarray | None = None
+    # exit fix: daily exit hazard of milking cows by parity x DIM band x pregnancy status
+    # (N_PAR, N_BAND, 2); split into exit types by ``exit["milking"]``. None = one rate.
+    milk_exit_cell: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         self.conc_cow = np.clip(np.asarray(self.conc_cow, dtype=float), 0.0, 1.0)
@@ -250,6 +255,26 @@ def _exit_fraction(hazards: dict[str, float]) -> tuple[dict[str, float], float]:
     return parts, sum(parts.values())
 
 
+def _milking_exits_by_cell(s: OriginState, r: RateSet, ev: dict) -> None:
+    """Milking-cow exits at the measured hazard of each parity x DIM band x pregnancy cell,
+    split into exit types in the proportions of ``r.exit["milking"]``."""
+    kinds = {k: max(0.0, r.exit["milking"].get(k, 0.0)) for k in EXIT_TYPES}
+    total_kind = sum(kinds.values())
+    share = ({k: v / total_kind for k, v in kinds.items()} if total_kind > 0
+             else {k: (1.0 if k == "culls" else 0.0) for k in EXIT_TYPES})
+    cell = np.clip(r.milk_exit_cell, 0.0, 1.0)
+    h_open = cell[:, BAND_OF_DIM, 0]  # (N_PAR, N_DIM)
+    h_preg = cell[:, BAND_OF_DIM[_DIM_OF_PREG_FLAT], 1].reshape(N_PAR, 1, N_CB, N_GEST)
+    out_open = s.milk_open * h_open[:, None, :]
+    out_preg = s.milk_preg * h_preg
+    s.milk_open -= out_open
+    s.milk_preg -= out_preg
+    n = float(out_open.sum() + out_preg.sum())
+    for k in EXIT_TYPES:
+        ev[k] += n * share[k]
+        _flow(ev, "milking", k, -n * share[k])
+
+
 def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
     """Advance the herd ``s`` (modified in place) by one day; return the day's events."""
     ev = {name: 0.0 for name in (
@@ -274,6 +299,9 @@ def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
                 for k, h in sparts.items():
                     ev[k] += ns * h
                     _flow(ev, "calf", k, -ns * h)
+            continue
+        if state == "milking" and r.milk_exit_cell is not None:
+            _milking_exits_by_cell(s, r, ev)
             continue
         parts, total = _exit_fraction(r.exit[state])
         if total <= 0:
@@ -397,7 +425,10 @@ def step_day(s: OriginState, r: RateSet) -> dict[str, float]:
     ev["conceptions"] += float(flow.sum())
     _flow(ev, "heifer_open", "conception", -flow.sum())
     _flow(ev, "heifer_pregnant", "conception", flow.sum())
-    flow = s.milk_open * r.conc_cow[:, BAND_OF_DIM][:, None, :]
+    conc = r.conc_cow[:, BAND_OF_DIM]
+    if r.conc_dim_shape is not None:
+        conc = np.clip(conc * r.conc_dim_shape[None, :N_DIM], 0.0, 1.0)
+    flow = s.milk_open * conc[:, None, :]
     s.milk_open -= flow
     s.milk_preg[:, :, :, 0] += flow.reshape(N_PAR, N_GEN, N_CB, CB_WIDTH).sum(-1)
     ev["conceptions"] += float(flow.sum())

@@ -117,3 +117,66 @@ def test_new_mode_leaves_frozen_hashes_unchanged():
     assert v11_config_hash() == "2a865a0c2687"
     assert FIRST.tag() != FROZEN_MILK.tag() and FIRST.tag().endswith("_kf")
     assert version_label(V11_ENGINE, FIRST).startswith("experiment-")
+
+
+# ------------------------------------------------------------------ M3: anchor trust gate
+
+class M3Source(FakeHerdSource):
+    """Synthetic herd at a realistic level (half the fixture's litres, about 13 L per milking
+    cow; the fixture's 26 L would fail the agreed 20 L rule). Recorded milk in [start, end)
+    can be multiplied by ``scale``, given an identified ``share``, or be ``missing``."""
+
+    def __init__(self, start=None, end=None, scale=1.0, share=None, missing=False, **kw):
+        super().__init__(**kw)
+        self.window, self.scale, self.share, self.missing = (start, end), scale, share, missing
+
+    def target_daily(self, start, end):
+        t = super().target_daily(start, end).copy()
+        t["target_litres"] = t["target_litres"] * 0.5
+        t["identified_share"] = t["identified_share"].astype(float)
+        t.loc[t["target_source"] == "delpro", "identified_share"] = 0.8
+        if self.window[0] is None:
+            return t
+        inside = (t["date"] >= self.window[0]) & (t["date"] < self.window[1])
+        t.loc[inside, "target_litres"] = t.loc[inside, "target_litres"] * self.scale
+        if self.share is not None:
+            t.loc[inside, "identified_share"] = self.share
+        if self.missing:
+            t.loc[inside, "is_scoreable"] = False
+            t.loc[inside, "target_litres"] = None
+        return t
+
+
+GATED = MilkConfig(k_mode="anchor_first", anchor_gate=True)
+ORIGIN_M3 = date(2021, 10, 4)
+BAD = (ORIGIN_M3 - timedelta(days=5), ORIGIN_M3)
+
+
+def test_gate_leaves_out_implausible_days():
+    clean, *_ = _setup(M3Source(*BAD, missing=True), ORIGIN_M3, FIRST)  # the 5 days missing
+    inflated = M3Source(*BAD, scale=500.0)
+    open_, *_ = _setup(inflated, ORIGIN_M3, FIRST)
+    gated, *_ = _setup(inflated, ORIGIN_M3, GATED)
+    assert open_.k > 10 * clean.k  # without the gate the bad days set the level
+    assert gated.k == pytest.approx(clean.k)
+    assert any("anchor gate: 5" in n for n in gated.notes)
+
+
+def test_gate_leaves_out_unidentified_days():
+    clean, *_ = _setup(M3Source(*BAD, missing=True), ORIGIN_M3, FIRST)
+    gated, *_ = _setup(M3Source(*BAD, scale=1.5, share=0.05), ORIGIN_M3, GATED)
+    assert gated.k == pytest.approx(clean.k)
+
+
+def test_gate_changes_nothing_on_verified_days():
+    a, *_ = _setup(M3Source(), ORIGIN_M3, FIRST)
+    b, *_ = _setup(M3Source(), ORIGIN_M3, GATED)
+    assert a.k == pytest.approx(b.k)
+
+
+def test_gate_option_is_outside_the_frozen_hashes():
+    from components.predictive_farm_intelligence.pfoi.freeze import v111_config_hash
+
+    assert config_hash() == "3cbd28787fcb" and v11_config_hash() == "2a865a0c2687"
+    assert v111_config_hash()  # computed from the same milk dict (no anchor_gate key)
+    assert GATED.tag().endswith("_kfg") and version_label(V11_ENGINE, GATED).startswith("experiment-")

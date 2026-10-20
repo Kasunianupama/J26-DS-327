@@ -32,6 +32,7 @@ import {
   type QualityFlag,
   type SeriesId,
 } from './contract';
+import { DEMO_OUTAGE_ORIGIN, demoPp1, demoScenarios } from './demoPp1';
 import {
   addDays,
   addPeriods,
@@ -590,7 +591,9 @@ export function demoRun(): PfoiRun {
     coverage: COVERAGE,
     mastitis_rate_period: '2017–2019 (demo)',
     moves: buildMoves(),
+    ...demoPp1(ORIGIN),
   };
+  cached.scenarios = demoScenarios(cached);
   return cached;
 }
 
@@ -599,7 +602,7 @@ export function demoRun(): PfoiRun {
 /* ------------------------------------------------------------------ */
 
 /** Demo forecast dates: test-block start, before a gap, recent, and the live origin. */
-export const DEMO_ORIGINS = ['2024-01-01', '2024-07-01', '2026-07-01', ORIGIN];
+export const DEMO_ORIGINS = ['2024-01-01', '2024-07-01', DEMO_OUTAGE_ORIGIN, '2026-07-01', ORIGIN];
 
 const atCache = new Map<string, PfoiRun>();
 
@@ -627,7 +630,15 @@ export function demoRunAt(origin: string): PfoiRun {
       && targets.has(`${a.grain}|${a.series}|${a.period}`)),
     realised_through: DATA_THROUGH,
     moves: buildMoves(origin).filter((m) => m.forecast || addPeriods(m.period, m.grain, 1) <= origin),
+    ...demoPp1(origin),
   };
+  run.scenarios = demoScenarios(run);
+  if (run.record_status?.milk_withheld) {  // F2: no milk number is published when withheld
+    run.outlook = run.outlook.filter((r) => r.series !== 'milk_litres');
+    run.realised = (run.realised ?? []).filter((r) => r.series !== 'milk_litres');
+    run.scenarios = (run.scenarios ?? []).filter((r) => r.series !== 'milk_litres');
+    run.attribution = run.attribution.filter((r) => r.series !== 'milk_litres' || r.target_period < origin);
+  }
   atCache.set(origin, run);
   return run;
 }

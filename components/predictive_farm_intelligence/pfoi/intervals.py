@@ -130,3 +130,97 @@ def aci_intervals(errors: pd.DataFrame, band_at_origin: dict | None = None,
         inside = ((out["actual"] >= out[f"lower{lv}"]) & (out["actual"] <= out[f"upper{lv}"])).astype(float)
         out[f"covered{lv}"] = inside.where(has)
     return out
+
+
+# --------------------------------------------------------------------------- M4: staleness
+# docs/pp1_plan.md M4: ranges widen as trusted milk records get older. The scale is
+# measured, not assumed: the spread of the milk baseline's log errors by days since the last
+# trusted milk day, from the simulated outages of the development block (outage_sim,
+# ``outage_staleness_*.csv``). Without that file no widening is applied and the run says so.
+
+STALE_MIN_N = 12
+FRESH_BAND = 0  # band starting at 0 days (the last trusted day is yesterday or today)
+
+
+class StalenessScale:
+    """Spread multiplier by days since the last trusted milk day, per grain and horizon."""
+
+    def __init__(self, table: pd.DataFrame | None, source: str = "not measured"):
+        self.source = source if table is not None and len(table) else "not measured"
+        self.rows: dict[tuple[str, int], list[tuple[float, float]]] = {}
+        if table is None or not len(table):
+            return
+        t = table.copy()
+        t["lo"] = t["stale_band"].astype(str).str.extract(r"\[?\(?\s*([0-9.]+)")[0].astype(float)
+        for (grain, h), g in t.groupby(["grain", "horizon"]):
+            g = g.sort_values("lo")
+            fresh = g[(g["lo"] == FRESH_BAND) & (g["n"] >= STALE_MIN_N)]
+            if not len(fresh) or not fresh["sd"].iloc[0] > 0:
+                continue
+            base, factor, steps = float(fresh["sd"].iloc[0]), 1.0, []
+            for r in g.itertuples():
+                if r.n >= STALE_MIN_N and np.isfinite(r.sd):
+                    factor = max(factor, float(r.sd) / base)  # never narrower when staler
+                steps.append((float(r.lo), factor))
+            self.rows[(str(grain), int(h))] = steps
+
+    @classmethod
+    def from_csv(cls, path) -> "StalenessScale":
+        from pathlib import Path
+
+        p = Path(path) if path else None
+        if p is None or not p.exists():
+            return cls(None)
+        return cls(pd.read_csv(p), source=f"measured: {p.name}")
+
+    def factor(self, grain: str, horizon: int, stale_days: float) -> float:
+        """Multiplier (>= 1) for this staleness; 1 when not measured."""
+        if not np.isfinite(stale_days) or not self.rows:
+            return 1.0
+        keys = [k for k in self.rows if k[0] == grain]
+        if not keys:
+            return 1.0
+        above = sorted(k for k in keys if k[1] >= horizon)
+        key = above[0] if above else max(keys, key=lambda k: k[1])
+        out = 1.0
+        for lo, f in self.rows[key]:
+            if stale_days >= lo:
+                out = f
+        return out
+
+
+def widen_relative(q_lo: float, q_hi: float, factor: float) -> tuple[float, float]:
+    """Scale a relative range (actual / forecast - 1) by ``factor`` in log space."""
+    lo = np.expm1(np.log1p(max(q_lo, -0.999)) * factor)
+    hi = np.expm1(np.log1p(q_hi) * factor)
+    return float(lo), float(hi)
+
+
+def aci_interval_next(errors: pd.DataFrame, origin: date, quality: pd.DataFrame | None = None,
+                      level: int = 90, **kw) -> pd.DataFrame:
+    """ACI range for a forecast issued at ``origin``, per (model, grain, series, horizon),
+    as relative quantiles ``q_lo`` / ``q_hi`` (same columns as ``outlook.interval_table``).
+
+    Uses only errors whose target period ended by ``origin``; the record-quality band of
+    the 28 days before ``origin`` scales the range when ``quality`` is given."""
+    cols = ["model", "grain", "series", "horizon", "q_lo", "q_hi", "n"]
+    if errors is None or not len(errors):
+        return pd.DataFrame(columns=cols)
+    e = errors.copy()
+    for c in ("origin", "period_end"):
+        e[c] = pd.to_datetime(e[c]).dt.date
+    e = e[(e["period_end"] <= origin) & (e["origin"] < origin)]
+    if not len(e):
+        return pd.DataFrame(columns=cols)
+    keys = ["model", "grain", "series", "horizon"]
+    probe = e.groupby(keys, as_index=False).size().drop(columns="size")
+    probe = probe.assign(origin=origin, period_end=origin + timedelta(days=4000),
+                         forecast=1.0, actual=np.nan, _probe=True)
+    work = pd.concat([e.assign(_probe=False), probe], ignore_index=True)
+    bands = origin_bands(work["origin"], quality) if quality is not None else None
+    res = aci_intervals(work, band_at_origin=bands, levels={level: LEVELS[level]}, **kw)
+    p = res[res["_probe"].astype(bool) & res[f"lower{level}"].notna()]
+    n = e.groupby(keys).size().rename("n").reset_index()
+    out = p[keys].assign(q_lo=p[f"lower{level}"].to_numpy() - 1.0,
+                         q_hi=p[f"upper{level}"].to_numpy() - 1.0).merge(n, on=keys)
+    return out[cols].reset_index(drop=True)

@@ -68,7 +68,10 @@ def _engine_cfg(args: argparse.Namespace) -> EngineConfig:
                         conception_cut=getattr(args, "conception_cut", "origin"),
                         cell_table=getattr(args, "cell_table", "day_cell"),
                         conception_known=getattr(args, "conception_known", "lag"),
-                        pregnancy_check_lag_days=getattr(args, "pregnancy_lag", 35))
+                        pregnancy_check_lag_days=getattr(args, "pregnancy_lag", 35),
+                        conception_dim_shape=getattr(args, "conception_shape", "off") == "on",
+                        fast_half_life_months=_half_life(getattr(args, "fast_half_life", None)),
+                        milking_exit_model=getattr(args, "exit_model", "state"))
 
 
 def _source(args: argparse.Namespace) -> SqlHerdSource:
@@ -92,7 +95,11 @@ def _wtag(args: argparse.Namespace) -> str:
     lg = f"_lag{lag}" if lag != 35 else ""
     hl = _half_life(getattr(args, "half_life", None))
     hl_tag = f"_hl{hl:g}" if hl is not None else ""
-    return f"w{args.window}{ck}{kn}{rk}{lg}{hl_tag}"
+    cs = "_cs" if getattr(args, "conception_shape", "off") == "on" else ""
+    fhl = _half_life(getattr(args, "fast_half_life", None))
+    fh = f"_fhl{fhl:g}" if fhl is not None else ""
+    xl = "_xl" if getattr(args, "exit_model", "state") == "lactation" else ""
+    return f"w{args.window}{ck}{kn}{rk}{lg}{hl_tag}{cs}{fh}{xl}"
 
 
 def _bt(args: argparse.Namespace) -> str:
@@ -227,7 +234,8 @@ def _cmd_report(args: argparse.Namespace) -> int:
 
 def _milk_cfg(args: argparse.Namespace) -> MilkConfig:
     return MilkConfig(curve_mode=args.curve, pregnancy_factor=args.pregnancy_factor == "on",
-                      generation_factor=args.generation_factor == "on", k_mode=args.k)
+                      generation_factor=args.generation_factor == "on", k_mode=args.k,
+                      anchor_gate=getattr(args, "anchor_gate", "off") == "on")
 
 
 def _cmd_milk_curve(args: argparse.Namespace) -> int:
@@ -442,7 +450,8 @@ def _cmd_scorecard(args: argparse.Namespace) -> int:
 
 # Tag endings of files that are not development backtests. Model selection (adapt,
 # drivers, nested-cv) must never read them: 2024-26 errors would leak into the choice.
-NOT_DEVELOPMENT = ("_test", "_posthoc")
+# Oracle driver runs use the actual weather of the target period (analysis only, M5).
+NOT_DEVELOPMENT = ("_test", "_posthoc", "_oracle")
 # Tag part of configurations without hindsight in pregnancy states (leakage audit L2, L3):
 # conception cut "known", cell table day_cell_known, conceptions known when recorded.
 HONEST_TAG = "_ck_kn_rk"
@@ -526,6 +535,10 @@ def _cmd_adapt(args: argparse.Namespace) -> int:
     return 0
 
 
+DRIVER_GROUPS = {"weather": "W", "health": "H", "sensor": "S", "quality": "Q", "season": "C",
+                 "recent": "R"}
+
+
 def _cmd_drivers(args: argparse.Namespace) -> int:
     """Layer 2: driver layer on one development milk backtest (raw or adaptive)."""
     from .drivers import DriverConfig, driver_layer
@@ -538,16 +551,27 @@ def _cmd_drivers(args: argparse.Namespace) -> int:
         print(f"no development milk files for tag {args.tag!r} in {out}")
         return 1
     e = pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
-    daily = SqlHerdSource.from_env().driver_daily(DATA_START, DATA_END)
-    cfg = DriverConfig(groups=tuple(args.groups))
-    res = driver_layer(e, daily, args.base, cfg=cfg)
+    src = SqlHerdSource.from_env()
+    daily = src.driver_daily(DATA_START, DATA_END)
+    if "sensor" in args.groups or "quality" in args.groups:  # M6 session-sensor summaries
+        daily = daily.merge(src.sensor_daily(DATA_START, DATA_END), on="date", how="left")
+    cfg = DriverConfig(groups=tuple(args.groups), weather_lag_days=args.weather_lag,
+                       thi_knot_pct=args.thi_knot, oracle=args.oracle)
+    new_model = f"{args.base}_drivers" + ("_oracle" if cfg.oracle else "")
+    res = driver_layer(e, daily, args.base, new_model=new_model, cfg=cfg)
     bench = e[e["model"].isin(BENCHMARK_MODELS)]
     both = pd.concat([res.errors, bench], ignore_index=True)
     file_grain = both["grain"].where(both["grain"] == "monthly", "weekly")
-    new_tag = f"{args.tag}_dr"
+    groups = "" if set(args.groups) == set(DRIVER_GROUPS) else "_g" + "".join(
+        DRIVER_GROUPS[g] for g in DRIVER_GROUPS if g in args.groups)
+    new_tag = f"{args.tag}_dr_{cfg.label().replace('_oracle', '')}{groups}" + ("_oracle" if cfg.oracle else "")
+    if cfg.oracle:
+        print("ORACLE RUN: uses the actual weather of each target period. Analysis only; "
+              "never an operational forecast and never offered to model selection.")
     for g, part in both.groupby(file_grain):
         part.to_csv(out / f"milk_backtest_errors_{g}_{new_tag}.csv", index=False)
     res.coefficients.to_csv(out / f"drivers_coefficients_{new_tag}.csv", index=False)
+    res.registry.to_csv(out / f"drivers_registry_{new_tag}.csv")
     pd.set_option("display.width", 200)
     print(f"\n=== feature registry ({args.tag}, base {args.base}): forecast dates per status ===")
     print(res.registry.to_string())
@@ -568,6 +592,162 @@ def _cmd_drivers(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_repro_timing(args: argparse.Namespace) -> int:
+    """M7: reproductive timing from the record (censored, competing exits) vs the engine."""
+    from .freeze import DATA_END
+    from .repro_timing import compare_engine, repro_table
+
+    cfg = _engine_cfg(args)
+    source = _source(args)
+    asof = date.fromisoformat(args.asof) if args.asof else DATA_END
+    steps = source.repro_steps(asof)
+    out = Path(args.out) / "repro"
+    out.mkdir(parents=True, exist_ok=True)
+    pd.set_option("display.width", 220)
+    print(f"Reproductive timing, lactations that started before {asof} (herd-level counts only).")
+    print("Open or pregnant cows at that date are censored, not failures; leaving the herd is "
+          "its own outcome; 'first_ai' is the first RECORDED service.")
+    for by in (("period",), ("period", "parity_group")):
+        t = repro_table(steps, by)
+        name = "_".join(by)
+        t.to_csv(out / f"repro_timing_by_{name}.csv", index=False)
+        print(f"\n=== by {', '.join(by)} ===")
+        print(t.round(3).to_string(index=False))
+    origin = month_start(asof)
+    inputs = load_origin_inputs(source, origin, cfg)
+    rates = estimate_rates(inputs.rate_inputs, cfg)
+    period = "2015-2019" if origin < date(2020, 1, 1) else "2020-2022" if origin < date(2023, 1, 1) else "2023-2026"
+    rec = steps[steps["period"] == period]
+    rows = [compare_engine(rec, rates, p) for p in ("1", "2", "3+")]
+    cmp_ = pd.concat([r for r in rows if len(r)], ignore_index=True) if any(len(r) for r in rows) else pd.DataFrame()
+    cmp_.to_csv(out / f"repro_engine_vs_record_{origin:%Y%m}.csv", index=False)
+    print(f"\n=== share conceived by day in milk: record (calvings {period}) vs engine rates at {origin} ===")
+    print("(engine: " + ("conception shaped by days in milk" if cfg.conception_dim_shape
+                         else "one conception rate per DIM band") + ")")
+    print(cmp_.round(3).to_string(index=False) if len(cmp_) else "(no data)")
+    print(f"\nFiles in {out}/. Associations in this herd only.")
+    return 0
+
+
+def _cmd_generation_outcomes(args: argparse.Namespace) -> int:
+    """M8: separate outcomes by generation within calving period (descriptive)."""
+    from .freeze import DATA_END
+    from .generation_outcomes import NOTE, generation_outcomes
+
+    source = _source(args)
+    asof = date.fromisoformat(args.asof) if args.asof else DATA_END
+    t = generation_outcomes(source.generation_yield(asof), source.generation_days(asof),
+                            source.repro_steps(asof), source.generation_alarms(asof))
+    out = Path(args.out) / "generation"
+    out.mkdir(parents=True, exist_ok=True)
+    t.to_csv(out / "generation_outcomes.csv", index=False)
+    pd.set_option("display.width", 220)
+    print(f"Outcomes by generation before {asof} (herd-level aggregates). {NOTE}")
+    wide = t.pivot_table(index=["outcome", "period"], columns="generation_group", values="value")
+    n = t.pivot_table(index=["outcome", "period"], columns="generation_group", values="n")
+    print("\n=== value ===")
+    print(wide.round(3).to_string())
+    print("\n=== n (cow-days or lactations) ===")
+    print(n.round(0).to_string())
+    print(f"\nFiles in {out}/.")
+    return 0
+
+
+def _cmd_evidence_ladder(args: argparse.Namespace) -> int:
+    """Evidence ladder (F7): each rung on exactly the periods all rungs forecast."""
+    from .evidence import Rung, ladder, parse_rung, status_of_tag
+    from .freeze import DATA_END
+
+    out = Path(args.out)
+    frames, rungs = {}, []
+    specs = [parse_rung(r) for r in args.rung]
+    base_tag = specs[0][1]
+    for label, tag, model in [("persistence", base_tag, "persistence")] + specs:
+        paths = [out / f"milk_backtest_errors_{g}_{tag}.csv" for g in ("weekly", "monthly")]
+        parts = [pd.read_csv(p) for p in paths if p.exists()]
+        if not parts:
+            print(f"no milk backtest files for tag {tag!r} in {out}")
+            return 1
+        e = pd.concat(parts, ignore_index=True)
+        e = e[(e["model"] == model) & (e["grain"] == args.grain)]
+        if not len(e):
+            print(f"tag {tag!r} has no {args.grain} rows for model {model!r}")
+            return 1
+        frames[label] = e
+        rungs.append(Rung(label, model, status_of_tag(tag)))
+    thi = SqlHerdSource.from_env().driver_daily(DATA_START, DATA_END)[["date", "thi_mean"]] \
+        if args.heat_band == "on" else None
+    t = ladder(frames, rungs, thi_daily=thi)
+    dest = out / "evidence"
+    dest.mkdir(parents=True, exist_ok=True)
+    name = f"evidence_ladder_{args.grain}" + (f"_{args.name}" if args.name else "")
+    t.to_csv(dest / f"{name}.csv", index=False)
+    from .evidence import plot_ladder
+    for band in sorted(set(t["band"])):
+        plot_ladder(t, dest / f"{name}_{band}.png", band=band)
+    pd.set_option("display.width", 220)
+    print(f"Evidence ladder, {args.grain}: every rung on the same periods; ratio < 1 beats persistence.")
+    print("Oracle rungs use actual future weather: analysis only, never a result.")
+    for band, g in t.groupby("band", sort=False):
+        print(f"\n=== band: {band} ===")
+        print(g.drop(columns="band").round(3).to_string(index=False))
+    print(f"\nFiles: {dest}/{name}.csv and one chart per band ({name}_<band>.png)")
+    return 0
+
+
+def _cmd_break_reset(args: argparse.Namespace) -> int:
+    """PP1 1a: the correction layer with and without the break reset, on saved errors."""
+    from .break_eval import compare, verdict, with_reset
+    from .breaks import detect_breaks
+    from .freeze import DATA_END, V11_ADAPTIVE
+
+    out = Path(args.out)
+    suffix = "_posthoc" if args.block == "posthoc" else ""
+
+    def load(kind: str, tag: str, sfx: str) -> pd.DataFrame | None:
+        frames = [pd.read_csv(p) for g in ("monthly", "weekly")
+                  for p in [out / f"{kind}_backtest_errors_{g}_{tag}{sfx}.csv"] if p.exists()]
+        return pd.concat(frames, ignore_index=True) if frames else None
+
+    herd = load("herd", args.herd_tag, "")
+    milk = load("milk", args.milk_tag, "")
+    if args.block == "posthoc":  # development errors are the past of the 2024-26 forecast dates
+        herd = pd.concat([x for x in (herd, load("herd", args.herd_tag, suffix)) if x is not None], ignore_index=True)
+        milk = pd.concat([x for x in (milk, load("milk", args.milk_tag, suffix)) if x is not None], ignore_index=True)
+    if herd is None and milk is None:
+        print(f"no error files for {args.herd_tag!r} / {args.milk_tag!r} in {out}")
+        return 1
+    src = SqlHerdSource.from_env()
+    end = DATA_END if args.block == "posthoc" else TEST_START
+    daily = src.panel_daily(DATA_START, end)[["date", "n_herd"]].merge(
+        src.target_daily(DATA_START, end)[["date", "is_scoreable", "target_litres"]], on="date", how="left")
+    breaks = detect_breaks(daily)
+    rows = with_reset(herd, milk, breaks, V11_ADAPTIVE)
+    t = compare(rows, breaks, score_from=TEST_START if args.block == "posthoc" else None)
+    _save(t, out, f"break_reset_comparison_{args.milk_tag}{suffix}.csv")
+    pd.set_option("display.width", 220)
+    print(f"Breaks detected (herd size +/-10 % over 90 days, or milk back after 28+ days): "
+          f"{len(breaks)}; years: " + ", ".join(sorted({str(b.year) for b in breaks})))
+    label = "POST-TEST DEVELOPMENT (2024-26 already inspected)" if args.block == "posthoc" else "development"
+    print(f"\n=== correction layer with and without the break reset ({label}) ===")
+    print(t.round(3).to_string(index=False))
+    if args.block == "development":
+        keep, reasons = verdict(t)
+        print("\nKeep rule: " + ("PASSED" if keep else "FAILED") + ("" if keep else " - " + "; ".join(reasons)))
+        for kind, tag, model_new in (("herd", args.herd_tag, "herd_engine_corrected_br"),
+                                     ("milk", args.milk_tag, "milk_baseline_adaptive_br")):
+            src_e = herd if kind == "herd" else milk
+            if src_e is None:
+                continue
+            bench = src_e[src_e["model"].isin(BENCHMARK_MODELS + (("herd_engine",) if kind == "herd" else ("milk_baseline",)))]
+            both = pd.concat([rows[rows["model"] == model_new], bench], ignore_index=True)
+            file_grain = both["grain"].where(both["grain"] == "monthly", "weekly")
+            for g, part in both.groupby(file_grain):
+                part.to_csv(out / f"{kind}_backtest_errors_{g}_{tag}_br.csv", index=False)
+        print(f"Wrote candidates {args.herd_tag}_br and {args.milk_tag}_br (models *_br).")
+    return 0
+
+
 def _cmd_scenarios(args: argparse.Namespace) -> int:
     """Layer 3: episode library, responses "like last time", optional outlook scenarios."""
     from .freeze import DATA_END
@@ -577,7 +757,7 @@ def _cmd_scenarios(args: argparse.Namespace) -> int:
 
     out = Path(args.out)
     frames = []
-    for suffix in ("", "_test"):
+    for suffix in ("", "_test", "_posthoc"):  # the library describes the past, not a claim
         for g in ("monthly", "weekly"):
             p = out / f"milk_backtest_errors_{g}_{args.tag}{suffix}.csv"
             if p.exists():
@@ -595,19 +775,31 @@ def _cmd_scenarios(args: argparse.Namespace) -> int:
         months = ", ".join(sorted({f"{d:%Y-%m}" for d in g["start"]}))
         print(f"{kind:18s} {len(g):3d}  {months}")
     resp = episode_response(errors, episodes, args.model)
-    summary = summarize_response(resp)
+    summary = summarize_response(resp).assign(series="herd_milk")
+    if args.herd_tag:  # 1c: herd numbers after earlier episodes (incl. the 2024 removal)
+        hf = [pd.read_csv(p) for suffix in ("", "_test", "_posthoc") for g in ("monthly", "weekly")
+              for p in [out / f"herd_backtest_errors_{g}_{args.herd_tag}{suffix}.csv"] if p.exists()]
+        if hf:
+            he = pd.concat(hf, ignore_index=True)
+            for series in ("milking", "n_herd"):
+                hs = summarize_response(episode_response(he, episodes, "herd_engine", series=series))
+                summary = pd.concat([summary, hs.assign(series=series)], ignore_index=True)
     summary.to_csv(out / f"scenario_response_{args.tag}.csv", index=False)
-    print(f"\n=== response of {args.model} (excess relative error after onset) ===")
+    print(f"\n=== response (excess relative error after onset), by series ===")
     print(summary.to_string(index=False, float_format=lambda v: f"{v:+.3f}"))
     print()
-    for kind in summary["kind"].unique():
-        for grain, h in (("weekly", 4), ("monthly", 3)):
-            print("-", narrative(summary, kind, grain, h))
+    for series, label in (("herd_milk", "herd milk"), ("milking", "milking cows"), ("n_herd", "total herd")):
+        ss = summary[summary["series"] == series]
+        for kind in ss["kind"].unique():
+            for grain, h in (("weekly", 4), ("monthly", 3)):
+                if ((ss["kind"] == kind) & (ss["grain"] == grain)).any():
+                    print("-", narrative(ss, kind, grain, h, series_label=label))
     if args.outlook:
         path = Path(args.outlook)
         base = pd.read_csv(path)
         base = base[base["series"] == "herd_milk"]
-        res = pd.concat([apply_scenario(base, summary, k) for k in summary["kind"].unique()],
+        milk_summary = summary[summary["series"] == "herd_milk"].drop(columns="series")
+        res = pd.concat([apply_scenario(base, milk_summary, k) for k in milk_summary["kind"].unique()],
                         ignore_index=True)
         dest = out / f"scenarios_{path.stem}.csv"
         res.to_csv(dest, index=False)
@@ -879,6 +1071,60 @@ def _cmd_freeze_info(args: argparse.Namespace) -> int:
     return 0
 
 
+PP1_DEV_VERSION = "pfoi-1.2.0-dev"
+
+
+def _pp1_dev(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "k", None) or getattr(args, "intervals", "empirical") == "aci"
+                or getattr(args, "staleness", None) or getattr(args, "anchor_gate", "off") == "on"
+                or getattr(args, "fast_half_life", "none") not in (None, "none")
+                or getattr(args, "exit_model", "state") != "state"
+                or getattr(args, "break_reset", "off") == "on")
+
+
+def _load_evidence(folder: Path) -> dict:
+    """Newest outage-simulation, evidence-ladder and driver-registry tables in ``folder``
+    (aggregates written by outage_sim, evidence-ladder and drivers); missing ones are left out."""
+    from .evidence import latest
+
+    out = {}
+    p = latest((folder / "outage_sim").glob("outage_outage_cost_*.csv"))
+    if p:
+        out["outage"] = pd.read_csv(p)
+    # development ladders only (files named evidence_ladder_<grain>.csv); named ones such as
+    # _posthoc are comparisons for the report, not page evidence
+    ladders = [pd.read_csv(x) for x in sorted((folder / "evidence").glob("evidence_ladder_*.csv"))
+               if x.stem.count("_") == 2]
+    if ladders:
+        out["ladder"] = pd.concat(ladders, ignore_index=True)
+    p = latest(folder.glob("scenario_response_*.csv"))
+    if p:
+        out["scenarios"] = pd.read_csv(p)
+    p = latest(folder.glob("drivers_registry_*.csv"))
+    if p:
+        reg = pd.read_csv(p)
+        out["registry"] = reg.rename(columns={reg.columns[0]: "feature"})
+    print("evidence tables: " + (", ".join(sorted(out)) or "none found") + f" (in {folder})")
+    return out
+
+
+def _pp1_interval_opts(args: argparse.Namespace, source, run) -> dict:
+    """Interval options of a PP1 development build (docs/pp1_plan.md M4)."""
+    from .episodes import daily_quality
+    from .intervals import StalenessScale
+    from .record_status import staleness_days
+
+    origin = run.origin
+    target = run.hist.target_before(origin)
+    quality = None
+    if args.intervals == "aci":
+        quality = daily_quality(source.target_daily(DATA_START, origin),
+                                source.panel_daily(DATA_START, origin))
+    return {"aci": args.intervals == "aci", "quality": quality,
+            "stale_days": staleness_days(target, origin),
+            "scale": StalenessScale.from_csv(args.staleness)}
+
+
 def _build_outlook_one(args: argparse.Namespace) -> int:
     import json
 
@@ -898,8 +1144,16 @@ def _build_outlook_one(args: argparse.Namespace) -> int:
     origin = date.fromisoformat(args.origin)
     out = Path(args.out)
     bt_dir = Path(args.backtests) if args.backtests else out  # where the backtest errors are
+    dev = _pp1_dev(args)
+    if dev and not args.preset:
+        print("--k, --intervals aci and --staleness need --preset pfoi-1.1 or pfoi-1.1.1")
+        return 2
     if args.preset:  # pfoi-1.1.0 (frozen 2026-10-20): engine, then the correction layer
         cfg, mcfg = _engine_cfg(args), V11_MILK
+        if args.k or args.anchor_gate == "on":
+            from dataclasses import replace as _replace
+            mcfg = _replace(V11_MILK, k_mode=args.k or V11_MILK.k_mode,
+                            anchor_gate=args.anchor_gate == "on")
         source = _source(args)
         backtests = _load_backtests(bt_dir, _wtag(args), f"{mcfg.tag()}_{_wtag(args)}",
                                     later=("posthoc", "_posthoc"))
@@ -908,21 +1162,39 @@ def _build_outlook_one(args: argparse.Namespace) -> int:
             backtests.update(_load_path_backtests(bt_dir, _wtag(args)))
         present = [e for e in backtests.values() if e is not None]
         errors = pd.concat(present, ignore_index=True) if present else None
+        breaks = None
+        if getattr(args, "break_reset", "off") == "on":  # PP1 1a: breaks visible before the date
+            from .breaks import detect_breaks
+            src0 = _source(args)
+            daily = src0.panel_daily(DATA_START, origin)[["date", "n_herd"]].merge(
+                src0.target_daily(DATA_START, origin)[["date", "is_scoreable", "target_litres"]],
+                on="date", how="left")
+            breaks = detect_breaks(daily)
+            print(f"break reset: {len(breaks)} breaks before {origin}; latest "
+                  f"{max(breaks) if breaks else 'none'}")
         if errors is not None:  # the adaptive milk model's own errors, for its intervals
-            errors = pd.concat([errors, adaptive_corrected(errors, "milk_baseline", cfg=V11_ADAPTIVE)],
-                               ignore_index=True)
+            errors = pd.concat([errors, adaptive_corrected(errors, "milk_baseline", cfg=V11_ADAPTIVE,
+                                                           breaks=breaks)], ignore_index=True)
         try:
             run = run_model(source, origin, cfg, mcfg)
         except ValueError as err:  # e.g. no clean milk months to anchor k after the outage
-            print(f"{origin}: no outlook ({err}). Pick a later forecast date with clean milk records.")
+            print(f"{origin}: no outlook ({err}). Pick a later forecast date with clean milk records"
+                  " (or use --k anchor_first).")
             return 2
-        run.layer = build_output_layer(errors, origin, V11_ADAPTIVE, V11_CORRECTED_HERD)
+        if run.milk_withheld:
+            print(f"{origin}: milk forecast withheld ({run.milk_withheld}); herd forecast kept.")
+        run.layer = build_output_layer(errors, origin, V11_ADAPTIVE, V11_CORRECTED_HERD, breaks=breaks)
         print(f"correction layer: {len(run.layer.herd_bias)} herd bias terms, "
               f"{len(run.layer.milk_level)} milk levels (from errors ended by {origin})")
         if v111:  # same model; 12 months at every grain, days reconciled to the months
             run.reconciled, run.version = True, V111_VERSION
-        dest = out / "outlook" / run.version
         chash = v111_config_hash() if v111 else v11_config_hash()
+        if dev:  # PP1 development options: never published under a frozen version name
+            run.version, chash = PP1_DEV_VERSION, "dev"
+            run.interval_opts = _pp1_interval_opts(args, source, run)
+            print(f"{PP1_DEV_VERSION}: development build (not frozen); options: k={mcfg.k_mode}, "
+                  f"intervals={args.intervals}, staleness scale: {run.interval_opts['scale'].source}")
+        dest = out / "outlook" / run.version
     else:
         source = SqlHerdSource.from_env()
         backtests = _load_backtests(bt_dir)
@@ -937,7 +1209,9 @@ def _build_outlook_one(args: argparse.Namespace) -> int:
         chash = config_hash()
     core_version = source.core_version()
     outlook, attribution, history = build_outlook(source, origin, errors, core_version, run=run)
-    document = build_page_run(source, run, attribution, backtests, core_version, realised_until=DATA_END)
+    evidence = _load_evidence(Path(args.evidence) if args.evidence else bt_dir) if dev else None
+    document = build_page_run(source, run, attribution, backtests, core_version, realised_until=DATA_END,
+                              evidence=evidence, interval_errors=errors)
     for name, frame in (("outlook", outlook), ("attribution", attribution), ("history", history)):
         _save(frame, dest, f"{name}_{origin:%Y%m}.csv")
     (dest / f"run_{origin:%Y%m}.json").write_text(json.dumps(document, indent=1))
@@ -1023,6 +1297,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="days after which conceptions count in the rate window (90 suits 'recorded')")
     p.add_argument("--half-life", default="none",
                    help="recency weighting of the rate window in months (none = pfoi-1.0.0)")
+    p.add_argument("--conception-shape", default="off", choices=["on", "off"],
+                   help="M7: cow conception rate shaped by days in milk within each band")
+    p.add_argument("--fast-half-life", default="none",
+                   help="1b: half-life (months) for abortions, losses, exits and conceptions")
+    p.add_argument("--exit-model", default="state", choices=["state", "lactation"],
+                   help="lactation = milking-cow exits by parity x DIM band x pregnancy")
     p.add_argument("--preset", default=None, choices=["pfoi-1.1", "candidate"],
                    help="pfoi-1.1 (alias candidate) = the pfoi-1.1.0 engine settings (overrides window, "
                         "conception and half-life options)")
@@ -1052,6 +1332,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="days after which conceptions count in the rate window (90 suits 'recorded')")
     p.add_argument("--half-life", default="none",
                    help="recency weighting of the rate window in months (none = pfoi-1.0.0)")
+    p.add_argument("--conception-shape", default="off", choices=["on", "off"],
+                   help="M7: cow conception rate shaped by days in milk within each band")
+    p.add_argument("--fast-half-life", default="none",
+                   help="1b: half-life (months) for abortions, losses, exits and conceptions")
+    p.add_argument("--exit-model", default="state", choices=["state", "lactation"],
+                   help="lactation = milking-cow exits by parity x DIM band x pregnancy")
     p.add_argument("--preset", default=None, choices=["pfoi-1.1", "candidate"],
                    help="pfoi-1.1 (alias candidate) = the pfoi-1.1.0 engine settings (overrides window, "
                         "conception and half-life options)")
@@ -1073,6 +1359,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="days after which conceptions count in the rate window (90 suits 'recorded')")
     p.add_argument("--half-life", default="none",
                    help="recency weighting of the rate window in months (none = pfoi-1.0.0)")
+    p.add_argument("--conception-shape", default="off", choices=["on", "off"],
+                   help="M7: cow conception rate shaped by days in milk within each band")
+    p.add_argument("--fast-half-life", default="none",
+                   help="1b: half-life (months) for abortions, losses, exits and conceptions")
+    p.add_argument("--exit-model", default="state", choices=["state", "lactation"],
+                   help="lactation = milking-cow exits by parity x DIM band x pregnancy")
     p.add_argument("--preset", default=None, choices=["pfoi-1.1", "candidate"],
                    help="pfoi-1.1 (alias candidate) = the pfoi-1.1.0 engine settings (overrides window, "
                         "conception and half-life options)")
@@ -1087,7 +1379,11 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--pregnancy-factor", default="on", choices=["on", "off"])
         p.add_argument("--generation-factor", default="off", choices=["on", "off"])
         p.add_argument("--k", default="anchored", choices=list(K_MODES),
-                       help="anchored = last 14 scoreable days; window = 12-month k")
+                       help="anchored = last 14 scoreable days; window = 12-month k; "
+                            "anchor_first = anchored without needing the 12-month k (M1)")
+        p.add_argument("--anchor-gate", default="off", choices=["on", "off"],
+                       help="on = anchor only on verified days (M3; identified share >= 0.2, "
+                            "<= 20 L per milking cow)")
         p.add_argument("--window", default="12", choices=["12", "24", "36", "expanding"])
         p.add_argument("--conception-cut", default="origin", choices=["origin", "known"],
                        help="known = heifer/dry conception rates only from months confirmable at the origin")
@@ -1099,6 +1395,12 @@ def main(argv: list[str] | None = None) -> int:
                        help="days after which conceptions count in the rate window (90 suits 'recorded')")
         p.add_argument("--half-life", default="none",
                        help="recency weighting of the rate window in months (none = pfoi-1.0.0)")
+        p.add_argument("--conception-shape", default="off", choices=["on", "off"],
+                       help="M7: cow conception rate shaped by days in milk within each band")
+        p.add_argument("--fast-half-life", default="none",
+                       help="1b: half-life (months) for abortions, losses, exits and conceptions")
+        p.add_argument("--exit-model", default="state", choices=["state", "lactation"],
+                       help="lactation = milking-cow exits by parity x DIM band x pregnancy")
         p.add_argument("--preset", default=None, choices=["pfoi-1.1", "candidate"],
                        help="pfoi-1.1 (alias candidate) = the pfoi-1.1.0 engine settings (overrides window, "
                             "conception and half-life options)")
@@ -1151,14 +1453,63 @@ def main(argv: list[str] | None = None) -> int:
                    help="milk backtest tag, e.g. herd_fitted_p1_g0_ka_w12_ck or ..._adpq0.1t365z3")
     p.add_argument("--base", default="milk_baseline",
                    choices=["milk_baseline", "milk_baseline_adaptive"])
-    p.add_argument("--groups", nargs="*", default=["weather", "health", "sensor", "quality", "season"],
-                   choices=["weather", "health", "sensor", "quality", "season"])
+    p.add_argument("--groups", nargs="*",
+                   default=["weather", "health", "sensor", "quality", "season", "recent"],
+                   choices=["weather", "health", "sensor", "quality", "season", "recent"])
+    p.add_argument("--weather-lag", type=int, default=6,
+                   help="last weather day used = forecast date minus this (ERA5 is ~5 days late)")
+    p.add_argument("--thi-knot", type=float, default=75.0, choices=[75.0, 90.0],
+                   help="herd-relative heat knot: percentile of past daily max THI")
+    p.add_argument("--oracle", action="store_true",
+                   help="ANALYSIS ONLY: add the actual THI of each target period")
     p.add_argument("--out", default="logs/pfoi")
     p.set_defaults(func=_cmd_drivers)
+
+    p = sub.add_parser("repro-timing", help="M7: reproductive timing (record vs engine), aggregates only")
+    p.add_argument("--asof", default=None, help="YYYY-MM-DD (default: the data end)")
+    p.add_argument("--window", default="12", choices=["12", "24", "36", "expanding"])
+    p.add_argument("--conception-cut", default="origin", choices=["origin", "known"])
+    p.add_argument("--cell-table", default="day_cell", choices=["day_cell", "day_cell_known"])
+    p.add_argument("--conception-known", default="lag", choices=["lag", "recorded"])
+    p.add_argument("--pregnancy-lag", type=int, default=35)
+    p.add_argument("--half-life", default="none")
+    p.add_argument("--conception-shape", default="off", choices=["on", "off"])
+    p.add_argument("--fast-half-life", default="none")
+    p.add_argument("--exit-model", default="state", choices=["state", "lactation"])
+    p.add_argument("--preset", default=None, choices=["pfoi-1.1", "candidate"])
+    p.add_argument("--out", default="logs/pfoi")
+    p.set_defaults(func=_cmd_repro_timing)
+
+    p = sub.add_parser("break-reset", help="PP1 1a: correction layer with and without the break reset")
+    p.add_argument("--herd-tag", required=True, help="herd backtest tag, e.g. w24_ck_kn_rk_lag90_hl6")
+    p.add_argument("--milk-tag", required=True, help="milk backtest tag, e.g. herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6")
+    p.add_argument("--block", default="development", choices=["development", "posthoc"])
+    p.add_argument("--out", default="logs/pfoi")
+    p.set_defaults(func=_cmd_break_reset)
+
+    p = sub.add_parser("evidence-ladder", help="F7: compare model additions on identical periods")
+    p.add_argument("--rung", action="append", required=True,
+                   help="label=tag:model, in ladder order, e.g. current=<tag>:milk_baseline_adaptive")
+    p.add_argument("--grain", default="weekly", choices=["daily", "weekly", "monthly"])
+    p.add_argument("--name", default=None,
+                   help="suffix for the output files, e.g. posthoc (keeps the development ladder)")
+    p.add_argument("--heat-band", default="on", choices=["on", "off"],
+                   help="on = also score periods with THI above the past 90th percentile")
+    p.add_argument("--out", default="logs/pfoi")
+    p.set_defaults(func=_cmd_evidence_ladder)
+
+    p = sub.add_parser("generation-outcomes", help="M8: separate outcomes by generation (descriptive)")
+    p.add_argument("--asof", default=None, help="YYYY-MM-DD (default: the data end)")
+    p.add_argument("--cell-table", default="day_cell_known", choices=["day_cell", "day_cell_known"])
+    p.add_argument("--conception-known", default="recorded", choices=["lag", "recorded"])
+    p.add_argument("--out", default="logs/pfoi")
+    p.set_defaults(func=_cmd_generation_outcomes)
 
     p = sub.add_parser("scenarios", help="Layer 3: scenarios like earlier heat, drought, disease")
     p.add_argument("--tag", required=True, help="milk backtest tag (its _test files are added if present)")
     p.add_argument("--model", default="milk_baseline")
+    p.add_argument("--herd-tag", default=None,
+                   help="1c: also measure milking cows and total herd after episodes (herd backtest tag)")
     p.add_argument("--outlook", default=None,
                    help="outlook CSV to apply scenarios to, e.g. logs/pfoi/outlook/outlook_202608.csv")
     p.add_argument("--out", default="logs/pfoi")
@@ -1205,6 +1556,26 @@ def main(argv: list[str] | None = None) -> int:
                         "files in <out>/outlook/pfoi-1.1.0/; pfoi-1.1.1 = the same model published "
                         "for 12 months at every grain (days reconciled to the corrected months; "
                         "run backtest-path first); --write publishes it next to the others")
+    p.add_argument("--k", default=None, choices=list(K_MODES),
+                   help="PP1 development: anchor_first = level from trusted recent days, 12-month "
+                        "k only as fallback, milk withheld when neither exists (needs --preset)")
+    p.add_argument("--fast-half-life", default="none",
+                   help="PP1 development (1b): half-life for abortions, losses, exits and conceptions")
+    p.add_argument("--exit-model", default="state", choices=["state", "lactation"],
+                   help="PP1 development: milking-cow exits by parity x DIM band x pregnancy")
+    p.add_argument("--break-reset", default="off", choices=["on", "off"],
+                   help="PP1 development (1a): corrections ignore errors from before the latest "
+                        "break detected at the forecast date")
+    p.add_argument("--anchor-gate", default="off", choices=["on", "off"],
+                   help="PP1 development: anchor the milk level only on verified days (M3)")
+    p.add_argument("--intervals", default="empirical", choices=["empirical", "aci"],
+                   help="PP1 development: aci = adaptive conformal milk ranges scaled by record quality")
+    p.add_argument("--evidence", default=None,
+                   help="PP1 development: folder with outage_sim/, evidence/ and drivers_registry_* "
+                        "tables for the page (default: the backtest folder)")
+    p.add_argument("--staleness", default=None,
+                   help="PP1 development: outage_staleness_*.csv from outage_sim (development); "
+                        "milk ranges widen with days since the last trusted milk day")
     p.set_defaults(func=_cmd_build_outlook)
 
     p = sub.add_parser("backtest-path", help="pfoi-1.1.1: score the reconciled days and weeks up to "
@@ -1222,7 +1593,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("compare-runs", help="two versions at forecast dates (from build-outlook files)")
     p.add_argument("--origins", nargs="+", required=True, help="YYYY-MM-01 forecast dates")
     p.add_argument("--base", default="pfoi-1.0.0", choices=["pfoi-1.0.0", "pfoi-1.1.0", "pfoi-1.1.1"])
-    p.add_argument("--candidate", default="pfoi-1.1.0", choices=["pfoi-1.1.0", "pfoi-1.1.1"])
+    p.add_argument("--candidate", default="pfoi-1.1.0", choices=["pfoi-1.1.0", "pfoi-1.1.1", PP1_DEV_VERSION],
+                   help=f"{PP1_DEV_VERSION} = development build (build-outlook with --k / --intervals aci)")
     p.add_argument("--grain", default="month", choices=["month", "week", "day"],
                    help="day / week: the pfoi-1.1.1 daily and weekly path (earlier versions: 14 days, 13 weeks)")
     p.add_argument("--out", default="logs/pfoi")

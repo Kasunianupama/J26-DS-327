@@ -219,6 +219,89 @@ class FakeHerdSource:
         out["max_date"] = known_until - timedelta(days=1)
         return self._leaky("cow_open", out, known_until)
 
+    def cow_open_dim(self, start, known_until, origin=None):
+        """Synthetic 10-day DIM bins: no conceptions before 40 days (voluntary waiting
+        period), a peak around 60-90 days, then a slow decline."""
+        self.calls.append(("cow_open_dim", start, known_until))
+        rows = []
+        for lo in list(range(0, 400, 10)) + [400]:
+            rate = 0.0 if lo < 40 else (0.02 if lo < 100 else 0.008)
+            days = 200.0 if lo < 400 else 400.0
+            rows.append(("1", str(lo), days, days * rate, 0.0))
+        out = pd.DataFrame(rows, columns=["parity_group", "dim_band", "open_days", "conceptions",
+                                          "open_dry_offs"])
+        out["max_date"] = known_until - timedelta(days=1)
+        return self._leaky("cow_open_dim", out, known_until)
+
+    def generation_yield(self, asof):
+        """Synthetic yield strata (M8): generation 1 yields 10 % more than generation 0 in
+        every stratum, but has more early-lactation days (a composition difference)."""
+        self.calls.append(("generation_yield", asof))
+        rows = []
+        for period in ("2020-2022", "2023-2026"):
+            for gen, lift, early in (("0", 1.0, 100.0), ("1", 1.1, 300.0)):
+                for par in ("1", "2"):
+                    for band, base, days in (("0-60", 12.0, early), ("151-305", 6.0, 200.0)):
+                        for heat, f in (("below_p75", 1.0), ("above_p90", 0.9)):
+                            rows.append((period, gen, par, band, heat, days, days * base * lift * f))
+        return pd.DataFrame(rows, columns=["period", "generation_group", "parity_group", "dim_band",
+                                           "heat_band", "cow_days", "litres"])
+
+    def generation_days(self, asof):
+        self.calls.append(("generation_days", asof))
+        rows = []
+        for period in ("2020-2022", "2023-2026"):
+            for gen in ("0", "1"):
+                for par in ("1", "2"):
+                    rows += [(period, gen, par, "milking", 3000.0), (period, gen, par, "dry_pregnant", 700.0),
+                             (period, gen, par, "dry_open", 300.0)]
+                rows.append((period, gen, "0", "heifer_open", 5000.0))
+        return pd.DataFrame(rows, columns=["period", "generation_group", "parity_group", "state",
+                                           "animal_days"])
+
+    def generation_alarms(self, asof):
+        self.calls.append(("generation_alarms", asof))
+        return pd.DataFrame([("2023-2026", "0", 1000.0, 50.0, 20.0), ("2023-2026", "1", 800.0, 64.0, 24.0)],
+                            columns=["period", "generation_group", "cow_days", "alarm_cow_days",
+                                     "persistent_cow_days"])
+
+    def repro_steps(self, asof):
+        """Synthetic reproductive-step counts (M7): per period and parity, first service around
+        day 60, conception around day 110, some cows leave or are still open."""
+        self.calls.append(("repro_steps", asof))
+        rows = []
+        for period in ("2015-2019", "2020-2022", "2023-2026"):
+            for par in ("1", "2", "3+"):
+                for step, day, n_ev in (("first_ai", 60, 80), ("conception", 110, 60),
+                                        ("calving_interval", 390, 50)):
+                    rows += [(period, par, "0", step, day, "event", float(n_ev)),
+                             (period, par, "0", step, day + 40, "left_herd", 10.0),
+                             (period, par, "0", step, day + 80, "censored", 10.0)]
+                rows += [(period, par, "0", "pregnancy", 280, "calved", 50.0),
+                         (period, par, "0", "pregnancy", 120, "lost", 5.0),
+                         (period, par, "0", "pregnancy", 100, "censored", 5.0)]
+        return pd.DataFrame(rows, columns=["period", "parity_group", "generation_group", "step",
+                                           "day", "status", "n"])
+
+    def milking_exits(self, start, known_until, origin):
+        """Synthetic milking-cow exits (exit fix): open cows late in lactation leave far more
+        often than pregnant ones; rates rise in the last months before the origin."""
+        self.calls.append(("milking_exits", start, known_until, origin))
+        rows = []
+        m = start.replace(day=1)
+        while m < origin:
+            recent = (origin - m).days < 120
+            for par in ("1", "2", "3+"):
+                for b in DIM_BANDS:
+                    for preg in (0, 1):
+                        days = 300.0
+                        rate = 0.0004 if preg else (0.004 if b in ("151-305", "305+") else 0.001)
+                        rows.append((m, par, b, preg, days, days * rate * (3.0 if recent else 1.0), m))
+            m = (m.replace(day=28) + timedelta(days=4)).replace(day=1)
+        out = pd.DataFrame(rows, columns=["month", "parity_group", "dim_band", "preg", "days",
+                                          "exits", "max_date"])
+        return self._leaky("milking_exits", out, origin)
+
     def preg_milking_days(self, start, known_until, origin):
         self.calls.append(("preg_milking_days", start, known_until, origin))
         out = pd.DataFrame({"preg_milking_days": [2500.0], "max_date": [known_until - timedelta(days=1)]})
@@ -356,6 +439,20 @@ class FakeHerdSource:
         return pd.DataFrame({"generation_group": ["0", "1"], "calving_period": ["2020-2022"] * 2,
                              "lactations": [100, 80], "conceptions": [70, 50],
                              "services_per_conception": [3.5, 4.2], "pct_aborted": [3.0, 4.0]})
+
+    def driver_daily(self, start, end):
+        """Synthetic herd-level daily drivers (weather follows the season)."""
+        self.calls.append(("driver_daily", start, end))
+        days = pd.date_range(start, end - timedelta(days=1))
+        doy = days.dayofyear.to_numpy()
+        thi = 74 + 4 * np.sin(2 * pi * (doy - 100) / 365.25)
+        out = pd.DataFrame(dict(date=days.date, milking=300.0, weather_is_complete=True,
+                                thi_mean=thi, thi_max=thi + 6, hours_thi_above=np.clip(thi - 72, 0, None),
+                                rain_total_mm=3.0, mastitis_episodes=0.0, udder_teat_episodes=0.0,
+                                n_sessions=0.0, n_blood_alarms=0.0, n_conductivity_alarms=0.0,
+                                identified_share=None, real_abortions=0.0, deaths=0.0,
+                                target_litres=None, is_scoreable=None))
+        return out
 
     def panel_daily(self, start, end):
         self.calls.append(("panel_daily", start, end))

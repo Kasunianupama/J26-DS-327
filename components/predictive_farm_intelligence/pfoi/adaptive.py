@@ -51,9 +51,12 @@ def _robust_var(y: np.ndarray) -> float:
 
 
 def level_at(ends: np.ndarray, y: np.ndarray, hz: np.ndarray, origin: np.datetime64,
-             cfg: AdaptiveConfig) -> float:
-    """Filtered error level at ``origin`` from finished errors (end <= origin)."""
+             cfg: AdaptiveConfig, keep: np.ndarray | None = None) -> float:
+    """Filtered error level at ``origin`` from finished errors (end <= origin).
+    ``keep``: optional mask of usable errors (e.g. only those after the latest break)."""
     known = (ends <= origin) & ~np.isnan(y)
+    if keep is not None:
+        known &= keep
     if known.sum() < cfg.min_obs:
         return 0.0
     e, v, h = ends[known], y[known], hz[known]
@@ -99,7 +102,7 @@ def level_at(ends: np.ndarray, y: np.ndarray, hz: np.ndarray, origin: np.datetim
 
 
 def adaptive_corrected(errors: pd.DataFrame, base_model: str, new_model: str | None = None,
-                       cfg: AdaptiveConfig = AdaptiveConfig()) -> pd.DataFrame:
+                       cfg: AdaptiveConfig = AdaptiveConfig(), breaks: list | None = None) -> pd.DataFrame:
     """Rows of ``base_model`` with forecasts multiplied by (1 + level at their origin)."""
     new_model = new_model or f"{base_model}_adaptive"
     base = errors[errors["model"] == base_model]
@@ -114,7 +117,12 @@ def adaptive_corrected(errors: pd.DataFrame, base_model: str, new_model: str | N
         with np.errstate(divide="ignore", invalid="ignore"):
             y = np.where(f > 0, np.clip(a / f - 1.0, *Y_CLIP), np.nan)
         hz = g["horizon"].to_numpy(dtype=int)
-        levels = {o: level_at(ends, y, hz, o, cfg) for o in np.unique(origins)}
+        if breaks:  # PP1 1a: only errors from forecast dates after the latest known break
+            from .breaks import since_mask
+            levels = {o: level_at(ends, y, hz, o, cfg, keep=since_mask(origins, o, breaks))
+                      for o in np.unique(origins)}
+        else:
+            levels = {o: level_at(ends, y, hz, o, cfg) for o in np.unique(origins)}
         c = g.copy()
         c["forecast"] = f * (1 + np.array([levels[o] for o in origins]))
         c["error"] = c["forecast"] - c["actual"]
