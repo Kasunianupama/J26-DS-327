@@ -128,6 +128,12 @@ def main(argv=None):
         print(grouped(base, groups).to_string(index=False, float_format=lambda x: f"{x:.3f}"))
     print("\n=== pairwise statistical benchmarks, matched periods (litres) ===")
     print(benchmark_pairs(base, errors).to_string(index=False, float_format=lambda x: f"{x:.3f}"))
+    for year_field in ("origin_year", "target_year"):
+        yearly = [benchmark_pairs(part, errors).assign(**{year_field: year})
+                  for year, part in base.groupby(year_field)]
+        print(f"\n=== matched benchmarks by {year_field} (litres) ===")
+        if yearly:
+            print(pd.concat(yearly, ignore_index=True).to_string(index=False, float_format=lambda x: f"{x:.3f}"))
     print("\n=== milk versus underlying mean milking-cow count errors ===")
     print(paired_counts(base, herd).to_string(index=False, float_format=lambda x: f"{x:.3f}"))
     print("Cow counts are full-period daily means. Milk can exclude unscoreable days.")

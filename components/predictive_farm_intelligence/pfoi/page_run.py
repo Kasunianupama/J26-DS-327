@@ -13,7 +13,6 @@ from datetime import date, datetime, timedelta, timezone
 import numpy as np
 import pandas as pd
 
-from . import MODEL_VERSION
 from .attribution import mastitis_rates, without_new_conceptions
 from .backtest_herd import summarise
 from .backtest_milk import summarise_milk
@@ -86,7 +85,7 @@ def build_page_run(source, run: FrozenRun, attribution: pd.DataFrame,
     all_errors = pd.concat([e for e in backtests.values() if e is not None and len(e)], ignore_index=True) \
         if any(e is not None and len(e) for e in backtests.values()) else None
     q = interval_table(all_errors, origin)
-    meta = {"model_version": MODEL_VERSION, "core_version": core_version or "unknown"}
+    meta = {"model_version": run.version, "core_version": core_version or "unknown"}
     daily = run.daily
     dates = pd.to_datetime(daily["date"]).dt.date
 
@@ -98,7 +97,7 @@ def build_page_run(source, run: FrozenRun, attribution: pd.DataFrame,
     recent_rate = rates[0][1] if rates else 0.0
     main_label, main_rate = rates[-1] if rates else ("no rate available", 0.0)
 
-    outlook = []
+    outlook, corrections = [], []
     for grain_model, grain in GRAIN.items():
         for h in OUTLOOK_HORIZONS[grain_model]:
             s, e = period_bounds(run.starts[grain_model], grain_model, h)
@@ -114,7 +113,15 @@ def build_page_run(source, run: FrozenRun, attribution: pd.DataFrame,
                     has = True
                 else:
                     cols, stock, (model, err_series) = SERIES[sid]
-                    f = _period_value(part, cols, stock)
+                    raw = _period_value(part, cols, stock)
+                    # pfoi-1.1.0 correction layer, column by column (identity for 1.0.0)
+                    f = raw if run.layer is None else sum(
+                        run.output(grain_model, c, h, _period_value(part, (c,), stock)) for c in cols)
+                    if abs(f - raw) > 1e-9:
+                        corrections.append({"target_period": s.isoformat(), "grain": grain, "horizon": h,
+                                            "series": sid, "structural": round(raw, 3),
+                                            "correction": round(f - raw, 3)})
+                    model = run.interval_model(err_series, model)
                     sub = q[(q["model"] == model) & (q["grain"] == grain_model) & (q["series"] == err_series)]
                     has = len(sub) > 0
                     if has:
@@ -164,6 +171,9 @@ def build_page_run(source, run: FrozenRun, attribution: pd.DataFrame,
         "data_through": (origin - timedelta(days=1)).isoformat(),
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "outlook": outlook,
+        # pfoi-1.1.0: correction layer on top of the structural forecast that the
+        # attribution explains (forecast = structural + correction); empty for pfoi-1.0.0
+        "corrections": corrections,
         "attribution": attr,
         "actuals": actuals,
         "realised": realised,

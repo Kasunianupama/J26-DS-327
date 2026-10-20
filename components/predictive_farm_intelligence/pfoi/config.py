@@ -44,6 +44,11 @@ class EngineConfig:
     # (positive pregnancy check, ETL item E1) is before the origin; checks take a median
     # 41-85 days, so pair it with pregnancy_check_lag_days ~90 for the rate window.
     conception_known: str = "lag"
+    # Recency weighting of the rate window. None (pfoi-1.0.0): every month in the window
+    # counts equally, so a regime change (abortion surge, removal campaign) enters the
+    # rates only slowly. A number: each month's exposure and events are weighted by
+    # 0.5 ** (age in months / half-life), the last complete month having weight 1.
+    rate_half_life_months: float | None = None
     # Pseudo-exposure used for shrinkage when the method-of-moments estimate fails.
     default_prior_days: float = 3650.0
     # Where external entries go when the transition table does not say.

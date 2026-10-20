@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from . import MODEL_VERSION
+from .adaptive import AdaptiveConfig
 from .config import EngineConfig
 from .milk_baseline import MilkConfig
 
@@ -31,7 +32,30 @@ FROZEN_MILK = MilkConfig(curve_mode="herd_fitted", pregnancy_factor=True,
 # of the hash while they keep that value, so the frozen hash (and its run-once markers)
 # does not change; any other value changes the hash.
 LEGACY_ENGINE_VALUES = {"conception_cut": "origin", "cell_table": "day_cell",
-                        "conception_known": "lag"}
+                        "conception_known": "lag", "rate_half_life_months": None}
+
+# pfoi-1.1.0, frozen 2026-10-20 (docs/pfoi_1_1_candidate.md, decision by the user). Chosen on
+# the development block (nested CV); its 2024-26 scores are post-hoc, and months published
+# after 2026-08-20 are its prospective holdout. pfoi-1.0.0 above keeps its run-once test.
+# One engine for herd and milk; the outputs then pass through the correction layer
+# (outlook.OutputLayer): herd series bias-corrected, herd milk adaptive per horizon.
+V11_VERSION = "pfoi-1.1.0"
+V11_FROZEN_ON = date(2026, 10, 20)
+V11_ENGINE = EngineConfig(window_months=24, rate_half_life_months=6.0,
+                          conception_cut="known", cell_table="day_cell_known",
+                          conception_known="recorded", pregnancy_check_lag_days=90)
+V11_MILK = FROZEN_MILK
+V11_ADAPTIVE = AdaptiveConfig(q30=0.1, tau_days=365.0, z_reset=3.0, pooled=False)
+V11_CORRECTED_HERD = ("milking", "n_herd", "calvings", "dry_offs")  # the series selection scored
+# Names kept for the commands already run while it was a candidate.
+CANDIDATE_VERSION, CANDIDATE_ENGINE, CANDIDATE_MILK = V11_VERSION, V11_ENGINE, V11_MILK
+
+
+def v11_config_hash() -> str:
+    blob = json.dumps({"engine": asdict(V11_ENGINE), "milk": asdict(V11_MILK),
+                       "adaptive": asdict(V11_ADAPTIVE), "corrected_herd": V11_CORRECTED_HERD,
+                       "version": V11_VERSION}, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()[:12]
 
 
 def config_hash(engine: EngineConfig = FROZEN_ENGINE, milk: MilkConfig = FROZEN_MILK) -> str:
@@ -40,6 +64,18 @@ def config_hash(engine: EngineConfig = FROZEN_ENGINE, milk: MilkConfig = FROZEN_
     blob = json.dumps({"engine": eng, "milk": asdict(milk), "version": MODEL_VERSION},
                       sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
+
+
+def version_label(engine: EngineConfig, milk: MilkConfig | None = None) -> str:
+    """Version written next to every backtest row: the frozen model, the candidate, or
+    an unnamed experiment identified by its configuration hash."""
+    m_frozen = milk is None or milk == FROZEN_MILK
+    if engine == FROZEN_ENGINE and m_frozen:
+        return MODEL_VERSION
+    if engine == CANDIDATE_ENGINE and (milk is None or milk == CANDIDATE_MILK):
+        return CANDIDATE_VERSION
+    h = config_hash(engine, milk or FROZEN_MILK)
+    return f"experiment-{h}"
 
 
 def final_test_origins(grain: str, every: int = 1) -> list[date]:

@@ -19,7 +19,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from . import MODEL_VERSION
+from .freeze import version_label
 from .backtest_herd import TEST_START, check_block, development_origins
 from .benchmarks import ets_forecast, persistence_value, sarima_forecast
 from .config import EngineConfig
@@ -226,7 +226,7 @@ def run_milk_backtest(
     if len(errors):
         errors["error"] = errors["forecast"] - errors["actual"]
         errors = _correct_and_interval(errors, prior_errors)
-        errors["model_version"] = MODEL_VERSION
+        errors["model_version"] = version_label(cfg, milk_cfg)
         errors["milk_config"] = milk_cfg.tag()
     notes = pd.DataFrame(sorted(note_counts.items()), columns=["note", "n_origins"])
     return MilkBacktestResult(errors=errors, notes=notes)

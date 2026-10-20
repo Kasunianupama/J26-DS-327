@@ -33,9 +33,10 @@ from .attribution import (
 )
 from .backtest_herd import EVENT_SERIES, STOCK_SERIES
 from .data import DATA_START, add_months, check_before, load_origin_inputs, month_start
-from .freeze import FROZEN_ENGINE, FROZEN_MILK
+from .config import EngineConfig
+from .freeze import FROZEN_ENGINE, FROZEN_MILK, version_label
 from .herd_engine import project
-from .milk_baseline import MilkHistory, anchor_k, monthly_target, prepare_milk
+from .milk_baseline import MilkConfig, MilkHistory, anchor_k, monthly_target, prepare_milk
 from .periods import period_bounds
 from .rates import estimate_rates
 
@@ -85,6 +86,76 @@ def _interval(q: pd.DataFrame, model: str, grain: str, series: str, h: int):
 
 
 @dataclass
+class OutputLayer:
+    """Corrections applied to the structural forecast after the engine (pfoi-1.1.0).
+
+    Herd series in ``herd_series``: minus the mean past error of ``herd_engine`` (same grain,
+    series, horizon; errors ended by the origin, origins in the last 2 years, at least 6),
+    as ``error_tools.bias_corrected``. Herd milk: times (1 + level) of the per-horizon
+    adaptive filter (``adaptive.level_at``) over ``milk_baseline`` errors ended by the
+    origin. A horizon without its own errors uses the next longer backtest horizon (else the
+    longest), as the intervals do. Intervals then come from the corrected models' errors.
+    """
+
+    herd_bias: dict  # (grain, series, horizon) -> mean error (forecast - actual)
+    milk_level: dict  # (grain, horizon) -> adaptive level x
+    herd_series: tuple[str, ...]
+    herd_model: str = "herd_engine_corrected"
+    milk_model: str = "milk_baseline_adaptive"
+
+    @staticmethod
+    def _nearest(keys, h: int):
+        if not keys:
+            return None
+        above = [k for k in keys if k >= h]
+        return min(above) if above else max(keys)
+
+    def adjust(self, grain: str, series: str, h: int, value: float) -> float:
+        if series == MILK_SERIES:
+            hz = self._nearest([k for g, k in self.milk_level if g == grain], h)
+            return value if hz is None else value * (1.0 + self.milk_level[(grain, hz)])
+        if series not in self.herd_series:
+            return value
+        hz = self._nearest([k for g, sr, k in self.herd_bias if g == grain and sr == series], h)
+        return value if hz is None else max(0.0, value - self.herd_bias[(grain, series, hz)])
+
+    def model_for(self, series: str, structural: str) -> str:
+        if series == MILK_SERIES:
+            return self.milk_model
+        return self.herd_model if series in self.herd_series else structural
+
+
+def build_output_layer(errors: pd.DataFrame | None, origin: date, adaptive_cfg,
+                       herd_series: tuple[str, ...]) -> OutputLayer:
+    """The correction layer at ``origin`` from backtest errors (only those ended by it)."""
+    from .adaptive import level_at
+    from .error_tools import CORRECTION_LOOKBACK_DAYS, CORRECTION_MIN_ERRORS
+
+    herd_bias, milk_level = {}, {}
+    if errors is not None and len(errors):
+        e = errors.copy()
+        e["_o"] = pd.to_datetime(e["origin"])
+        e["_end"] = pd.to_datetime(e["period_end"])
+        o = pd.Timestamp(origin)
+        known = e[e["_end"] <= o]
+        h = known[(known["model"] == "herd_engine") & known["series"].isin(herd_series)
+                  & (known["_o"] >= o - pd.Timedelta(days=CORRECTION_LOOKBACK_DAYS))]
+        for (g, sr, hz), grp in h.groupby(["grain", "series", "horizon"]):
+            if len(grp) >= CORRECTION_MIN_ERRORS:
+                herd_bias[(g, sr, int(hz))] = float((grp["forecast"] - grp["actual"]).mean())
+        m = e[(e["model"] == "milk_baseline") & (e["series"] == MILK_SERIES)]
+        for (g, hz), grp in m.groupby(["grain", "horizon"]):
+            f = grp["forecast"].to_numpy(dtype=float)
+            a = grp["actual"].to_numpy(dtype=float)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                y = np.where(f > 0, np.clip(a / f - 1.0, -0.9, 3.0), np.nan)
+            milk_level[(g, int(hz))] = level_at(grp["_end"].to_numpy(), y,
+                                                grp["horizon"].to_numpy(dtype=int),
+                                                np.datetime64(o), adaptive_cfg)
+    return OutputLayer(herd_bias, milk_level, tuple(herd_series))
+
+
+@dataclass
 class FrozenRun:
     """Everything the frozen model computes at one origin (shared by the outlook tables
     and the page document)."""
@@ -99,12 +170,24 @@ class FrozenRun:
     starts: dict
     horizon_days: int
     flag: str
+    version: str = MODEL_VERSION  # freeze.version_label of the configuration that ran
+    layer: OutputLayer | None = None  # pfoi-1.1.0 corrections; None = structural forecast
+
+    def output(self, grain: str, series: str, h: int, value: float) -> float:
+        return value if self.layer is None else self.layer.adjust(grain, series, h, value)
+
+    def interval_model(self, series: str, structural: str) -> str:
+        return structural if self.layer is None else self.layer.model_for(series, structural)
 
 
 def run_frozen(source, origin: date) -> FrozenRun:
+    return run_model(source, origin, FROZEN_ENGINE, FROZEN_MILK)
+
+
+def run_model(source, origin: date, cfg: EngineConfig, mcfg: MilkConfig) -> FrozenRun:
+    """The outlook run for any configuration; only pfoi-1.0.0 (``run_frozen``) is published."""
     if origin.day != 1:
         raise ValueError("the outlook origin must be the first day of a month")
-    cfg, mcfg = FROZEN_ENGINE, FROZEN_MILK
     hist = MilkHistory(cowdays=source.milking_cowdays(DATA_START, origin),
                        target=source.target_daily(DATA_START, origin))
     setup = prepare_milk(source, origin, mcfg, hist)
@@ -120,7 +203,8 @@ def run_frozen(source, origin: date) -> FrozenRun:
     if setup.k < LOW_RECORDING_K:
         flags.append("low_recording")
     flag = ";".join(sorted(set(flags))) or "ok"
-    return FrozenRun(origin, hist, setup, inputs, rates, proj, daily, starts, horizon_days, flag)
+    return FrozenRun(origin, hist, setup, inputs, rates, proj, daily, starts, horizon_days, flag,
+                     version_label(cfg, mcfg))
 
 
 def build_outlook(source, origin: date, errors: pd.DataFrame | None = None,
@@ -131,7 +215,7 @@ def build_outlook(source, origin: date, errors: pd.DataFrame | None = None,
     daily, starts, horizon_days, flag = run.daily, run.starts, run.horizon_days, run.flag
     dates = pd.to_datetime(daily["date"]).dt.date
     q = interval_table(errors, origin)
-    meta = dict(model_version=MODEL_VERSION, core_version=core_version)
+    meta = dict(model_version=run.version, core_version=core_version)
 
     rows = []
     for grain, horizons in OUTLOOK_HORIZONS.items():
@@ -145,7 +229,8 @@ def build_outlook(source, origin: date, errors: pd.DataFrame | None = None,
                 v = float(part[col].mean()) if col in STOCK_SERIES else float(part[col].sum())
                 values[col] = ("herd_engine", v)
             for series, (model, v) in values.items():
-                iv = _interval(q, model, grain, series, h)
+                v = run.output(grain, series, h, v)
+                iv = _interval(q, run.interval_model(series, model), grain, series, h)
                 lo, hi = (v * (1 + iv[0]), v * (1 + iv[1])) if iv else (np.nan, np.nan)
                 rows.append(dict(origin_date=origin, target_period=s, grain=grain, horizon=h,
                                  series=series, forecast=v, lower=max(lo, 0.0) if iv else np.nan,

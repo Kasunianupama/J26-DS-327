@@ -10,7 +10,7 @@ backtest can report which origins used assumed rather than measured rates.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 
 import numpy as np
@@ -214,9 +214,60 @@ def calf_split(inp: RateInputs, calf_days: float, moved_to_heifer: float,
     )
 
 
+def _month_weights(months: pd.Series, origin: date, half_life: float) -> np.ndarray:
+    """0.5 ** (age / half_life); age 0 = the month before the origin's month."""
+    m = pd.to_datetime(months)
+    age = (origin.year - m.dt.year) * 12 + (origin.month - m.dt.month) - 1
+    return np.power(0.5, np.clip(age.to_numpy(dtype=float), 0.0, None) / half_life)
+
+
+def recency_weighted(inp: RateInputs, half_life: float) -> tuple[RateInputs, float]:
+    """Weight each window month's exposure and events by its age (pfoi-1.1 candidate).
+
+    Month-indexed frames (exposure, transitions, panel) are weighted month by month.
+    Inputs without a month (open cow-days, pregnant milking-days) are scaled by the mean
+    weight of the window's panel days, so ratios that mix both kinds keep the same
+    relative weight. Weighted counts are smaller, so shrinkage toward the pooled rate is
+    stronger: the effective sample really is smaller. Returns (weighted inputs, mean weight).
+    """
+    if half_life <= 0:
+        raise ValueError("rate half-life must be positive")
+
+    def weigh(frame: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        if not len(frame):
+            return frame
+        w = _month_weights(frame["month"], inp.origin, half_life)
+        out = frame.copy()
+        for c in cols:
+            out[c] = out[c].astype(float) * w
+        return out
+
+    skip = {"month", "max_date"}
+    panel_cols = [c for c in inp.panel.columns
+                  if c not in skip and pd.api.types.is_numeric_dtype(inp.panel[c])]
+    panel = weigh(inp.panel, panel_cols)
+    days = float(inp.panel["days"].sum()) if len(inp.panel) else 0.0
+    mean_w = float(panel["days"].sum()) / days if days > 0 else 1.0
+    co = inp.cow_open.copy()
+    for c in ("open_days", "conceptions", "open_dry_offs"):
+        if c in co:
+            co[c] = co[c].astype(float) * mean_w
+    return replace(
+        inp,
+        exposure=weigh(inp.exposure, ["animal_days"]),
+        transitions=weigh(inp.transitions, ["n_moved"]),
+        panel=panel,
+        cow_open=co,
+        preg_milking_days=inp.preg_milking_days * mean_w,
+    ), mean_w
+
+
 def estimate_rates(inp: RateInputs, cfg: EngineConfig | None = None) -> RateSet:
     cfg = cfg or EngineConfig()
     notes: list[str] = []
+    if cfg.rate_half_life_months is not None:
+        inp, _ = recency_weighted(inp, cfg.rate_half_life_months)
+        notes.append(f"recency-weighted rates: half-life {cfg.rate_half_life_months:g} months")
     exp = inp.exposure
     E_all = exp.groupby("state")["animal_days"].sum().reindex(STATES, fill_value=0.0)
     tr = inp.transitions.copy()

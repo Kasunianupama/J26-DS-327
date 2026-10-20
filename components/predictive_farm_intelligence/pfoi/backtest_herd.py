@@ -17,7 +17,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from . import MODEL_VERSION
+from .freeze import version_label
 from .config import EngineConfig
 from .data import (
     DATA_START, HerdSource, SnapshotSource, load_origin_inputs, month_start, prefetch_snapshots,
@@ -83,6 +83,10 @@ def check_block(origins: list[date], score_until: date, block: str) -> None:
     elif block == "test":
         if any(o < TEST_START for o in origins) or score_until > DATA_END:
             raise ValueError("test-block origins start at 2024-01 and targets end at the data end")
+    elif block == "posthoc":
+        # Explicit research replay, separate from the run-once frozen test contract.
+        if any(o < TEST_START or o >= score_until for o in origins) or score_until <= TEST_START:
+            raise ValueError("posthoc origins must start in 2024 and precede the data cutoff")
     else:
         raise ValueError(f"unknown block {block!r}")
 
@@ -236,7 +240,7 @@ def run_backtest(
     errors["grain"] = grain
     errors["error"] = errors["forecast"] - errors["actual"]
     errors = pd.concat([errors, _corrected_with_prior(errors, prior_errors)], ignore_index=True)
-    errors["model_version"] = MODEL_VERSION
+    errors["model_version"] = version_label(cfg)
     errors = errors[["origin", "grain", "horizon", "period_start", "period_end", "series",
                      "model", "forecast", "actual", "error", "model_version"]]
     notes = pd.DataFrame(sorted(note_counts.items()), columns=["note", "n_origins"])
