@@ -33,8 +33,10 @@ def forecasts(doc: dict, grain: str = "month") -> pd.DataFrame:
     if not len(f):
         return f
     f = f[f["grain"] == grain]
-    return f.assign(period=pd.to_datetime(f["target_period"]).dt.date)[
-        ["series", "period", "horizon", "forecast", "lower", "upper"]]
+    cols = ["series", "period", "horizon", "forecast", "lower", "upper"]
+    if "confidence" in f:  # pfoi-1.2.1-dev: gate confidence flag per forecast
+        cols.append("confidence")
+    return f.assign(period=pd.to_datetime(f["target_period"]).dt.date)[cols]
 
 
 def corrections(doc: dict, grain: str = "month") -> pd.DataFrame:
@@ -181,6 +183,11 @@ def plot_versions(docs: list[tuple[str, dict]], origin: date, path, series=SERIE
                 continue
             ax.plot(f["period"], f["forecast"], "--", color=colour, lw=1.8, label=label)
             ax.fill_between(f["period"], f["lower"], f["upper"], color=colour, alpha=0.08, lw=0)
+            if "confidence" in f:
+                low = f[f["confidence"] == "low"]
+                if len(low):
+                    ax.scatter(low["period"], low["forecast"], marker="X", s=46, color=colour,
+                               edgecolor="white", lw=0.6, zorder=7, label=f"{label}: low confidence (gate)")
         ax.axvline(origin, color="#4a6fa5", lw=0.8, ls=":")
         ax.set_title(LABELS.get(sid, sid).format(g=grain), loc="left", fontsize=10)
         ax.grid(alpha=0.25)

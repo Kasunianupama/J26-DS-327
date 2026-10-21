@@ -4123,3 +4123,26 @@ lags one year, so the per-year check may fail on 2022–2023.
   this matches the synthetic warning (overshoot after a drift ends). The PP1 finding stands on the
   diagnosis: accurate in stable years, misses come from regime changes, measured by the error split
   and now by hit rate per forecast year.
+
+### Stability gate G1 (2026-10-22; implemented and tested, real-data run pending)
+
+User decision: keep pfoi-1.2.0-dev for stable conditions; a gate decides at each forecast date
+whether Farm X is unstable, and only then a specialist forecasts (persistence excluded; free,
+locally run models only). G1 tests whether instability is recognisable at all before specialists
+are built. Design, pre-registered go rule, the user's AUC target (about 0.80 within each grain x
+horizon, especially week 13 and months 6 and 12) and synthetic limits: `stability_gate.md`.
+Command: `cli gate-audit`. **Result (user run, 2026-10-22): GO by the pre-registered rule**
+(logistic Brier skill 0.124, within-cell AUC 0.776, skill in 3 of 5 fold years). AUC 0.80 reached
+at day 1–14 and week 1–4 (point estimates), not at week 13 (0.70) or months 6–12 (below 0.65).
+The gate recognises unstable regimes (2022–2023), not timing within a year. Switching to existing
+models does not help long horizons (hindsight ceiling month 12: 0.38). Detail: `stability_gate.md`.
+
+### G2 specialists (2026-10-22; implemented and tested, real-data runs pending)
+
+Track A (`specialist-a`): fast re-level S1 used only where the G1 gate says unstable, day 1 to month 3.
+Track B (`specialist-b`): zero-shot Chronos-2 yield per cow x engine cows for week 13 and months 6–12,
+all periods. Keep rules fixed before the runs: `stability_gate.md` (G2).
+**Results (user runs, 2026-10-22): both DROPPED** by their rules (code kept, off). Track A: +0.010 mean
+(rule +0.02); helps only where switched (2023 Track A mean 0.417 → 0.487). Track B: worse at week 13
+(0.447 vs 0.598), month 6 (0.293 vs 0.552) and month 12 (0.214 vs 0.429); better only in 2022–2023
+(n 29 and 18 long periods). The structural model remains the best long-horizon forecaster tested.

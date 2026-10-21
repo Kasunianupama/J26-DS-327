@@ -931,6 +931,19 @@ class SqlHerdSource:
         frame["date"] = pd.to_datetime(frame["date"]).dt.date
         return frame
 
+    def delpro_daily(self, start: date, end: date) -> pd.DataFrame:
+        """Herd-level DelPro litres per day (identified + unidentified), recorded milking cows,
+        identified share and gap flag: input of the DelPro-only target (``delpro_target``)."""
+        frame = self._q(
+            f"""SELECT date, milk_delpro_total, milking, identified_share, data_gap
+                FROM {self.mi}.day_panel
+                WHERE date >= CAST(:start AS date) AND date < CAST(:end AS date)
+                ORDER BY date""",
+            start=start, end=end,
+        )
+        frame["date"] = pd.to_datetime(frame["date"]).dt.date
+        return frame
+
     # explanation (Step 5) ----------------------------------------------------
     def driver_daily(self, start: date, end: date) -> pd.DataFrame:
         """Herd-level daily drivers for the deviation layer (weather, health, sensors)."""

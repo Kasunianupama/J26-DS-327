@@ -40,6 +40,7 @@ from .herd_engine import project
 from .milk_baseline import monthly_target
 from .lactation_curve import curve_summary
 from .milk_baseline import CURVE_MODES, K_MODES, MilkConfig, MilkHistory, anchor_k, prepare_milk
+from .ml_features import DEFAULT_SERIES as DEFAULT_ML_SERIES
 
 
 def _window(value: str) -> int | None:
@@ -264,6 +265,16 @@ def _cmd_backtest_milk(args: argparse.Namespace) -> int:
     cfg = _engine_cfg(args)
     mcfg = _milk_cfg(args)
     source = _source(args)
+    factory = _source_factory(args)
+    target_tag = ""
+    if getattr(args, "target", "record") == "delpro":
+        from .delpro_target import DelProFactory, DelProTargetSource
+        if args.block != "development":
+            print("--target delpro is a development-block experiment only")
+            return 1
+        source, factory, target_tag = DelProTargetSource(source), DelProFactory(factory), "_tdp"
+        print("DelPro-only target: litres from milk_delpro_total (from 2020-08), verified days only; "
+              "origins before DelPro records are withheld and counted.", file=sys.stderr)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     origin_grains = ("monthly", "weekly") if args.grain == "both" else (args.grain,)
@@ -276,9 +287,11 @@ def _cmd_backtest_milk(args: argparse.Namespace) -> int:
                 print(f"  {og}: origin {i + 1}/{n} ({origin})", file=sys.stderr)
 
         res = run_milk_backtest(source, og, cfg, mcfg, origins=origins, progress=progress,
-                                jobs=jobs, source_factory=_source_factory(args),
+                                jobs=jobs, source_factory=factory,
                                 score_until=score_until, block=args.block, prior_errors=prior)
-        tag = f"{og}_{mcfg.tag()}_{_wtag(args)}{_bt(args)}"
+        if target_tag and len(res.errors):
+            res.errors["target_definition"] = "delpro_only"
+        tag = f"{og}_{mcfg.tag()}_{_wtag(args)}{target_tag}{_bt(args)}"
         res.errors.to_csv(out / f"milk_backtest_errors_{tag}.csv", index=False)
         summarise_milk(res.errors).to_csv(out / f"milk_backtest_summary_{tag}.csv", index=False)
         summarise_milk(res.errors, by_source=True).to_csv(
@@ -366,7 +379,7 @@ def _cmd_hit_rate(args: argparse.Namespace) -> int:
     frames = []
     if args.files:
         for f in args.files:
-            frames.append(pd.read_csv(f).assign(block=Path(f).stem))
+            frames.append(pd.read_csv(f).assign(block=args.block_name or Path(f).stem))
     else:
         blocks = {"both": ("development", "posthoc")}.get(args.block, (args.block,))
         for block in blocks:
@@ -487,6 +500,111 @@ def _cmd_milk_error_split(args: argparse.Namespace) -> int:
         print("n periods:")
         print(pt[f"{key}_n"].fillna(0).astype(int).to_string())
     print(f"\nFile: {out / name}")
+    return 0
+
+
+def _cmd_backtest_ml(args: argparse.Namespace) -> int:
+    """Direct ML forecaster (LightGBM + ridge), rolling origin; herd-level aggregates only."""
+    from .backtest_herd import check_block
+    from .freeze import DATA_END, final_test_origins
+    from .ml_direct import MLConfig, run_ml_backtest, summary
+
+    cfg = EngineConfig(cell_table=args.cell_table, conception_known=args.conception_known,
+                       pregnancy_check_lag_days=args.pregnancy_lag)
+    mcfg = MLConfig(refit_months=args.refit_months, half_life_days=args.half_life_days,
+                    pipeline=args.pipeline == "on")
+    grains = ("monthly", "weekly") if args.grain == "both" else (args.grain,)
+    if args.block == "development":
+        origins = {g: development_origins(g, every=args.every) for g in grains}
+        score_until = TEST_START
+    else:  # 2024-26 replay of a new model: post-hoc, never the run-once final test
+        origins = {g: final_test_origins(g, every=args.every) for g in grains}
+        score_until = DATA_END
+    for g, o in origins.items():
+        check_block(o, score_until, args.block)
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    source = SqlHerdSource.from_env(cell_table=args.cell_table, conception_known=args.conception_known)
+    res = run_ml_backtest(source, cfg, mcfg, origins, score_until, tuple(args.series),
+                          benchmarks=args.benchmarks == "on",
+                          progress=lambda msg: print(f"  {msg}", file=sys.stderr))
+    if not len(res.errors):
+        print("no forecasts were scored")
+        return 1
+    tag = f"{mcfg.tag()}{_bt(args)}"
+    for g in ("monthly", "weekly", "daily"):
+        part = res.errors[res.errors["grain"] == g]
+        if not len(part):
+            continue
+        name = "weekly" if g == "daily" else g  # daily rows go with the weekly origins, as in backtest-milk
+        path = out / f"ml_backtest_errors_{name}_{tag}.csv"
+        part.to_csv(path, mode="a" if g == "daily" and path.exists() else "w",
+                    header=not (g == "daily" and path.exists()), index=False)
+    table = summary(res.errors)
+    table.to_csv(out / f"ml_backtest_summary_{tag}.csv", index=False)
+    res.importance.to_csv(out / f"ml_importance_{tag}.csv", index=False)
+    pd.set_option("display.width", 220)
+    for metric in ("accuracy", "within_10", "skill_vs_persistence", "bias_pct"):
+        t = table.pivot_table(index=["series", "grain", "horizon"], columns="model", values=metric)
+        print(f"\n[{args.block}] {metric} (herd-level aggregates):")
+        print(t.round(3).to_string())
+    print("\nMean |SHAP| by feature group (model scale, ml_lgbm):")
+    print(res.importance.round(4).to_string(index=False))
+    if len(res.notes):
+        print("\nNotes (number of forecasts):")
+        print(res.notes.to_string(index=False))
+    print(f"\nFiles in {out}/ (tag {tag}). Milk hit rate with the quality split:\n"
+          f"  hit-rate --files {out}/ml_backtest_errors_monthly_{tag}.csv "
+          f"{out}/ml_backtest_errors_weekly_{tag}.csv")
+    return 0
+
+
+def _cmd_ml_report(args: argparse.Namespace) -> int:
+    """Re-print the backtest-ml tables from its saved error files (nothing is re-run)."""
+    from .ml_direct import summary
+
+    out = Path(args.out)
+    frames = [pd.read_csv(out / f"ml_backtest_errors_{g}_{args.tag}.csv")
+              for g in ("monthly", "weekly") if (out / f"ml_backtest_errors_{g}_{args.tag}.csv").exists()]
+    if not frames:
+        print(f"no ml_backtest_errors_*_{args.tag}.csv in {out}")
+        return 1
+    errors = pd.concat(frames, ignore_index=True)
+    if args.series:
+        errors = errors[errors["series"].isin(args.series)]
+    table = summary(errors)
+    table.to_csv(out / f"ml_backtest_summary_{args.tag}.csv", index=False)
+    pd.set_option("display.width", 220)
+    pd.set_option("display.float_format", lambda v: f"{v:.3f}")
+    for metric in args.metrics:
+        t = table.pivot_table(index=["series", "grain", "horizon"], columns="model", values=metric)
+        print(f"\n{metric} (herd-level aggregates):")
+        print(t.to_string())
+    return 0
+
+
+def _cmd_ml_charts(args: argparse.Namespace) -> int:
+    """PNG charts: pfoi-1.4.0-dev (ML) vs pfoi-1.2.0-dev vs persistence, matched periods."""
+    from .ml_charts import draw, load
+
+    ml_dir, pfoi_dir = Path(args.ml_dir), Path(args.pfoi_dir)
+    pick = lambda d, pattern: [p for g in ("monthly", "weekly")  # noqa: E731
+                               for p in [d / pattern.format(g=g)] if p.exists()]
+    ml = pick(ml_dir, f"ml_backtest_errors_{{g}}_{args.ml_tag}.csv")
+    milk = pick(pfoi_dir, f"milk_backtest_errors_{{g}}_{args.milk_tag}.csv")
+    herd = pick(pfoi_dir, f"herd_backtest_errors_{{g}}_{args.herd_tag}.csv")
+    for name, files in (("ML", ml), ("1.2.0-dev milk", milk), ("1.2.0-dev herd", herd)):
+        print(f"{name}: {len(files)} file(s)")
+    if not ml or not milk:
+        print("need the backtest-ml files and the pfoi-1.2.0-dev milk files")
+        return 1
+    e = load(ml, milk, herd, args.milk_model, args.herd_model)
+    imp_path = ml_dir / f"ml_importance_{args.ml_tag}.csv"
+    imp = pd.read_csv(imp_path) if imp_path.exists() else None
+    out = Path(args.out)
+    for p in draw(e, out, imp):
+        print(f"wrote {p}")
+    print(f"matched forecasts per model: {len(e) // 3}")
     return 0
 
 
@@ -893,6 +1011,458 @@ def _cmd_drivers(args: argparse.Namespace) -> int:
     print("\n=== development accuracy, herd milk ===")
     print(pd.DataFrame(rows).to_string(index=False, float_format=lambda v: f"{v:.3f}"))
     print(f"\nWrote candidate {new_tag}; nested-cv compares it with the others.")
+    return 0
+
+
+def _cmd_gate_audit(args: argparse.Namespace) -> int:
+    """G1: can unstable positions be recognised at the forecast date? (go/no-go, aggregates)"""
+    from .episodes import add_bands, daily_quality
+    from .freeze import DATA_END
+    from .gate import GateConfig, run_gate_audit
+
+    out = Path(args.out)
+    if args.tag.endswith(NOT_DEVELOPMENT) or (args.alt_tag and args.alt_tag.endswith(NOT_DEVELOPMENT)):
+        print("development tags only (no _test/_posthoc/_oracle): the test block is never used")
+        return 1
+    frames = []
+    for tag in [args.tag] + ([args.alt_tag] if args.alt_tag else []):
+        for g in ("monthly", "weekly"):
+            path = out / f"milk_backtest_errors_{g}_{tag}.csv"
+            if path.exists():
+                frames.append(pd.read_csv(path))
+            else:
+                print(f"NOTE: {path.name} not found", file=sys.stderr)
+    if not frames:
+        print("no error files found")
+        return 1
+    e = pd.concat(frames, ignore_index=True)
+    e = e[(e["series"] == "herd_milk") & (pd.to_datetime(e["origin"]) < pd.Timestamp(TEST_START))]
+    if args.base not in set(e["model"]):
+        print(f"model {args.base!r} not in the files")
+        return 1
+    src = SqlHerdSource.from_env()
+    target = src.target_daily(DATA_START, DATA_END)
+    panel = src.panel_daily(DATA_START, DATA_END)
+    e = add_bands(e, daily_quality(target, panel))
+    daily = (src.driver_daily(DATA_START, DATA_END)
+             .merge(target[["date", "target_source", "data_gap"]], on="date", how="left")
+             .merge(panel[["date", "n_herd"]], on="date", how="left"))
+    daily = daily[pd.to_datetime(daily["date"]) < pd.Timestamp(TEST_START)]
+    cfg = GateConfig(markov=not args.no_markov, threshold=args.threshold)
+    alts = tuple(a for a in args.alts if a in set(e["model"]))
+    audit = run_gate_audit(e, daily, args.base, alternatives=alts, cfg=cfg)
+    name = f"{args.tag}_{args.base}"
+    audit.folds.to_csv(out / f"gate_folds_{name}.csv", index=False)
+    pd.concat([audit.scores_by_year.assign(by="fold_year"), audit.scores_by_cell.assign(by="cell")]) \
+        .to_csv(out / f"gate_scores_{name}.csv", index=False)
+    audit.features.to_csv(out / f"gate_features_{name}.csv", index=False)
+    audit.switch.to_csv(out / f"gate_switch_{name}.csv", index=False)
+    audit.auc_target.to_csv(out / f"gate_auc_target_{name}.csv", index=False)
+    audit.predictions.to_csv(out / f"gate_probs_{name}.csv", index=False)  # herd-level, for G2
+    pd.set_option("display.width", 220)
+    print(f"Gate audit G1, development origins only, trusted periods as labels; base {args.base}, "
+          f"misses = outside +-10 %. Markov feature {'on' if cfg.markov else 'off'}.")
+    print("\n=== folds: labels ended before 1 Jan of the fold year ===")
+    print(audit.folds.to_string(index=False))
+    print("\n=== gate scores by fold year (brier_skill > 0 = better than the horizon's usual miss rate; "
+          "auc = within grain x horizon, 0.5 = no skill) ===")
+    print(audit.scores_by_year.round(3).to_string(index=False))
+    print("\n=== gate scores by grain x horizon (all fold years) ===")
+    print(audit.scores_by_cell.round(3).to_string(index=False))
+    print("\n=== single signals: AUC within grain x horizon (descriptive) ===")
+    print(audit.features.round(3).to_string(index=False))
+    if len(audit.switch):
+        print(f"\n=== switching check (gate lgbm, p > {cfg.threshold}; alternatives {', '.join(alts)}; "
+              "persistence excluded). Ceiling = hindsight best-of, NOT a forecast ===")
+        print(audit.switch.round(3).to_string(index=False))
+    if len(audit.auc_target):
+        print("\n=== AUC target 0.80 (user, 2026-10-22), within each grain x horizon, all fold years; "
+              "interval = 5-95 % bootstrap over origin months; long = week 13, months 6 and 12 ===")
+        print(audit.auc_target.round(3).to_string(index=False))
+    print("\n=== pre-registered G1 rule: brier_skill > 0 and auc >= 0.65 over 2019-2023, "
+          "brier_skill > 0 in >= 3 fold years ===")
+    print(audit.verdict.round(3).to_string(index=False))
+    print(f"\nVerdict: {'GO (build specialists, step G2)' if audit.go else 'NO-GO (instability not recognisable from these signals; switch path)'}")
+    return 0
+
+
+def _milk_files(out: Path, tag: str) -> pd.DataFrame | None:
+    frames = []
+    for g in ("monthly", "weekly"):
+        path = out / f"milk_backtest_errors_{g}_{tag}.csv"
+        if path.exists():
+            frames.append(pd.read_csv(path))
+        else:
+            print(f"NOTE: {path.name} not found", file=sys.stderr)
+    if not frames:
+        return None
+    e = pd.concat(frames, ignore_index=True)
+    return e[(e["series"] == "herd_milk") & (pd.to_datetime(e["origin"]) < pd.Timestamp(TEST_START))]
+
+
+def _write_grain_files(rows: pd.DataFrame, out: Path, tag: str) -> None:
+    file_grain = rows["grain"].where(rows["grain"] == "monthly", "weekly")
+    for g, part in rows.groupby(file_grain):
+        part.to_csv(out / f"milk_backtest_errors_{g}_{tag}.csv", index=False)
+
+
+def _cmd_specialist_a(args: argparse.Namespace) -> int:
+    """G2 Track A: fast re-level specialist S1, used only where the G1 gate says unstable."""
+    from .episodes import add_bands, daily_quality
+    from .freeze import DATA_END
+    from .specialists import (TRACK_A_CELLS, fast_relevel, gated_switch, matched_hits, track_a_rule)
+
+    out = Path(args.out)
+    base_e, raw_e = _milk_files(out, args.tag), _milk_files(out, args.raw_tag)
+    probs_path = out / f"gate_probs_{args.tag}_{args.base}.csv"
+    if base_e is None or raw_e is None or not probs_path.exists():
+        print(f"need the base and raw milk files and {probs_path.name} (run gate-audit first)")
+        return 1
+    src = SqlHerdSource.from_env()
+    q = daily_quality(src.target_daily(DATA_START, DATA_END), src.panel_daily(DATA_START, DATA_END))
+    raw = add_bands(raw_e[raw_e["model"] == "milk_baseline"], q)
+    base = base_e[base_e["model"] == args.base]
+    probs = pd.read_csv(probs_path)
+    s1 = fast_relevel(raw)
+    gated = gated_switch(base, s1, probs, gate=args.gate, threshold=args.threshold)
+    hits = matched_hits({args.base: base, "gated_s1": gated}, keys_from=probs)
+    hits_y = matched_hits({args.base: base, "gated_s1": gated}, keys_from=probs, by_year=True)
+    hits_s1 = matched_hits({args.base: base, "s1_relevel": s1}, keys_from=probs)
+    checks, keep = track_a_rule(hits, hits_y, args.base, "gated_s1")
+    new_tag = f"{args.tag}_gs1"
+    _write_grain_files(pd.concat([base, s1, gated.drop(columns="switched")], ignore_index=True), out, new_tag)
+    pd.set_option("display.width", 220)
+    a_cells = set(TRACK_A_CELLS)
+    is_a = lambda t: [(g, int(h)) in a_cells for g, h in zip(t["grain"], t["horizon"])]  # noqa: E731
+    print(f"G2 Track A: S1 re-level (raw structural x level of its own finished <=14-day errors, last 14 "
+          f"days, trusted), used where the {args.gate} gate p > {args.threshold}; development fold years "
+          "2019-2023, periods the gate scored (trusted).")
+    g2 = gated.copy()
+    g2["year"] = pd.to_datetime(g2["origin"]).dt.year
+    print("\n=== share of forecasts switched to S1, by year (Track A cells) ===")
+    print(g2[is_a(g2)].groupby("year")["switched"].mean().round(3).to_string())
+    print("\n=== share within +-10 %: 1.2.0-dev vs gated S1 (same periods) ===")
+    print(hits.pivot_table(index=["grain", "horizon"], columns="model", values="within_10").round(3)
+          .assign(n=hits.groupby(["grain", "horizon"])["n"].max()).to_string())
+    print("\n=== S1 alone, ungated (descriptive; periods where S1 had a level) ===")
+    print(hits_s1.pivot_table(index=["grain", "horizon"], columns="model", values="within_10").round(3)
+          .assign(n=hits_s1.groupby(["grain", "horizon"])["n"].max()).to_string())
+    hy = hits_y[is_a(hits_y)]
+    print("\n=== by forecast year, mean over Track A cells ===")
+    print(hy.groupby(["year", "model"])["within_10"].mean().unstack().round(3).to_string())
+    print("\n=== pre-registered Track A rule ===")
+    print(checks.round(3).to_string(index=False))
+    print(f"Verdict: {'KEEP gated S1 for Track A cells' if keep else 'DROP (record as tested; code kept, off)'}")
+    print(f"Wrote milk_backtest_errors_{{monthly,weekly}}_{new_tag}.csv")
+    return 0
+
+
+def _specialist_b_tuned(args, base: pd.DataFrame, herd: pd.DataFrame, daily: pd.DataFrame) -> int:
+    from .episodes import VERIFIED_BANDS
+    from .specialists import (DEV_END, TRACK_B_CELLS, chronos2_pipeline, matched_hits, predictor_from,
+                              track_b_rule, weekly_series)
+    from .tuning import tuned_track_b
+
+    pipe = chronos2_pipeline(args.model, args.device)
+    predictors = {"median": predictor_from(pipe, "median"), "mean": predictor_from(pipe, "mean")}
+    trusted = base[base["band"].isin(VERIFIED_BANDS)]
+    weekly = weekly_series(daily[pd.to_datetime(daily["date"]) < pd.Timestamp(DEV_END)])
+    rows, choice, hind = tuned_track_b(trusted, herd, weekly, predictors)
+    out = Path(args.out)
+    choice.to_csv(out / f"tune_track_b_choice_{args.tag}.csv", index=False)
+    hind.to_csv(out / f"tune_track_b_hindsight_{args.tag}.csv", index=False)
+    pd.set_option("display.width", 220)
+    print("Nested tuning of Chronos-2 settings (context source current/all, 520/260/104 weeks, median/mean), "
+          "chosen per fold year 2019-2023 on long-horizon forecasts dated in the last 20 % of the inner span.")
+    print("\n=== chosen setting per fold year (validation = mean share within +-10 % over long cells) ===")
+    print(choice.round(3).to_string(index=False))
+    print("\n=== each fixed setting over 2019-2023 (hindsight, NOT a result; shows tuning optimism) ===")
+    print(hind.round(3).to_string(index=False))
+    if not len(rows):
+        print("no tuned forecasts")
+        return 0
+    pair = {args.base: trusted, "chronos2_tuned": rows}
+    hits, hits_y = matched_hits(pair), matched_hits(pair, by_year=True)
+    checks, keep = track_b_rule(hits, hits_y, args.base, "chronos2_tuned")
+    print("\n=== share within +-10 %, 1.2.0-dev vs tuned Chronos-2 (fold years 2019-2023, matched) ===")
+    print(hits.pivot_table(index=["grain", "horizon"], columns="model", values="within_10").round(3)
+          .assign(n=hits.groupby(["grain", "horizon"])["n"].max()).to_string())
+    long = set(TRACK_B_CELLS)
+    hy = hits_y[[(g, int(h)) in long for g, h in zip(hits_y["grain"], hits_y["horizon"])]]
+    print("\n=== by forecast year, mean over week 13, month 6, month 12 ===")
+    print(hy.groupby(["year", "model"])["within_10"].mean().unstack().round(3).to_string())
+    print("\n=== pre-registered Track B rule (unchanged; fold years 2019-2023) ===")
+    print(checks.round(3).to_string(index=False))
+    print(f"Verdict: {'KEEP for long horizons' if keep else 'DROP (record as tested; code kept, off)'}")
+    return 0
+
+
+def _cmd_specialist_b(args: argparse.Namespace) -> int:
+    """G2 Track B: zero-shot Chronos-2 yield per cow x engine milking cows, all periods."""
+    from .episodes import add_bands, daily_quality
+    from .freeze import DATA_END
+    from .specialists import TRACK_B_CELLS, chronos2_predictor, run_track_b
+
+    out = Path(args.out)
+    base_e = _milk_files(out, args.tag)
+    herd_paths = [out / f"herd_backtest_errors_{g}_{args.herd_tag}.csv" for g in ("monthly", "weekly")]
+    missing = [p.name for p in herd_paths if not p.exists()]
+    if base_e is None or missing:
+        print(f"need the base milk files and {', '.join(missing) or 'herd files'}")
+        return 1
+    herd = pd.concat([pd.read_csv(p) for p in herd_paths], ignore_index=True)
+    src = SqlHerdSource.from_env()
+    target = src.target_daily(DATA_START, DATA_END)
+    panel = src.panel_daily(DATA_START, DATA_END)
+    base = add_bands(base_e[base_e["model"] == args.base], daily_quality(target, panel))
+    daily = target.merge(panel[["date", "milking"]], on="date", how="left")
+    print(f"Loading {args.model} locally (weights from Hugging Face on first use; no farm data is sent).")
+    if args.tune:
+        return _specialist_b_tuned(args, base, herd, daily)
+    predictor = chronos2_predictor(args.model, args.device)
+    res = run_track_b(base, herd, daily, predictor, base_model=args.base)
+    new_tag = f"{args.tag}_chronos2"
+    if len(res.rows):
+        _write_grain_files(pd.concat([base, res.rows], ignore_index=True), out, new_tag)
+    pd.set_option("display.width", 220)
+    print("G2 Track B: zero-shot Chronos-2 on weekly litres per recorded milking cow (trusted days, current "
+          "source, weeks ended before the forecast date) x engine-projected milking cows; development "
+          "origins 2017-2023, trusted periods matched with 1.2.0-dev.")
+    print("\n=== coverage: trusted base periods and forecasts issued ===")
+    print(res.coverage.to_string(index=False))
+    if len(res.hits):
+        print("\n=== share within +-10 % (each candidate matched with 1.2.0-dev on its own periods) ===")
+        print(res.hits.pivot_table(index=["grain", "horizon"], columns="model", values="within_10").round(3)
+              .assign(n=res.hits.groupby(["grain", "horizon"])["n"].max()).to_string())
+        long = set(TRACK_B_CELLS)
+        hy = res.hits_y[[(g, int(h)) in long for g, h in zip(res.hits_y["grain"], res.hits_y["horizon"])]]
+        print("\n=== by forecast year, mean over week 13, month 6, month 12 ===")
+        print(hy.groupby(["year", "model"])["within_10"].mean().unstack().round(3).to_string())
+        print("n periods:")
+        print(hy.groupby(["year", "model"])["n"].sum().unstack().fillna(0).astype(int).to_string())
+    print("\n=== pre-registered Track B rule (chronos2_ypc_x_engine vs 1.2.0-dev) ===")
+    print(res.checks.round(3).to_string(index=False) if len(res.checks) else "no forecasts to score")
+    print(f"Verdict: {'KEEP for long horizons' if res.keep else 'DROP (record as tested; code kept, off)'}")
+    return 0
+
+
+def _gate_inputs(args: argparse.Namespace):
+    """Development milk errors (base + raw tags) with quality bands, and herd-level daily inputs."""
+    from .episodes import add_bands, daily_quality
+    from .freeze import DATA_END
+
+    out = Path(args.out)
+    frames = [f for f in (_milk_files(out, args.tag), _milk_files(out, args.raw_tag)) if f is not None]
+    if not frames:
+        return None, None
+    e = pd.concat(frames, ignore_index=True)
+    src = SqlHerdSource.from_env()
+    target = src.target_daily(DATA_START, DATA_END)
+    panel = src.panel_daily(DATA_START, DATA_END)
+    e = add_bands(e, daily_quality(target, panel))
+    daily = (src.driver_daily(DATA_START, DATA_END)
+             .merge(target[["date", "target_source", "data_gap"]], on="date", how="left")
+             .merge(panel[["date", "n_herd"]], on="date", how="left"))
+    return e, daily[pd.to_datetime(daily["date"]) < pd.Timestamp(TEST_START)]
+
+
+def _cmd_tune_gate(args: argparse.Namespace) -> int:
+    """Nested tuning of the gate and of the Track A switch (S1 window, gate threshold)."""
+    from .gate import GateConfig, GateFeatures, auc_target_table, label_rows
+    from .specialists import TRACK_A_CELLS, matched_hits, track_a_rule
+    from .tuning import tuned_gate, tuned_gate_scores, tuned_track_a
+
+    out = Path(args.out)
+    e, daily = _gate_inputs(args)
+    if e is None or args.base not in set(e["model"]):
+        print("no development milk files with the base model")
+        return 1
+    labels = label_rows(e, args.base)
+    X = GateFeatures(daily, labels, GateConfig(markov=not args.no_markov)).matrix(labels)
+    tg = tuned_gate(labels, X)
+    g1_path = out / f"gate_probs_{args.tag}_{args.base}.csv"
+    g1 = pd.read_csv(g1_path) if g1_path.exists() else None
+    scores = tuned_gate_scores(tg.predictions, g1)
+    auc_t = auc_target_table(tg.predictions, gates=("tuned",))
+    raw = e[e["model"] == "milk_baseline"]
+    rows, choice, grid = tuned_track_a(raw, tg)
+    base_rows = tg.predictions.assign(model=args.base)
+    tuned_rows = rows.assign(model="gated_s1_tuned")
+    hits = matched_hits({args.base: base_rows, "gated_s1_tuned": tuned_rows})
+    hits_y = matched_hits({args.base: base_rows, "gated_s1_tuned": tuned_rows}, by_year=True)
+    checks, keep = track_a_rule(hits, hits_y, args.base, "gated_s1_tuned")
+    name = f"{args.tag}_{args.base}"
+    tg.folds.to_csv(out / f"tune_gate_folds_{name}.csv", index=False)
+    tg.grid_scores.to_csv(out / f"tune_gate_grid_{name}.csv", index=False)
+    scores.to_csv(out / f"tune_gate_scores_{name}.csv", index=False)
+    choice.to_csv(out / f"tune_track_a_choice_{name}.csv", index=False)
+    grid.to_csv(out / f"tune_track_a_grid_{name}.csv", index=False)
+    tg.predictions.to_csv(out / f"gate_probs_tuned_{name}.csv", index=False)
+    pd.set_option("display.width", 220)
+    print("Nested tuning (fold years 2019-2023): each year's settings chosen on an inner chronological "
+          "80:20 split of labels ended by 1 Jan, embargo = grain's longest horizon (14 d / 91 d / 365 d); "
+          "the year itself is never used for selection.")
+    print("\n=== gate: chosen setting per fold year (validation Brier, lower is better) ===")
+    print(tg.folds.round(4).to_string(index=False))
+    print("\n=== gate: outer scores, tuned vs G1 fixed gates (same forecasts) ===")
+    print(scores.round(3).to_string(index=False))
+    print("\n=== tuned gate: AUC target 0.80 per grain x horizon ===")
+    print(auc_t.round(3).to_string(index=False))
+    print("\n=== Track A: S1 window and gate threshold chosen per fold year ===")
+    print(choice.round(3).to_string(index=False))
+    cells = set(TRACK_A_CELLS)
+    print("\n=== Track A: share within +-10 %, 1.2.0-dev vs tuned gated S1 ===")
+    ha = hits[[(g, int(h)) in cells for g, h in zip(hits["grain"], hits["horizon"])]]
+    print(ha.pivot_table(index=["grain", "horizon"], columns="model", values="within_10").round(3)
+          .assign(n=ha.groupby(["grain", "horizon"])["n"].max()).to_string())
+    hy = hits_y[[(g, int(h)) in cells for g, h in zip(hits_y["grain"], hits_y["horizon"])]]
+    print("\n=== Track A by forecast year (mean over Track A cells) ===")
+    print(hy.groupby(["year", "model"])["within_10"].mean().unstack().round(3).to_string())
+    print("\n=== pre-registered Track A rule (unchanged) ===")
+    print(checks.round(3).to_string(index=False))
+    print(f"Verdict: {'KEEP tuned gated S1 for Track A cells' if keep else 'DROP (record as tested; code kept, off)'}")
+    return 0
+
+
+def _cmd_compare_target(args: argparse.Namespace) -> int:
+    """Recorded target (shipment, then DelPro) vs DelPro-only target, same model and origins."""
+    from .delpro_target import DELPRO_START, delpro_target, target_rule
+    from .episodes import VERIFIED_BANDS, add_bands, daily_quality
+    from .freeze import DATA_END
+    from .specialists import matched_hits
+
+    out = Path(args.out)
+    rec, dp = _milk_files(out, args.tag_record), _milk_files(out, args.tag_delpro)
+    if rec is None or dp is None:
+        print("need both milk error file sets (run backtest-milk --target delpro and adapt first)")
+        return 1
+    start = pd.Timestamp(args.start)
+    pick = lambda e: e[(e["model"] == args.model) & (pd.to_datetime(e["origin"]) >= start)]  # noqa: E731
+    rec, dp = pick(rec), pick(dp)
+    src = SqlHerdSource.from_env()
+    panel = src.panel_daily(DATA_START, DATA_END)
+    rec = add_bands(rec, daily_quality(src.target_daily(DATA_START, DATA_END), panel))
+    dp = add_bands(dp, daily_quality(delpro_target(src.delpro_daily(DATA_START, DATA_END)), panel))
+    rec, dp = rec[rec["band"].isin(VERIFIED_BANDS)], dp[dp["band"].isin(VERIFIED_BANDS)]
+    own = pd.concat([matched_hits({"record_target": rec}), matched_hits({"delpro_target": dp})], ignore_index=True)
+    pair = {"record_target": rec, "delpro_target": dp}
+    hits, hits_y = matched_hits(pair), matched_hits(pair, by_year=True)
+    pd.set_option("display.width", 220)
+    if not len(hits):
+        print(f"no periods trusted under both targets (record {len(rec)}, DelPro {len(dp)} trusted rows)")
+        return 0
+    checks, keep = target_rule(hits, hits_y, "record_target", "delpro_target")
+    print(f"Model {args.model}, development origins from {start.date()} (DelPro starts {DELPRO_START}); "
+          "each target's own trusted periods. Different measures: this compares how well each can be "
+          "forecast, not two forecasts of one quantity.")
+    print("\n=== each target on its own trusted periods: share within +-10 % ===")
+    print(own.pivot_table(index=["grain", "horizon"], columns="model", values=["within_10", "n"]).round(3).to_string())
+    print("\n=== periods trusted under both targets ===")
+    print(hits.pivot_table(index=["grain", "horizon"], columns="model", values="within_10").round(3)
+          .assign(n=hits.groupby(["grain", "horizon"])["n"].max()).to_string())
+    print("\n=== by forecast year (periods trusted under both), mean over week 13, month 6, month 12 ===")
+    long = hits_y[[(g, int(h)) in {("weekly", 13), ("monthly", 6), ("monthly", 12)}
+                   for g, h in zip(hits_y["grain"], hits_y["horizon"])]]
+    print(long.groupby(["year", "model"])["within_10"].mean().unstack().round(3).to_string())
+    print("n periods:")
+    print(long.groupby(["year", "model"])["n"].sum().unstack().fillna(0).astype(int).to_string())
+    print("\n=== pre-registered rule (DelPro-only target vs recorded target) ===")
+    print(checks.round(3).to_string(index=False))
+    print(f"Verdict: {'DelPro-only target is better forecastable at long horizons' if keep else 'not shown better (record as tested)'}")
+    return 0
+
+
+def _cmd_gate_outlook(args: argparse.Namespace) -> int:
+    """pfoi-1.2.1-dev page documents from built 1.2.0-dev documents (files only, for compare-runs)."""
+    from .episodes import add_bands, daily_quality
+    from .freeze import DATA_END
+    from .gate_outlook import run
+
+    out = Path(args.out)
+    frames = []
+    for suffix in ("", "_posthoc"):
+        for g in ("monthly", "weekly"):
+            path = out / f"milk_backtest_errors_{g}_{args.tag}{suffix}.csv"
+            if path.exists():
+                frames.append(pd.read_csv(path))
+    if not frames:
+        print(f"no milk error files for {args.tag}")
+        return 1
+    e = pd.concat(frames, ignore_index=True)
+    e = e[(e["series"] == "herd_milk") & (e["model"] == "milk_baseline_adaptive")]
+    src = SqlHerdSource.from_env()
+    target = src.target_daily(DATA_START, DATA_END)
+    panel = src.panel_daily(DATA_START, DATA_END)
+    e = add_bands(e, daily_quality(target, panel))
+    daily = (src.driver_daily(DATA_START, DATA_END)
+             .merge(target[["date", "target_source", "data_gap"]], on="date", how="left")
+             .merge(panel[["date", "n_herd"]], on="date", how="left"))
+    print("Forecast dates from 2024 use 2024-26 outcomes that ended before them (post-test development, "
+          "descriptive only).", file=sys.stderr)
+    rc = run(out, args.source, e, daily, args.origins, markov=not args.no_markov)
+    if rc == 0 and args.write:
+        import json
+
+        from sqlalchemy import create_engine
+
+        from .config import DatabaseSettings
+        from .gate_intervals import VERSION
+        from .outlook import write_run_document
+
+        engine = create_engine(DatabaseSettings.from_env().url)
+        files = sorted((out / "outlook" / VERSION).glob("run_*.json"))
+        if args.origins:
+            wanted = {date.fromisoformat(o).strftime("%Y%m") for o in args.origins}
+            files = [f for f in files if f.stem.split("_")[1] in wanted]
+        for f in files:
+            write_run_document(engine, json.loads(f.read_text()))
+        print(f"written to c1_output.run_document: {len(files)} {VERSION} documents (the page shows the newest "
+              "build per forecast date)")
+    return rc
+
+
+def _cmd_gate_intervals(args: argparse.Namespace) -> int:
+    """pfoi-1.2.1-dev on the development backtest: ranges by confidence, pre-registered rule."""
+    from .episodes import VERIFIED_BANDS, add_bands, daily_quality
+    from .freeze import DATA_END
+    from .gate_intervals import build_121, interval_rule, interval_scores
+
+    out = Path(args.out)
+    milk = _milk_files(out, args.tag)
+    probs_path = out / f"gate_probs_{args.tag}_{args.base}.csv"
+    if milk is None or not probs_path.exists():
+        print(f"need the milk files and {probs_path.name} (run gate-audit first)")
+        return 1
+    src = SqlHerdSource.from_env()
+    milk = add_bands(milk[milk["model"] == args.base],
+                     daily_quality(src.target_daily(DATA_START, DATA_END), src.panel_daily(DATA_START, DATA_END)))
+    milk = milk[milk["band"].isin(VERIFIED_BANDS)]
+    herd_paths = [out / f"herd_backtest_errors_{g}_{args.herd_tag}.csv" for g in ("monthly", "weekly")]
+    herd = pd.concat([pd.read_csv(p) for p in herd_paths if p.exists()], ignore_index=True) \
+        if any(p.exists() for p in herd_paths) else None
+    if herd is not None:
+        herd = herd[(herd["model"] == "herd_engine") & herd["series"].isin(["milking", "n_herd"])
+                    & (pd.to_datetime(herd["origin"]) < pd.Timestamp(TEST_START))]
+    rows = build_121(milk, pd.read_csv(probs_path), herd)
+    rows.drop(columns=[c for c in ("band",) if c in rows]).to_csv(
+        out / f"milk_backtest_errors_gate121_{args.tag}.csv", index=False)
+    m = rows[rows["series"] == "herd_milk"]
+    s_milk = interval_scores(m, by=("confidence",))
+    s_grain = interval_scores(m, by=("grain", "confidence"))
+    s_herd = interval_scores(rows[rows["series"] != "herd_milk"], by=("series", "confidence"))
+    yr = m.assign(year=pd.to_datetime(m["origin"]).dt.year)
+    s_year = interval_scores(yr, by=("year",))
+    checks, keep = interval_rule(s_milk)
+    pd.set_option("display.width", 220)
+    print("pfoi-1.2.1-dev = 1.2.0-dev forecasts (unchanged) + gate confidence + gate-conditional ranges; "
+          "development forecast years 2020-2023 (ranges need earlier flagged errors), trusted milk periods.")
+    for title, t in (("milk by confidence", s_milk), ("milk by grain and confidence", s_grain),
+                     ("milk by forecast year", s_year), ("herd stocks (reported, not ruled on)", s_herd)):
+        print(f"\n=== {title}: coverage and mean relative width, gate-conditional vs pooled ===")
+        print(t.round(3).to_string(index=False))
+    print("\n=== pre-registered 1.2.1-dev rule (90 % range) ===")
+    print(checks.round(3).to_string(index=False))
+    print(f"Verdict: {'KEEP pfoi-1.2.1-dev ranges and flag' if keep else 'DROP (record as tested; code kept, off)'}")
     return 0
 
 
@@ -1835,6 +2405,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--every", type=int, default=1)
     jobs_opt(p)
     milk_opts(p, blocks=("development", "test", "posthoc"))
+    p.add_argument("--target", default="record", choices=["record", "delpro"],
+                   help="delpro = score and calibrate on DelPro litres only (from 2020-08; tag suffix _tdp)")
     p.set_defaults(func=_cmd_backtest_milk)
 
     p = sub.add_parser("neural", help="GRU milk model on the two-stage split (train 2015-17, test "
@@ -1861,6 +2433,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="milk backtest tag (default: the pfoi-1.2.0-dev development errors)")
     p.add_argument("--block", default="development", choices=["development", "posthoc", "both"])
     p.add_argument("--files", nargs="*", default=None, help="explicit error files instead of --tag")
+    p.add_argument("--block-name", default=None,
+                   help="one block name for every --files file (e.g. development), so models from "
+                        "different files are compared and --keep-rule works across them")
     p.add_argument("--models", nargs="*", default=None,
                    help="models to score (default: all in the files, e.g. milk_baseline_adaptive persistence)")
     p.add_argument("--quality", default="on", choices=["on", "off"],
@@ -1880,6 +2455,44 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--quality", default="on", choices=["on", "off"])
     p.add_argument("--out", default="logs/pfoi")
     p.set_defaults(func=_cmd_milk_error_split)
+
+    p = sub.add_parser("backtest-ml", help="direct ML forecaster (LightGBM + ridge, pooled horizons), "
+                                           "rolling origin, development or post-hoc 2024-26")
+    p.add_argument("--grain", default="both", choices=["monthly", "weekly", "both"],
+                   help="origin grain; weekly origins also score daily horizons")
+    p.add_argument("--block", default="development", choices=["development", "posthoc"])
+    p.add_argument("--every", type=int, default=1)
+    p.add_argument("--series", nargs="+", default=list(DEFAULT_ML_SERIES))
+    p.add_argument("--refit-months", type=int, default=3)
+    p.add_argument("--half-life-days", type=float, default=730.0)
+    p.add_argument("--pipeline", default="on", choices=["on", "off"],
+                   help="off = no composition / pregnancy-pipeline features (ablation, tag _nopipe)")
+    p.add_argument("--benchmarks", default="on", choices=["on", "off"])
+    p.add_argument("--cell-table", default="day_cell_known", choices=["day_cell", "day_cell_known"])
+    p.add_argument("--conception-known", default="recorded", choices=["lag", "recorded"])
+    p.add_argument("--pregnancy-lag", type=int, default=90)
+    p.add_argument("--out", default="logs/pfoi/ml")
+    p.set_defaults(func=_cmd_backtest_ml)
+
+    p = sub.add_parser("ml-report", help="re-print backtest-ml tables from its saved error files")
+    p.add_argument("--tag", default="ml_r3_hl730")
+    p.add_argument("--series", nargs="*", default=None, help="e.g. herd_milk milking calvings")
+    p.add_argument("--metrics", nargs="+", default=["accuracy", "within_10", "skill_vs_persistence", "bias_pct"],
+                   choices=["n", "accuracy", "within_10", "skill_vs_persistence", "bias_pct"])
+    p.add_argument("--out", default="logs/pfoi/ml")
+    p.set_defaults(func=_cmd_ml_report)
+
+    p = sub.add_parser("ml-charts", help="PNG charts: pfoi-1.4.0-dev (ML) vs pfoi-1.2.0-dev vs persistence")
+    p.add_argument("--ml-tag", default="ml_r3_hl730")
+    p.add_argument("--milk-tag", default="herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_adhq0.1t365z3",
+                   help="pfoi-1.2.0-dev milk backtest tag")
+    p.add_argument("--herd-tag", default="w24_ck_kn_rk_lag90_hl6", help="pfoi-1.2.0-dev herd backtest tag")
+    p.add_argument("--milk-model", default="milk_baseline_adaptive")
+    p.add_argument("--herd-model", default="herd_engine")
+    p.add_argument("--ml-dir", default="logs/pfoi/ml")
+    p.add_argument("--pfoi-dir", default="logs/pfoi")
+    p.add_argument("--out", default="logs/pfoi/compare/pfoi_1_4")
+    p.set_defaults(func=_cmd_ml_charts)
 
     p = sub.add_parser("check-snapshots", help="batched vs per-origin snapshot queries (counts only)")
     p.add_argument("--grain", default="weekly", choices=["monthly", "weekly"])
@@ -1944,6 +2557,79 @@ def main(argv: list[str] | None = None) -> int:
                    help="ANALYSIS ONLY: add the actual THI of each target period")
     p.add_argument("--out", default="logs/pfoi")
     p.set_defaults(func=_cmd_drivers)
+
+    p = sub.add_parser("gate-audit", help="G1: are 1.2.0-dev's later misses recognisable at the forecast "
+                                          "date? forward-chained gates, aggregates only")
+    p.add_argument("--tag", default="herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_adhq0.1t365z3",
+                   help="development milk backtest tag holding the base model (default: pfoi-1.2.0-dev)")
+    p.add_argument("--alt-tag", default="herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6",
+                   help="extra tag for alternatives (default: the raw structural milk_baseline)")
+    p.add_argument("--base", default="milk_baseline_adaptive")
+    p.add_argument("--alts", nargs="*", default=["milk_baseline", "ets", "sarima", "seasonal_naive"],
+                   help="existing alternatives for the switching check (persistence is never allowed)")
+    p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--no-markov", action="store_true", help="skip the Markov-switching feature (faster)")
+    p.add_argument("--out", default="logs/pfoi")
+    p.set_defaults(func=_cmd_gate_audit)
+
+    p = sub.add_parser("specialist-a", help="G2 Track A: S1 re-level used where the G1 gate says unstable "
+                                            "(day 1 to month 3), pre-registered keep rule")
+    p.add_argument("--tag", default="herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_adhq0.1t365z3")
+    p.add_argument("--raw-tag", default="herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6")
+    p.add_argument("--base", default="milk_baseline_adaptive")
+    p.add_argument("--gate", default="logistic", choices=["logistic", "lgbm"])
+    p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--out", default="logs/pfoi")
+    p.set_defaults(func=_cmd_specialist_a)
+
+    p = sub.add_parser("specialist-b", help="G2 Track B: zero-shot Chronos-2 yield per cow x engine cows "
+                                            "(week 13, months 6-12), pre-registered keep rule")
+    p.add_argument("--tag", default="herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_adhq0.1t365z3")
+    p.add_argument("--herd-tag", default="w24_ck_kn_rk_lag90_hl6")
+    p.add_argument("--base", default="milk_baseline_adaptive")
+    p.add_argument("--model", default="amazon/chronos-2")
+    p.add_argument("--device", default="cpu")
+    p.add_argument("--tune", action="store_true",
+                   help="nested year-by-year choice of context source, length and point forecast")
+    p.add_argument("--out", default="logs/pfoi")
+    p.set_defaults(func=_cmd_specialist_b)
+
+    p = sub.add_parser("tune-gate", help="nested tuning of the gate (logistic / LightGBM settings) and the "
+                                         "Track A switch (S1 window, threshold); fold years 2019-2023")
+    p.add_argument("--tag", default="herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_adhq0.1t365z3")
+    p.add_argument("--raw-tag", default="herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6")
+    p.add_argument("--base", default="milk_baseline_adaptive")
+    p.add_argument("--no-markov", action="store_true")
+    p.add_argument("--out", default="logs/pfoi")
+    p.set_defaults(func=_cmd_tune_gate)
+
+    p = sub.add_parser("compare-target", help="recorded milk target vs DelPro-only target (same model, "
+                                              "origins from 2020-08), pre-registered rule")
+    p.add_argument("--tag-record", default="herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_adhq0.1t365z3")
+    p.add_argument("--tag-delpro", default="herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_tdp_adhq0.1t365z3")
+    p.add_argument("--model", default="milk_baseline_adaptive")
+    p.add_argument("--start", default="2020-08-01")
+    p.add_argument("--out", default="logs/pfoi")
+    p.set_defaults(func=_cmd_compare_target)
+
+    p = sub.add_parser("gate-outlook", help="pfoi-1.2.1-dev documents: 1.2.0-dev forecasts with gate confidence "
+                                            "and gate-conditional milk ranges (files only, for compare-runs)")
+    p.add_argument("--source", default="pfoi-1.2.0-dev", help="built version to copy (its folder in outlook/)")
+    p.add_argument("--tag", default="herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_adhq0.1t365z3")
+    p.add_argument("--origins", nargs="*", default=None, help="forecast dates (default: every built one)")
+    p.add_argument("--no-markov", action="store_true")
+    p.add_argument("--write", action="store_true",
+                   help="also write the documents to c1_output.run_document (role farmx_model), for the page")
+    p.add_argument("--out", default="logs/pfoi")
+    p.set_defaults(func=_cmd_gate_outlook)
+
+    p = sub.add_parser("gate-intervals", help="pfoi-1.2.1-dev backtest check: gate-conditional vs pooled ranges, "
+                                              "coverage and width by confidence, pre-registered rule")
+    p.add_argument("--tag", default="herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_adhq0.1t365z3")
+    p.add_argument("--base", default="milk_baseline_adaptive")
+    p.add_argument("--herd-tag", default="w24_ck_kn_rk_lag90_hl6")
+    p.add_argument("--out", default="logs/pfoi")
+    p.set_defaults(func=_cmd_gate_intervals)
 
     p = sub.add_parser("thi-backtest", help="experimental THI forecasts v1/v2 vs persistence and "
                                             "climatology (weather only, aggregates)")
