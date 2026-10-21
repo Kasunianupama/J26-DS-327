@@ -17,16 +17,36 @@ type CowState = {
 type CowReference = { animal_ref: string; observed_date: string };
 type ScenarioEstimate = {
   scenario_id: string; category: string; name: string; feature: string; scenario_status: string;
+  model_support_status: string;
   baseline_value: number | null; proposed_value: number; unit: string;
   baseline_predicted_milk_yield_l_day: number | null; counterfactual_predicted_milk_yield_l_day: number | null;
   absolute_yield_change_l_day: number | null; percentage_yield_change: number | null;
   model_version: string | null; assumptions: string[]; data_limitations: string[]; warnings: string[];
 };
+type CombinedScenarioEstimate = {
+  scenario_id: string; name: string; scenario_status: string; model_support_status: string;
+  baseline_thi_mean: number | null; proposed_thi_mean: number;
+  baseline_milkings_per_day: number | null; proposed_milkings_per_day: number;
+  baseline_predicted_milk_yield_l_day: number | null; counterfactual_predicted_milk_yield_l_day: number | null;
+  absolute_yield_change_l_day: number | null; percentage_yield_change: number | null;
+  model_version: string | null;
+  operational_feasibility_validated: boolean; assumptions: string[]; warnings: string[]; data_limitations: string[];
+};
+type RankedAlternative = {
+  rank: number; scenario_id: string; alternative_type: 'individual' | 'combined'; name: string;
+  scenario_status: string; predicted_milk_yield_l_day: number;
+  baseline_predicted_milk_yield_l_day: number; absolute_yield_change_l_day: number;
+  percentage_yield_change: number | null; model_version: string | null; model_support_status: string;
+  operational_feasibility_validated: boolean;
+};
+type ScenarioRecommendation = RankedAlternative & { explanation: string; limitations: string[] };
 type SimulationResponse = {
   contract_version: string; animal_ref: string; observed_date: string | null; observed_milk_yield_l_day: number | null;
   cow_state: CowState; prediction_horizon_days: number; baseline_status: string;
   baseline_predicted_milk_yield_l_day: number | null; model_version: string | null;
-  scenarios: ScenarioEstimate[]; warnings: string[];
+  scenarios: ScenarioEstimate[]; combined_scenario: CombinedScenarioEstimate | null;
+  ranked_alternatives: RankedAlternative[]; recommendation: ScenarioRecommendation | null;
+  recommendation_explanation: string; warnings: string[];
 };
 
 const featureFor: Record<Category, Feature> = {
@@ -52,6 +72,9 @@ export default function InterventionSimulatorPage() {
   const [animalOptions, setAnimalOptions] = useState<CowReference[]>([]);
   const [state, setState] = useState<CowState | null>(null);
   const [scenarios, setScenarios] = useState<ScenarioInput[]>([emptyScenario(1)]);
+  const [combinedEnabled, setCombinedEnabled] = useState(false);
+  const [combinedThi, setCombinedThi] = useState('');
+  const [combinedMilkings, setCombinedMilkings] = useState('');
   const [result, setResult] = useState<SimulationResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -98,6 +121,11 @@ export default function InterventionSimulatorPage() {
           ? 'Hypothetical THI exposure change; not a cooling intervention or verified causal effect.'
           : 'Hypothetical milking frequency change; operational feasibility is not validated, and no causal effect is asserted.',
       })),
+      combined_scenario: combinedEnabled ? {
+        scenario_id: 'combined-thi-milkings',
+        thi_mean: Number(combinedThi),
+        milkings_per_day: Number(combinedMilkings),
+      } : null,
     };
     try {
       const response = await api.post<SimulationResponse>('/interventions/simulate-counterfactual', requestBody);
@@ -106,7 +134,11 @@ export default function InterventionSimulatorPage() {
     finally { setBusy(false); }
   }
 
-  const hasValidInputs = scenarios.length > 0 && scenarios.length <= 8 && scenarios.every((s) => s.proposed_value.trim() !== '' && Number.isFinite(Number(s.proposed_value)));
+  const hasValidInputs = (scenarios.length > 0 || combinedEnabled) && scenarios.length <= 8
+    && scenarios.every((s) => s.proposed_value.trim() !== '' && Number.isFinite(Number(s.proposed_value))
+      && (s.category !== 'management' || Number(s.proposed_value) > 0))
+    && (!combinedEnabled || (combinedThi.trim() !== '' && Number.isFinite(Number(combinedThi))
+      && combinedMilkings.trim() !== '' && Number.isFinite(Number(combinedMilkings)) && Number(combinedMilkings) > 0));
 
   return (
     <main className="didt-live">
@@ -137,16 +169,27 @@ export default function InterventionSimulatorPage() {
       </section>
 
       {state && <section className="didt-live__card">
-        <div className="didt-live__card-head"><div><h2>What-if scenarios</h2><p>Submit up to eight independent alternatives in one request.</p></div>
+        <div className="didt-live__card-head"><div><h2>What-if scenarios</h2><p>Submit up to eight independent alternatives and one optional combined alternative. Each is compared with the same baseline.</p></div>
           <button className="didt-live__secondary" type="button" onClick={() => setScenarios((rows) => rows.length < 8 ? [...rows, { ...emptyScenario(0), scenario_id: nextScenarioId(rows) }] : rows)} disabled={scenarios.length >= 8}>Add scenario</button></div>
         {scenarios.map((scenario, index) => <div className="didt-live__scenario" key={scenario.scenario_id}>
           <label>Input category<select value={scenario.category} onChange={(e) => updateScenario(index, { category: e.target.value as Category })}>
             <option value="heat">THI exposure input</option><option value="management">Milking frequency input</option>
           </select></label>
-          <label>Proposed {featureName[scenario.feature]}<input type="number" step="any" value={scenario.proposed_value} onChange={(e) => updateScenario(index, { proposed_value: e.target.value })} placeholder={`Current: ${show(state[scenario.feature as keyof CowState] as number | null)}`} /></label>
+          <label>Proposed {featureName[scenario.feature]}<input type="number" step="any" min={scenario.category === 'management' ? 0 : undefined} value={scenario.proposed_value} onChange={(e) => updateScenario(index, { proposed_value: e.target.value })} placeholder={`Current: ${show(state[scenario.feature as keyof CowState] as number | null)}`} /></label>
           <div className="didt-live__unit">Unit: {unitFor[scenario.feature]}</div>
-          {scenarios.length > 1 && <button className="didt-live__remove" type="button" onClick={() => setScenarios((rows) => rows.filter((_, i) => i !== index))}>Remove</button>}
+          {(scenarios.length > 1 || combinedEnabled) && <button className="didt-live__remove" type="button" onClick={() => setScenarios((rows) => rows.filter((_, i) => i !== index))}>Remove</button>}
         </div>)}
+        <div className="didt-live__scenario">
+          <label><input type="checkbox" checked={combinedEnabled} onChange={(event) => {
+            const enabled = event.target.checked;
+            setCombinedEnabled(enabled);
+            if (!enabled) setScenarios((rows) => rows.length ? rows : [emptyScenario(1)]);
+          }} /> Evaluate combined THI and milking-frequency alternative</label>
+          {combinedEnabled && <>
+            <label>Proposed combined THI<input type="number" step="any" value={combinedThi} onChange={(event) => setCombinedThi(event.target.value)} placeholder={`Current: ${show(state.thi_mean)}`} /></label>
+            <label>Proposed combined milkings per day<input type="number" step="any" min={0} value={combinedMilkings} onChange={(event) => setCombinedMilkings(event.target.value)} placeholder={`Current: ${show(state.milkings_per_day)}`} /></label>
+          </>}
+        </div>
         <p className="didt-live__small">Available scenarios: hypothetical THI exposure changes and milking frequency changes. Feed and concentrate interventions are unavailable because the required intervention data and semantics are not sufficiently supported. Milking frequency operational feasibility is not validated.</p>
         <button type="button" onClick={simulate} disabled={busy || !hasValidInputs}>{busy ? 'Estimating…' : 'Run counterfactual estimates'}</button>
       </section>}
@@ -159,9 +202,9 @@ export default function InterventionSimulatorPage() {
           <article className="didt-live__card"><h2>Baseline prediction</h2><strong className="didt-live__value">{show(result.baseline_predicted_milk_yield_l_day, ' L/cow/day')}</strong>
             <p>Status: {result.baseline_status} · Horizon: {result.prediction_horizon_days} day after observed date</p><p>Model: {result.model_version ?? 'Unavailable'}</p></article>
         </section>
-        <section className="didt-live__card"><h2>Scenario comparison</h2>
+        <section className="didt-live__card"><h2>Individual scenario comparison</h2>
           {result.scenarios.map((item) => <article className="didt-live__result" key={item.scenario_id}>
-            <div className="didt-live__card-head"><div><h3>{item.name}</h3><p>{item.scenario_id} · {item.feature}: {show(item.baseline_value)} → {item.proposed_value} {item.unit}</p></div><b className="didt-live__status">{item.scenario_status}</b></div>
+            <div className="didt-live__card-head"><div><h3>{item.name}</h3><p>{item.scenario_id} · {item.feature}: {show(item.baseline_value)} → {item.proposed_value} {item.unit}</p></div><b className="didt-live__status">{item.scenario_status} · model support: {item.model_support_status}</b></div>
             <div className="didt-live__facts didt-live__facts--compact">
               <div><span>Baseline prediction</span><b>{show(item.baseline_predicted_milk_yield_l_day, ' L/day')}</b></div>
               <div><span>Counterfactual prediction</span><b>{show(item.counterfactual_predicted_milk_yield_l_day, ' L/day')}</b></div>
@@ -172,8 +215,40 @@ export default function InterventionSimulatorPage() {
             {item.warnings.map((warning) => <p className="didt-live__finding" key={warning}>{warning}</p>)}
             {item.data_limitations.map((limitation) => <p className="didt-live__small" key={limitation}>{limitation}</p>)}
           </article>)}
-          {result.warnings.map((warning) => <p className="didt-live__small" key={warning}>{warning}</p>)}
         </section>
+        {result.combined_scenario && <section className="didt-live__card">
+          <h2>Combined THI and milking-frequency scenario</h2>
+          <p>{result.combined_scenario.name} · {result.combined_scenario.scenario_status} · model support: {result.combined_scenario.model_support_status}</p>
+          <p>Model: {result.combined_scenario.model_version ?? result.model_version ?? 'Unavailable'} · farm operational feasibility: {result.combined_scenario.operational_feasibility_validated ? 'validated' : 'not validated'}.</p>
+          <p>THI: {show(result.combined_scenario.baseline_thi_mean)} → {result.combined_scenario.proposed_thi_mean}; milkings/day: {show(result.combined_scenario.baseline_milkings_per_day)} → {result.combined_scenario.proposed_milkings_per_day}</p>
+          <div className="didt-live__facts didt-live__facts--compact">
+            <div><span>Baseline prediction</span><b>{show(result.combined_scenario.baseline_predicted_milk_yield_l_day, ' L/day')}</b></div>
+            <div><span>Combined predicted yield</span><b>{show(result.combined_scenario.counterfactual_predicted_milk_yield_l_day, ' L/day')}</b></div>
+            <div><span>Absolute difference</span><b>{show(result.combined_scenario.absolute_yield_change_l_day, ' L/day')}</b></div>
+            <div><span>Percentage difference</span><b>{show(result.combined_scenario.percentage_yield_change, '%')}</b></div>
+          </div>
+          {result.combined_scenario.assumptions.map((assumption) => <p className="didt-live__small" key={assumption}>{assumption}</p>)}
+          {result.combined_scenario.warnings.map((warning) => <p className="didt-live__finding" key={warning}>{warning}</p>)}
+          {result.combined_scenario.data_limitations.map((limitation) => <p className="didt-live__small" key={limitation}>{limitation}</p>)}
+        </section>}
+        <section className="didt-live__card">
+          <h2>Ranking and recommendation</h2>
+          {result.ranked_alternatives.length > 0 ? <>
+            <ol>{result.ranked_alternatives.map((alternative) => <li key={alternative.scenario_id}>
+              <b>#{alternative.rank} {alternative.alternative_type} · {alternative.name}</b> ({alternative.scenario_id}) — predicted {show(alternative.predicted_milk_yield_l_day, ' L/cow/day')}; difference from baseline {show(alternative.absolute_yield_change_l_day, ' L/day')} ({show(alternative.percentage_yield_change, '%')}); model support {alternative.model_support_status}; farm feasibility {alternative.operational_feasibility_validated ? 'validated' : 'not validated'}.
+            </li>)}</ol>
+          </> : <p>No alternatives could be ranked.</p>}
+          {result.recommendation ? <article className="didt-live__result">
+            <h3>Highest predicted-yield alternative: {result.recommendation.name}</h3>
+            <p>Predicted next-day yield: {show(result.recommendation.predicted_milk_yield_l_day, ' L/cow/day')}</p>
+            <p>Difference from baseline: {show(result.recommendation.absolute_yield_change_l_day, ' L/day')} ({show(result.recommendation.percentage_yield_change, '%')})</p>
+            <p>Model: {result.recommendation.model_version ?? 'Unavailable'}.</p>
+            <p>Model support: {result.recommendation.model_support_status}. Farm operational feasibility: {result.recommendation.operational_feasibility_validated ? 'validated' : 'not validated'}.</p>
+            <p>{result.recommendation.explanation}</p>
+            {result.recommendation.limitations.map((limitation) => <p className="didt-live__finding" key={limitation}>{limitation}</p>)}
+          </article> : <p>{result.recommendation_explanation}</p>}
+        </section>
+        {result.warnings.map((warning) => <p className="didt-live__small" key={warning}>{warning}</p>)}
       </>}
       <p className="didt-live__disclaimer">A prediction difference is a model-based counterfactual estimate, not evidence that an intervention will cause a real-world yield change.</p>
     </main>

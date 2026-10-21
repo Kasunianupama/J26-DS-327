@@ -29,7 +29,7 @@ python -m components.member1_didt.prediction.train_model --output components/mem
 
 - `GET /api/v1/interventions/cows` returns up to 10,000 available approved animal references and their latest usable observation dates for selection.
 - `GET /api/v1/interventions/cows/{animal_ref}/state` returns the latest usable cow state and missing-data notes.
-- `POST /api/v1/interventions/simulate-counterfactual` accepts an animal reference, one-day horizon, and 1–8 independent scenario inputs. Supported model-input pairs are `heat`/`thi_mean` in `THI` and `management`/`milkings_per_day` in `milkings/day`. Feed and supplement scenarios are explicitly marked unsupported because source units/action semantics are unavailable. Estimates outside model training support are withheld.
+- `POST /api/v1/interventions/simulate-counterfactual` accepts an animal reference, one-day horizon, up to eight independent scenario inputs, and one optional combined THI/milking-frequency alternative. Supported individual model-input pairs are `heat`/`thi_mean` in `THI` and `management`/`milkings_per_day` in `milkings/day`. Feed and concentrate interventions are rejected. Estimates outside model training support are withheld. The response includes model-based yield ranking and a highest-predicted-yield alternative when one is available.
 - Legacy `POST /api/v1/interventions/simulate` keeps its endpoint/request shape but returns no demo yield uplift.
 
 Example request:
@@ -46,16 +46,21 @@ Example request:
     "proposed_value": 68,
     "unit": "THI",
     "intervention_description": "Exposure perturbation only; no cooling action modeled"
-  }]
+  }],
+  "combined_scenario": {
+    "scenario_id": "combined-1",
+    "thi_mean": 68,
+    "milkings_per_day": 3
+  }
 }
 ```
 
-The example value is illustrative, not a recommended threshold or observed cow value. The response separates `observed_milk_yield_l_day` from the predicted next-day baseline and includes each scenario's status, predictions, changes, assumptions, model version, and warnings.
+The example values are illustrative, not recommended thresholds or observed cow values. The response separates `observed_milk_yield_l_day` from the predicted next-day baseline and includes individual and combined results, valid-alternative ranking, recommendation explanation, model-support status, model version, assumptions, and warnings.
 
 ## Limitations
 
 - The current model is a one-day observational predictor, not a causal estimator.
 - Feed and supplement intervention semantics cannot be established from the accessible source columns.
 - THI changes are not linked to a specific cooling intervention; milking-frequency scenarios are not checked for operational or welfare feasibility.
-- No intervention cost, resource availability, uncertainty interval, biological validation, optimization, recommendation, or human decision workflow is implemented here.
+- Ranking and recommendation use predicted next-day milk yield only. They do not establish causal benefit, intervention cost, resource availability, welfare, or operational feasibility; no uncertainty interval or human decision workflow is implemented here.
 - Actual Farm X records and credentials are not committed. Unit/API tests use synthetic fixtures and mocked repositories only.

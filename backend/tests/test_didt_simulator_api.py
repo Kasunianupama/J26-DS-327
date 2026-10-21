@@ -82,6 +82,20 @@ def test_api_rejects_nonpositive_milking_frequency():
         assert result.status_code == 422
 
 
+def test_api_accepts_combined_only_alternative(monkeypatch):
+    import backend.app.api.routes.interventions as route
+    received = []
+    monkeypatch.setattr(route, "run_simulation", lambda request: (received.append(request) or response()))
+    result = client.post("/api/v1/interventions/simulate-counterfactual", json={
+        "animal_ref": "SYNTH-API-1",
+        "scenarios": [],
+        "combined_scenario": {"scenario_id": "both", "thi_mean": 68, "milkings_per_day": 3},
+    })
+    assert result.status_code == 200
+    assert received[0].combined_scenario.thi_mean == 68
+    assert received[0].scenarios == []
+
+
 def test_missing_animal_and_database_failure_return_safe_http_errors(monkeypatch):
     import backend.app.api.routes.interventions as route
     from components.member1_didt.services.farmx_repository import AnimalNotFound, FarmXDataUnavailable

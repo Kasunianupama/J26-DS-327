@@ -14,4 +14,6 @@ test('What-If scenario selector contains only THI and milking frequency', () => 
   const options = [...selector[0].matchAll(/<option value="([^"]+)">/g)].map((match) => match[1]);
   assert.deepEqual(options, ['heat', 'management']);
   assert.match(page, /Available scenarios: hypothetical THI exposure changes and milking frequency changes\./);
+  assert.match(page, /Evaluate combined THI and milking-frequency alternative/);
+  assert.match(page, /combined_scenario: combinedEnabled \?/);
 });
