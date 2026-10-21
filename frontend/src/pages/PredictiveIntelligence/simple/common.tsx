@@ -124,7 +124,7 @@ export function useChartOrTable() {
   const t = useT();
   const [asTable, setAsTable] = useState(false);
   const toggle = (
-    <span className="pfie-mgr-switch" role="group" aria-label={t('Show as')}>
+    <span className="pfie-mgr-seg small" role="group" aria-label={t('Show as')}>
       <button aria-pressed={!asTable} onClick={() => setAsTable(false)}>{t('Chart')}</button>
       <button aria-pressed={asTable} onClick={() => setAsTable(true)}>{t('Table')}</button>
     </span>

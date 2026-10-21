@@ -91,3 +91,28 @@ intervals that cover only 60–77 % monthly (H3).
 12-month k are 8.6 % higher than `day_cell` in 2025–26, so the 12-month k (used only when
 anchoring is not possible, flag `k_window`) is about 8 % too low in those years. The
 default anchored k uses the `day_cell` starting herd and is not affected.
+
+## Record regimes and the source break (2026-10-21)
+
+Monthly aggregates of `day_panel` (target consistency check) show that `target_source` is
+`shipment` until **Jul 2022** and `delpro` from **Aug 2022**. DelPro identified milk exists
+from Aug 2020 but is not the target until then (the "2020-08" in the sections above and in
+`milk_baseline.py` describes when DelPro milk starts, not when the target switches; the code
+follows the `target_source` column). Sep–Oct 2022, Apr 2024 and Oct 2024 – Aug 2025 have no
+scoreable days. Litres per recorded milking cow-day: 10–19 (2016–mid 2020, seasonal), 12 → 5
+(Aug 2020 – Jul 2022, shipment), 3–5 (Aug 2022 – Feb 2024), about 10 (2026). In Jul–Aug 2026,
+at identified share ≥ 0.86, recorded milking is 78–80 % of cows giving identified milk, so
+yield per recorded cow overstates yield per cow actually milked.
+
+* **Errors by regime** (`pfoi/regimes.py`, saved error files only): shipment; DelPro to
+  Feb 2024; the 2024 gap (Mar–Apr); DelPro from May 2024 (post-hoc / test block only). Each
+  has its own n, bias, MAE ratio against persistence on the same periods, and the share of
+  forecasts that fell back on a weaker level (`source_switch`, `k_window`, `no_window_k`,
+  `no_same_source_k`). Rows with n < 10 are flagged and not to be read.
+* **No silent borrowing of k** (`MilkConfig.borrow_other_source_k`, `--borrow-k off`, tag
+  suffix `s`). Default `on` keeps pfoi-1.0.0 / 1.1.0 (the other source's 12-month k is used
+  and `source_switch` is flagged); the frozen hashes are unchanged. With `off`, a source with
+  fewer than 3 usable months gets no 12-month k: `anchor_first` sets the level from recent
+  same-source days or withholds the milk forecast (`no_same_source_k`), and `anchored` skips
+  the origin (counted). Whether `off` earns its place is decided by its keep rule on the
+  development block, like M1–M8; it is not the default and not part of a frozen model.

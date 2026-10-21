@@ -44,7 +44,10 @@ def v11_engine_dict(engine: EngineConfig) -> dict:
     return {k: v for k, v in asdict(engine).items()
             if not (k in NEW_ENGINE_VALUES and v == NEW_ENGINE_VALUES[k])}
 # Milk options added after pfoi-1.1.0 (docs/pp1_plan.md M3), same rule.
-LEGACY_MILK_VALUES = {"anchor_gate": False}
+LEGACY_MILK_VALUES = {"anchor_gate": False, "borrow_other_source_k": True}
+# Output-only CLI options are not part of either frozen engine/milk hash.
+# Enabled output is labelled with a distinct development version by its adapter.
+LEGACY_OUTPUT_VALUES = {"persistence_blend": "off"}
 
 
 def milk_hash_dict(milk: MilkConfig) -> dict:

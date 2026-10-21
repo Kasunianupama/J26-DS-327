@@ -8,7 +8,7 @@
 export type IconName =
   | 'outlook' | 'herd' | 'products' | 'confidence' | 'operations'
   | 'droplet' | 'trendDown' | 'trendUp' | 'wallet' | 'calendar'
-  | 'search' | 'flag' | 'expand' | 'arrowRight' | 'arrowLeft' | 'spark' | 'scale';
+  | 'search' | 'flag' | 'expand' | 'maximize' | 'arrowRight' | 'arrowLeft' | 'spark' | 'scale';
 
 const PATHS: Record<IconName, JSX.Element> = {
   outlook: <><path d="M3 17.5 9 11l4 4 8-8.5" /><path d="M21 6.5h-4.6M21 6.5v4.6" /></>,
@@ -24,6 +24,7 @@ const PATHS: Record<IconName, JSX.Element> = {
   search: <><circle cx="10.8" cy="10.8" r="6.2" /><path d="m15.4 15.4 4.2 4.2" /></>,
   flag: <><path d="M5.4 20.4V4.2M5.4 5.1h10.9l-1.7 3.5 1.7 3.5H5.4" /></>,
   expand: <><path d="M9 5h10v10" /><path d="M19 5 5.6 18.4" /></>,
+  maximize: <><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" /></>,
   arrowRight: <><path d="M4.5 12h15M13.6 6.2 19.4 12l-5.8 5.8" /></>,
   arrowLeft: <><path d="M19.5 12h-15M10.4 6.2 4.6 12l5.8 5.8" /></>,
   spark: <><path d="m12 3.4 1.9 4.9 4.9 1.9-4.9 1.9L12 17l-1.9-4.9-4.9-1.9 4.9-1.9Z" /><path d="M18.4 15.6 19.2 18l2.4.8-2.4.8-.8 2.4-.8-2.4-2.4-.8 2.4-.8Z" /></>,

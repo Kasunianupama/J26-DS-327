@@ -905,6 +905,19 @@ class SqlHerdSource:
             start=start, end=end, known_until=end,
         )
 
+    def milking_mix_daily(self, start: date, end: date) -> pd.DataFrame:
+        """Milking cows per day by DIM band and parity (herd level, neural model input)."""
+        frame = self._q(
+            f"""SELECT date, dim_band, parity_group, SUM(n_animals)::float AS n
+                FROM {self.mi}.{self.cell_table}
+                WHERE state = 'milking'
+                  AND date >= CAST(:start AS date) AND date < CAST(:end AS date)
+                GROUP BY 1, 2, 3 ORDER BY 1""",
+            start=start, end=end,
+        )
+        frame["date"] = pd.to_datetime(frame["date"]).dt.date
+        return frame
+
     def target_daily(self, start: date, end: date) -> pd.DataFrame:
         """Herd milk target per day (herd level): source, litres, scoreable flag."""
         frame = self._q(

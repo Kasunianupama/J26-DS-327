@@ -18,7 +18,7 @@ import { usePfoi } from './state';
 import { Icon } from './icons';
 import { LangProvider, Rich, aheadText, dateLabel, periodText, useLang, useT, type T } from './simple/i18n';
 import { NavProvider, PLAIN_CONFIDENCE, PLAIN_PULL, hasRange, litres, useNav, type TabId } from './simple/common';
-import { HerdChart, MilkChart } from './simple/Charts';
+import { OverviewCharts } from './simple/Charts';
 import { ReasonsTab } from './simple/Milk';
 import { PeriodTab } from './simple/Month';
 import { HerdTab } from './simple/Herd';
@@ -115,10 +115,7 @@ function Simple({ onDetailed }: { onDetailed: () => void }) {
 
       <ShortAnswer steps={h} />
 
-      <div className="pfie-mgr-charts">
-        <MilkChart />
-        <HerdChart />
-      </div>
+      <OverviewCharts />
 
       <Tabs />
 

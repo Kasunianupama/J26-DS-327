@@ -388,8 +388,50 @@ def driver_layer(errors: pd.DataFrame, daily: pd.DataFrame, base_model: str,
 
 # --------------------------------------------------------------------------- heat outlook (F4)
 
+def heat_observations(daily: pd.DataFrame, origin: date, until: date) -> list[dict]:
+    """Display-only weather outcomes; never used to compute the frozen outlook.
+
+    ``until`` is exclusive. Missing/incomplete weather stays absent, never zero.
+    """
+    if daily.empty:
+        return []
+    dates = pd.to_datetime(daily["date"])
+    complete = daily["weather_is_complete"].fillna(False).astype(bool)
+    selected = daily.loc[(dates >= pd.Timestamp(origin)) & (dates < pd.Timestamp(until)) & complete]
+    rows = []
+    for r in selected.sort_values("date").itertuples(index=False):
+        if not pd.notna(r.thi_max) or not np.isfinite(float(r.thi_max)):
+            continue
+        rows.append({"date": pd.Timestamp(r.date).date().isoformat(),
+                     "thi_mean": round(float(r.thi_mean), 2) if pd.notna(r.thi_mean) and np.isfinite(float(r.thi_mean)) else None,
+                     "thi_max": round(float(r.thi_max), 2)})
+    return rows
+
+
+def heat_climatology(hist: pd.Series, origin: date, ahead_days: int, halfwidth: int,
+                     knots: dict[str, float]) -> list[dict]:
+    """Usual max THI for each coming day: 10/50/90th percentile of earlier years within
+    +/-``halfwidth`` days of the date, and the share of those days above each knot (the
+    usual chance of a hot day). ``hist`` holds complete days only, ending before the origin."""
+    doy = hist.index.dayofyear.to_numpy()
+    clim = []
+    for k in range(ahead_days):
+        day = pd.Timestamp(origin) + pd.Timedelta(days=k)
+        dist = np.abs(doy - day.dayofyear) % 365
+        v = hist.to_numpy()[np.minimum(dist, 365 - dist) <= halfwidth]
+        if len(v) >= 10:
+            p10, p50, p90 = np.percentile(v, [10, 50, 90])
+            entry = {"date": day.date().isoformat(), "p10": round(float(p10), 2),
+                     "p50": round(float(p50), 2), "p90": round(float(p90), 2)}
+            for name, knot in knots.items():
+                if knot is not None and np.isfinite(knot):
+                    entry[f"share_above_{name}"] = round(float(np.mean(v > knot)), 3)
+            clim.append(entry)
+    return clim
+
+
 def heat_outlook(daily: pd.DataFrame, origin: date, cfg: DriverConfig = DriverConfig(),
-                 recent_days: int = 60, ahead_days: int = 90) -> dict:
+                 recent_days: int = 730, ahead_days: int = 90, thi_method: str = "v1") -> dict:
     """Herd-level heat summary for the page (weather only, no animal data).
 
     * ``recent``: daily mean and max THI up to the last day available at the forecast
@@ -398,9 +440,15 @@ def heat_outlook(daily: pd.DataFrame, origin: date, cfg: DriverConfig = DriverCo
       days before ``origin - 60``) for each of the next ``ahead_days`` days of the year:
       what forecasts may assume, never the actual future weather;
     * ``knot_p75`` / ``knot_p90``: this herd's heat knots (past max THI percentiles);
-    * ``hot_run_days`` and ``heat_load_7d`` at the last available day."""
+      each climatology day also carries the share of those past days above each knot;
+    * ``hot_run_days`` and ``heat_load_7d`` at the last available day;
+    * ``forecast``: the experimental THI forecast, ``thi_method`` "v1" or "v2"."""
+    from .thi_forecast import forecast_thi, forecast_thi_daily
+
     b = FeatureBuilder(daily, cfg)
     wday = pd.Timestamp(origin) - pd.Timedelta(days=max(1, cfg.weather_lag_days))
+    k75 = b.knot(wday)
+    k90 = FeatureBuilder(daily, DriverConfig(thi_knot_pct=90.0)).knot(wday)
     d = b.d.loc[:wday]
     rec = d[["thi", "thi_max"]].iloc[-recent_days:]
     recent = [{"date": i.date().isoformat(),
@@ -408,22 +456,17 @@ def heat_outlook(daily: pd.DataFrame, origin: date, cfg: DriverConfig = DriverCo
                "thi_max": None if pd.isna(r.thi_max) else round(float(r.thi_max), 2)}
               for i, r in rec.iterrows()]
     hist = b.d.loc[:pd.Timestamp(origin) - pd.Timedelta(days=60), "thi_max"].dropna()
-    doy = hist.index.dayofyear.to_numpy()
-    clim = []
-    for k in range(ahead_days):
-        day = pd.Timestamp(origin) + pd.Timedelta(days=k)
-        dist = np.abs(doy - day.dayofyear) % 365
-        v = hist.to_numpy()[np.minimum(dist, 365 - dist) <= cfg.clim_halfwidth // 2]
-        if len(v) >= 10:
-            p10, p50, p90 = np.percentile(v, [10, 50, 90])
-            clim.append({"date": day.date().isoformat(), "p10": round(float(p10), 2),
-                         "p50": round(float(p50), 2), "p90": round(float(p90), 2)})
-    k75 = b.knot(wday)
-    k90 = FeatureBuilder(daily, DriverConfig(thi_knot_pct=90.0)).knot(wday)
+    clim = heat_climatology(hist, origin, ahead_days, cfg.clim_halfwidth // 2, {"p75": k75, "p90": k90})
     hot = b._hot_run(wday, k75)
     load = b._heat_load(wday - pd.Timedelta(days=6), wday, k75)
     fin = lambda x: None if x is None or not np.isfinite(x) else round(float(x), 2)  # noqa: E731
+    if thi_method == "v2":
+        knots = {"p75": k75, "p90": k90} if np.isfinite(k75) and np.isfinite(k90) else None
+        forecast = forecast_thi_daily(daily, origin, cfg.weather_lag_days, ahead_days, thresholds=knots)
+    else:
+        forecast = forecast_thi(daily, origin, cfg.weather_lag_days, ahead_days)
     return {"last_weather_day": wday.date().isoformat(), "weather_lag_days": cfg.weather_lag_days,
             "knot_p75": fin(k75), "knot_p90": fin(k90), "hot_run_days": fin(hot),
             "heat_load_7d": fin(load), "recent": recent, "climatology": clim,
+            "forecast": forecast,
             "source": "ERA5 reanalysis (herd location), THI as published by the ETL"}

@@ -153,7 +153,7 @@ function Shell() {
         </nav>}
       </header>
 
-      <div className="pfie-body">
+      <div className={`pfie-body${simple && !detailOpen ? ' pfie-body-simple' : ''}`}>
         {simple && !detailOpen && <ManagerView onDetailed={() => setView('detailed')} />}
         {!simple && <ForecastInfo />}
         {simple && !detailOpen ? null : detailOpen ? (

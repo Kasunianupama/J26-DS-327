@@ -2793,6 +2793,8 @@ main:has(> .pfie) { min-width: 0; }
 .pfie-viewswitch button { padding: 7px 14px; font-weight: 700; }
 
 .pfie-mgr { display: flex; flex-direction: column; gap: 18px; max-width: 1080px; margin: 0 auto; font-size: 16px; }
+.pfie-body-simple { max-width: none; }
+.pfie-body-simple > .pfie-mgr { max-width: none; width: 100%; }
 .pfie-mgr h3 { font-size: 19px; font-weight: 800; letter-spacing: -0.2px; }
 .pfie-mgr .sub { color: var(--muted); font-size: 14px; }
 
@@ -3022,7 +3024,8 @@ main:has(> .pfie) { min-width: 0; }
 ul.pfie-mgr-howto { display: flex; flex-direction: column; gap: 6px; padding: 12px 18px !important; list-style: decimal !important; padding-left: 36px !important; font-size: 15px; color: var(--ink-2); }
 
 .pfie-mgr-answer { display: flex; flex-direction: column; gap: 14px; }
-.pfie-mgr-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px; }
+.pfie-mgr-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 1100px) { .pfie-mgr-charts { grid-template-columns: 1fr; } }
 @media (max-width: 520px) { .pfie-mgr-charts { grid-template-columns: 1fr; } }
 
 .pfie-mgr-tabsec { display: flex; flex-direction: column; gap: 14px; scroll-margin-top: 80px; }
@@ -3046,6 +3049,15 @@ ul.pfie-mgr-howto { display: flex; flex-direction: column; gap: 6px; padding: 12
 .pfie-mgr-fact .lbl { font-size: 13px; font-weight: 700; color: var(--muted); }
 .pfie-mgr-fact b { font-size: 22px; font-weight: 800; letter-spacing: -0.3px; font-variant-numeric: tabular-nums; }
 .pfie-mgr-fact small { font-size: 13px; color: var(--ink-2); }
+/* Heat tab: expected hot days per coming week */
+.pfie-mgr-heatrisk { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.pfie-mgr-heatrisk-title { font-size: 13px; font-weight: 700; color: var(--muted); }
+.pfie-mgr-heatrisk ol { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 4px; margin: 0; padding: 0; list-style: none; }
+.pfie-mgr-heatrisk li { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 6px 4px; border-radius: var(--r-sm); border: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.pfie-mgr-heatrisk li.very { border: 2px solid #b83b38; }
+.pfie-mgr-heatrisk li b { font-size: 16px; font-weight: 800; color: var(--ink); }
+.pfie-mgr-heatrisk li small { font-size: 11px; color: var(--ink-2); white-space: nowrap; }
+.pfie-mgr-heatrisk li small.act { font-weight: 700; color: var(--ink); }
 .pfie-mgr-tagline { font-size: 13.5px; font-weight: 700; color: var(--muted); }
 
 .pfie-mgr-reasons { display: flex; flex-direction: column; gap: 10px; }

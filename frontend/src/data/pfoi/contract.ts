@@ -274,7 +274,23 @@ export interface OutageRow {
 }
 
 export interface HeatDay { date: string; thi_mean: number | null; thi_max: number | null }
-export interface HeatClimate { date: string; p10: number; p50: number; p90: number }
+export interface HeatClimate {
+  date: string; p10: number; p50: number; p90: number;
+  /** Share of past days near this date above the herd's knots: the usual chance of a hot day. */
+  share_above_p75?: number; share_above_p90?: number;
+}
+
+/** One day of the experimental THI forecast. v2 adds the range and hot-day chances. */
+export interface HeatPrediction {
+  date: string;
+  thi_max: number;
+  seasonal?: number;
+  /** 10th / 90th percentile of the model's past errors around `thi_max`. */
+  lower?: number;
+  upper?: number;
+  /** Chance that the day's max THI is above each herd knot (`p75`, `p90`). */
+  p_above?: Record<string, number>;
+}
 
 export interface HeatSummary {
   last_weather_day: string;
@@ -284,6 +300,22 @@ export interface HeatSummary {
   hot_run_days: number | null;
   heat_load_7d: number | null;
   recent: HeatDay[];
+  /** Recorded weather after the forecast date, for comparison only. */
+  realised?: HeatDay[];
+  /** Separate statistical weather baseline; not the milk/herd forecast. */
+  forecast?: {
+    status: 'experimental' | 'unavailable';
+    method: string;
+    trained_through: string | null;
+    n_train: number;
+    predictions: HeatPrediction[];
+    /** v2: THI levels behind `p_above`. */
+    thresholds?: Record<string, number>;
+    /** v2: days ahead over which recent daily changes hand over to the seasonal curve. */
+    taper_days?: [number, number];
+    /** v2: share of a one-day anomaly still present after N days (learned). */
+    persistence_by_lead?: Record<string, number>;
+  };
   climatology: HeatClimate[];
   source: string;
 }

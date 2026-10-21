@@ -150,10 +150,142 @@ rules are the "Keep if" column of the table above, unchanged.
 | M6 | sensors: cannot be validated with current data (all shadow in development) | `SqlHerdSource.sensor_daily` (herd-level SQL over `core.milk_session`), sensor + recent-milk features with missing-not-zero rule | `test_sensor_features.py` (SQL itself untested without a database) |
 | M7 | descriptive tables evaluated; **conception shape dropped** by its keep rule (milking worse at 6 and 12 months) | `repro_steps` SQL, `pfoi/repro_timing.py` (censoring, competing exits, engine comparison), `repro-timing` command; `--conception-shape on` (within-band DIM shape, tag `_cs`) | `test_repro_timing.py` |
 | M8 | evaluated, descriptive (associations; small-n cells flagged) | `generation_yield / _days / _alarms` SQL, `pfoi/generation_outcomes.py`, `generation-outcomes` command | `test_generation_outcomes.py` |
+| M9 | **kept as an option, off by default** (keep rule met, results in "M9" below); making it the PP1 default is the user's decision | `MilkConfig(borrow_other_source_k=False)`, `--borrow-k off` (tag suffix `s`): never use the other record source's 12-month k; `pfoi/regimes.py` (errors by recording regime, matched A/B comparison, refuses mixed files) | `test_source_k.py` |
+| M10 | **rejected (user decision, 2026-10-21)**: combining the model with persistence is not used for PP1 outputs; code kept, off by default; results below kept as evidence only | `pfoi/blend.py`, `blend` command: daily and weekly milk forecast = past-skill-weighted blend of the adaptive model and persistence (no fitted parameter); monthly untouched | `test_blend.py` |
 | F1–F9 | implemented, build and browser-checked on the demo run | `frontend/.../panels/Pp1Panels.tsx`, page-document keys (`page_run._pp1_sections`), `evidence-ladder` command | `test_evidence.py`, `npm run build` |
 
 Hashes of pfoi-1.0.0 (`3cbd28787fcb`) and pfoi-1.1.0 (`2a865a0c2687`) are unchanged (tested).
 Development builds are published as `pfoi-1.2.0-dev`, never under a frozen name.
+
+### M9: source-break k (2026-10-21; user runs, herd-level aggregates)
+
+**Why.** The monthly target check showed `target_source` is `shipment` to Jul 2022 and `delpro`
+from Aug 2022 (Sep–Oct 2022 empty), with litres per recorded milking cow-day falling from
+about 12 to 5 before the switch. With fewer than 3 usable months for the current source the
+model borrowed the other source's 12-month k and only flagged `source_switch`.
+
+**Keep rule** (proposed by the assistant before the run, not changed by the user afterwards):
+keep `--borrow-k off` if (a) MAE on the periods both runs forecast does not worsen, and
+(b) fewer than about 5 % of origins are withheld. It is a fallback-behaviour option, not a
+new model: forecasts that still exist are identical.
+
+**Result** (`regimes.py`, `kf` vs `kfs`, development block, window 24; shipment and DelPro to
+Dec 2023 only, the post-2024-05 regime needs `--block posthoc`):
+
+* (a) **Met, trivially.** On common periods MAE and bias are identical in every regime, grain
+  and horizon (e.g. DelPro weekly h13: 6,426 L both; shipment unchanged by construction).
+* (b) **Met.** `off` declines 0–4 monthly, 2–4 daily and 1–10 weekly periods; about 3 % of all
+  origins, but up to about 20 % of the DelPro regime's weekly h13 periods, all just after the
+  Aug 2022 switch.
+* **What the declined periods were.** The borrowed level gave MAE 25–30k L weekly (regime
+  typical 1.8–6.4k), about 4.6–5.0k L daily (typical 270–460) and 56–133k L monthly (typical
+  20–107k): 5 to 15 times worse than normal.
+* In the DelPro regime, 35.6 % of forecasts have no same-source 12-month k (DelPro needs 3
+  usable months; Sep–Nov 2022 empty or partial) and run on the 14 recent days alone.
+* Earlier pooled `_kf_` regime output was discarded: the glob matched several window and
+  exit-model variants (n inflated 4–5 times). `regimes.py` now refuses such input.
+
+**Limits.** The DelPro regime has few periods (monthly 6–8, flagged small-n); overlapping
+horizons from neighbouring origins are not independent. Monthly h12 bias of +102 % in that
+regime is origins before the break forecasting after it, not a level-setting error.
+The by-regime tables for 2024-05 onward are post-hoc and descriptive.
+
+**Decision pending (user):** keep as an option only, or use `--borrow-k off` for forecasts
+issued soon after a source change. Not part of a frozen model; hashes unchanged.
+
+### M10: persistence blend for daily and weekly milk (2026-10-21; development block)
+
+**Diagnosis** (saved dev errors of the `pfoi-1.2.0-dev` point forecast, `milk_baseline_adaptive`,
+tag `..._kf_w24_..._hl6_adhq0.1t365z3`; MAE ratio to persistence on the same periods): daily
+1.19 / 1.05 / 1.03 and weekly h1 1.06, i.e. no better than carrying the last value; in the DelPro
+regime (Aug 2022 on) daily 1.50 and weekly 1.49 pooled. Monthly is 0.60-0.71 and is where the
+structural forecast earns its keep.
+
+**Change** (`pfoi/blend.py`, `blend` command, `test_blend.py`): forecast = w x structural +
+(1 - w) x persistence, per grain, series and horizon, with w = (1/MAE_s) / (1/MAE_s + 1/MAE_p)
+from forecasts **whose target period had ended by the origin** (tested: unfinished outcomes never
+move w); w = 1 with fewer than 8 finished pairs. No fitted parameter. Applied to daily and weekly
+rows only. Intervals are recomputed from the blend's own past errors.
+
+**Result** (development, origins 2017-2023, matched periods; ratio adaptive -> blend):
+
+| | h1 | h4 / h7 | h8 | h13 / h14 |
+|---|---|---|---|---|
+| daily | 1.20 -> 1.05 | 1.05 -> 0.97 | | 1.03 -> 0.95 |
+| weekly | 1.06 -> 0.97 | 0.93 -> 0.87 | 0.95 -> 0.90 | 0.91 -> 0.86 |
+
+By regime (MAE per period, adaptive -> blend): DelPro weekly h1/4/8/13 2,252 -> 1,748, 5,725 ->
+3,900, 9,567 -> 5,936, 9,284 -> 5,904; daily h1/7/14 449 -> 309, 544 -> 387, 691 -> 510.
+Shipment: daily -8 / -4 / -4.5 %, weekly -6 / -3 / 0 / -2 %. 90 % interval coverage rose in
+every daily and weekly cell (for example weekly h13 80 -> 89 %) at similar or narrower width.
+After the break the ranges are still too narrow for both models (about 50 % coverage).
+
+**Honest limits.**
+* Design choices were made on this block after seeing it: the weighting rule was picked from
+  8 variants (inverse-MAE vs grid-searched weight, all-past vs recent window, per-source or not);
+  the simplest was kept; most others were within about 1-2 points of it, and the two grid-searched
+  recent-window variants were worse at weekly h8 and h13. Monthly was excluded because the
+  blend made it 5-10 % worse in both regimes.
+* Not uniformly better: stable years lose a little (weekly 2021 about 11 % worse, 2017-18 slightly);
+  the gain comes mostly from 2022-23, when persistence beat the structural model. The weights adapt
+  with a delay (errors must finish first).
+* Weekly h13 bias in litres rises in the shipment regime (3.6k -> 5.2k) while MAE improves.
+* **Post-hoc replay (2024-26, offline from the saved raw errors; adaptive layer rebuilt from dev plus
+  earlier post-hoc errors, reproduction of the dev file exact to 1e-9):** the blend lowers the previous
+  model's MAE in every daily and weekly cell (daily -17 / -12 / -21 %, weekly -17 / -32 / -29 / -25 %),
+  but it still does not beat persistence except daily h1 (ratio 0.98): daily 1.11 / 1.19, weekly
+  1.06 / 1.85 / 1.58 / 1.43 (n 28-61, effective sample 12-13 forecast months).
+* **How solid is it** (`robustness()` in `make_blend_figures.py`, block bootstrap over forecast months,
+  `docs/data/m10_blend_robustness.csv`). Neighbouring origins overlap, so the effective sample is 12-15
+  forecast months, not the 28-51 periods. DelPro regimes: MAE ratio blend / previous 0.62-0.78 (dev) and
+  0.68-0.81 (post-hoc), 90 % intervals below 1 except post-hoc h1 (0.65-1.12). But the five best forecast
+  months carry 73-100 % of the net gain (a few blow-ups after the Sep-Oct 2022 and Mar-Apr 2024 gaps),
+  and the typical week is not always better (post-hoc weekly h4 median error 5.7k -> 7.4k L while the
+  mean improves). Shipment regime: weekly h4-h13 intervals span 1 (0.91-1.08): no reliable gain there.
+  Judged only on forecasts issued inside the DelPro era, the previous model is worse than persistence
+  (1.15 / 1.45 / 1.65 / 1.27) and the blend roughly ties it (1.03 / 1.11 / 1.14 / 0.90). Only 2-22 % of
+  DelPro-target rows come from forecasts issued before the break, so the three-way regime split is not
+  what drives these results.
+* **Reading.** The blend is a safeguard that removes the worst misses, not a general accuracy gain, and
+  persistence remains hard to beat at weekly range after the break. The cause is upstream: after a data
+  gap the structural level rests on few recent days (56.8 % of forecasts from May 2024 have no 12-month k).
+* Backtest layer only. The live outlook (`outlook.OutputLayer`) does not apply the blend yet; no
+  adaptive post-hoc (2024-26) files exist, so there is no out-of-block check. Neither is frozen.
+
+**"The line is too straight": what was tested (development block, 2026-10-21).**
+* *Is the structural bend real?* Over 13 weeks the previous model predicts a mean change of 12.9 % against
+  14.2 % actual, but the slope of actual change on predicted change is 0.56 (correlation 0.56): about
+  half the bend is right in size. A calibrated bend is therefore about 7 %, and the blend's is 8.3 %.
+  Keeping the structural bend at full strength (one level factor, shape kept) was no better in development
+  (weekly 0.87 vs 0.86) and worse post-hoc at weekly h4-h8 (2.96 and 2.45 vs 2.08 and 1.93).
+* *Day-of-week pattern?* None in the shipment era (0.5 %); in DelPro about +2 % at weekends in 2022-23 but it
+  changes between years (reversed in 2026). Not usable. The daily ratio around the weekly mean has a spread
+  of 3.6 %, and the daily blend's error (about 2.5 %) is already near that floor.
+* *Recent trend (ETS) as a third partner.* Daily h1 improves (ratio to persistence 1.04 -> 0.90), daily h7 and
+  h14 by about 1.5 %, post-hoc daily improves at all three horizons (29-36 periods); weekly does not (h4
+  0.87 -> 0.89, h13 0.85 -> 0.87). So daily is now persistence + ETS + structural, weekly stays
+  persistence + structural (`blend.skill_blend`, `PARTNERS` in `blend_outlook.py`). Where ETS cannot be fitted
+  (recent gaps: 2023-11, 2024-01, 2024-07, 2026-04) the daily blend falls back to two-way.
+* *Reading.* The remaining misses are mostly unforecastable movements (for example the Nov 2023 and Jul
+  2024 declines), not a missing bend. A flatter line is statistically appropriate here.
+* *New split by the user (shipment origins before / from Aug 2020):* from Aug 2020 to Jul 2022 the weekly
+  blend is slightly worse than the previous model at h4-h13 (ratio 1.03-1.06, intervals span 1); the
+  clear gains are before Aug 2020 at h1 and in the DelPro regimes.
+
+**Preview before any database write (files only).** `blend-outlook` derives `<version>-blend` documents from
+the built `pfoi-1.2.0-dev` ones (weights from backtest forecasts finished by each forecast date, persistence
+and ETS from the document's own recorded history, the wider of two ranges); `compare-runs --also` draws
+pfoi-1.0.0, pfoi-1.2.0-dev and the blend with the recorded outcome and scores them on the periods all three
+forecast. On the eight page dates the blend beat 1.2.0-dev at 4 of 7 daily dates and 4 of 8 weekly dates
+(2019-06 weekly MAE 7,096 -> 2,931 L); pfoi-1.0.0 had the lowest daily error at 5 of 7 dates, but over the
+whole development block 1.0.0 and 1.2.0-dev are tied at daily and weekly range (1.18 vs 1.19, 0.97 vs 0.91)
+and 1.2.0-dev is clearly better at monthly (0.60-0.71 vs 0.86-0.95), so the eight dates are a noisy sample.
+`build-outlook --write` does not apply the blend yet; the preview documents are not what the page reads.
+
+**Decision (user, 2026-10-21): rejected.** The persistence blend is not adopted for PP1 outputs,
+and the T1 live option (`--persistence-blend`) stays off. Code, tests and these results are kept as
+evidence only. Next direction: a learned (deep-learning / memory) model under a stricter train /
+validation / test split; see "T1 rejected; next direction" at the end of this file.
 
 ### Results so far (user runs, 2026-10-20; herd-level aggregates)
 
@@ -3852,3 +3984,142 @@ Intervals remain unconfirmed until matched coverage AND width are reviewed. No o
 ```
 
 </details>
+
+
+### T0 protocol fixed before revised tables (2026-10-21)
+
+Reporting correction only; no model selection or fitted boundary. Keep T0 if synthetic
+checks separate origin-source × target-source cells, split shipment at Aug 2020 by
+issuance date, retain unmatched A/B counts, and preserve frozen hashes. Cross-break
+forecasts never enter the same-source DelPro average. Existing M9/M10 keep rules
+remain unchanged; re-tabulation does not authorize adoption.
+
+Old error files lack origin_source. Use the documented Aug 2022 source timeline as an
+explicitly labelled fallback, not k_source: the latter can be borrowed in M9. Calendar
+cells are descriptive, not confirmed change points. Validate boundary support with
+breaks.detect_breaks on strictly pre-origin daily aggregates; real-data check pending
+user run. No future values may alter that audit.
+
+Development selection uses origins 2017–2023 and no outcomes from 2024 onward. Later
+origins/targets are descriptive. T2 remains daily-resolution, with per-regime 80:20
+chronological splits, horizon embargo and pooled training strictly before each test
+window; n and autocorrelation-adjusted effective n are required at T2, not inferred
+from monthly error counts.
+
+### T0 boundary audit supplied by user; T1 protocol (2026-10-21)
+
+User-run pre-origin detector audit: Aug/Sep 2020 have 2 breaks and latest ages
+1549/1580 days (1827/1858 input days); Aug/Sep 2022 have 2 breaks and ages
+2279/2310 (2557/2588 days). No recent detector support for either boundary.
+Keep those dates as descriptive recording/data-state labels only. Post-hoc
+Mar/May/Jun 2024: 4/5/5 breaks, ages 396/4/35 days, n_days 3135/3196/3227.
+The late-April 2024 detector hit is descriptive, not a tuning signal.
+
+T1 keep rule before implementation/replay: keep an OFF-by-default persistence-only
+live option if synthetic tests prove finished-error-only weights, pre-origin
+persistence, unchanged monthly/herd forecasts, page/table agreement, honest blend
+labels/audit and unchanged frozen hashes. No adoption or accuracy claim follows
+from implementation. User decides adoption after replay; 2024–2026 stays descriptive.
+Use M10's exact persistence convention (last available complete calendar week with
+at least 5/7 scoreable days; mean per day, times seven for weekly totals), report its
+date and age. Missing reference keeps adaptive output; insufficient history gives
+weight one. Use the next longer scored horizon for unscored horizons (same mapping
+as OutputLayer), and the blend's own historical errors for intervals. Reconciled
+1.1.1 is unsupported for this option, because its path bypasses OutputLayer.
+
+T1 implementation result: off-by-default `--persistence-blend on` in build-outlook,
+version `pfoi-1.2.0-dev-persistence`; persisted page audit and own-error intervals.
+67 distinct selected synthetic tests passed (guarded regression: 26 passed, one
+SQLite integration test deselected). Both frozen hashes unchanged. The first
+regression selection accidentally ran that in-memory SQLite test before being
+stopped; subsequent runs block SQLAlchemy/SQLite connections. No farm DB accessed.
+See `t1_live_persistence.md` for files, checks, limitations and four user-run replay
+commands. Adoption and real-data replay remain pending; T2 has not started.
+
+### T1 rejected; next direction (user decision, 2026-10-21)
+
+The user rejected combining the forecast with persistence (M10 and T1). `--persistence-blend` stays
+off, the replay commands in `t1_live_persistence.md` are no longer needed, and no PP1 output uses
+the blend. Code and tests are kept (off by default); frozen hashes are unchanged.
+
+Next direction requested by the user: a deep-learning or memory-based milk model, trained and
+evaluated under an explicit chronological train / validation / test split with a horizon embargo.
+Split protocol and model choice to be agreed with the user before implementation.
+
+### Neural milk model (2026-10-21; implemented, real-data run pending)
+
+User-chosen split (`pfoi/neural.py`, `STAGES`): stage 1 shipment, train 2015-08 – 2017-06,
+validation 2017-07 – 2017-12, test 2018-01 – 2019-12; stage 2 DelPro, train 2020-08 – 2022-06,
+validation 2022-07 – 2022-12, test 2023-01 – data end, fine-tuned from stage 1 (`neural_transfer`)
+and also trained from scratch (`neural_scratch`) so transfer is measured. Targets are masked at
+each part's end (embargo); inputs use days before the origin only; the engine path is the latest
+weekly run at or before the origin. Model: GRU over 56 days of log(litres / 28-day level) + herd
+state (DIM, parity, dry-pregnant and heifer-pregnant per milking cow, recent calvings, season) +
+the engine's 98-day path; output = correction added to the engine path; 5-seed ensemble. Scored
+on Monday test origins (daily 1/7/14, weekly 1/4/8/13) against milk_baseline, persistence,
+seasonal naive and ETS on identical periods. Stage-2 test from 2024 was viewed before: descriptive.
+Not written to `c1_output`; writing is a later user decision. Tests: `test_neural.py` (synthetic).
+
+### pfoi-1.2.1-dev: target and baseline (2026-10-22)
+
+**Target (user, 2026-10-22):** 85 % of milk forecasts within ±10 % of the recorded value, at every
+horizon including **week 13 and months 6–12**. Measured with `hit-rate` (`pfoi/hit_rate.py`) on
+trusted record periods (quality band normal or degraded); unverified and gap periods are reported
+separately, never dropped silently. The tolerance and the definition stay fixed.
+
+**Baseline, pfoi-1.2.0-dev (`milk_baseline_adaptive`), development origins 2017–2023, trusted periods,
+share within ±10 % (persistence in brackets, benchmark only):** day 1 / 7 / 14: 0.922 / 0.885 / 0.833
+(0.945 / 0.888 / 0.830); week 1 / 4 / 8 / 13: 0.925 / 0.782 / 0.663 / 0.545 (0.943 / 0.752 / 0.604 /
+0.440); month 1 / 3 / 6 / 12: 0.897 / 0.667 / 0.531 / 0.431 (0.794 / 0.500 / 0.250 / 0.207). WAPE month
+6 / 12: 13.3 % / 16.2 %. Target met in 7 of 22 cells. 2024–26 (engine without correction): trusted
+n only 27 daily / 21 weekly / 3 monthly periods, 334 forecasts unverified or gap: descriptive only.
+
+**Assessment:** month 6–12 and week 13 need the typical error cut about threefold (WAPE ≈ 4–5 %).
+Reachability is unknown; `milk-error-split` (`pfoi/error_split.py`) measures it first: milk error =
+cow-count part + yield-per-cow part, with the hit rate each would allow if exact (hindsight ceilings,
+diagnostic only). The first 1.2.1-dev change is chosen from that split.
+
+**Error split result (user run, 2026-10-22; development, trusted periods).** Yield per cow, not
+the cow count, is 85–93 % of the squared milk error (mean absolute cow error 1–8 %, yield error
+4–22 %). Within ±10 % now / if cows exact / if yield exact: week 4 0.782 / 0.745 / 0.991; week 13
+0.545 / 0.551 / 0.808; month 3 0.667 / 0.576 / 0.864; month 6 0.531 / 0.594 / 0.719; month 12
+0.431 / 0.379 / 0.707. Month-12 yield bias +14 %. So the user's 85 % target at months 6–12 and week
+13 needs both parts improved (yield first); yield alone could reach it up to week 4 and month 3.
+The chart-based guess that cow drift dominates is not supported on 2017–2023.
+
+### pfoi-1.2.1-dev change 1: damped trend in the yield correction (2026-10-22): tested and dropped
+
+Method in `docs/layer1_adaptive.md` (section "Damped trend"). **Keep rule, fixed before any
+real run:** on development origins 2017–2023, trusted periods, share within ±10 %, keep
+`milk_baseline_adaptive_trend` only if it rises at week 13 and months 3, 6 and 12, does not
+fall at week 1 or month 1, and no forecast year is worse by more than 5 percentage points
+(a year's share = mean over its horizons, each horizon weighted equally). Otherwise it is
+recorded here as tested and dropped (code kept, off). Applied by
+`hit-rate --keep-rule milk_baseline_adaptive milk_baseline_adaptive_trend`.
+Synthetic warning: after a decline ends, the trend overshoots and the year-by-year choice
+lags one year, so the per-year check may fail on 2022–2023.
+
+**Result (user run, 2026-10-22; development 2017–2023, trusted periods): DROP.** Code kept, off.
+- `adapt-trend`: with the trend off, the correction reproduces pfoi-1.2.0-dev `milk_baseline_adaptive`
+  (2,611 of 2,611 rows, max relative difference 2.6e-15 = CSV rounding).
+- Year-by-year choice: **off was chosen in every year 2018–2023** (2017: no earlier periods, off).
+  Every trend setting (phi 0.8 / 0.9 / 0.95 × q_trend 0.01 / 0.05) missed ±10 % more often than off
+  on the earlier periods of every fold; share outside ±10 %, off vs best trend (d0.8b0.01):
+  2018 0.250 / 0.285, 2019 0.178 / 0.205, 2020 0.147 / 0.176, 2021 0.147 / 0.170,
+  2022 0.160 / 0.171, 2023 0.207 / 0.217.
+- So `milk_baseline_adaptive_trend` equals `milk_baseline_adaptive` on every forecast: within ±10 %
+  week 13 / month 3 / 6 / 12 = 0.545 / 0.667 / 0.531 / 0.431, unchanged. Keep rule fails on all four
+  "must rise" checks (change 0.000); the hold and per-year checks pass trivially.
+- Hit rate by forecast year (`milk_baseline_adaptive`, mean share within ±10 % over horizons):
+  2017 0.755, 2018 0.897, 2019 0.933, 2020 0.743, 2021 0.806, **2022 0.399, 2023 0.376**.
+  Stable years 2018–2019 are close to the 85 % target at most horizons (2019: 1.000 up to week 4,
+  week 13 0.885, month 3 1.000); misses concentrate in regime-change years: 2020 (source switch;
+  month 12 0.100), 2021 (yield decline; month 6 0.100, month 12 0.000) and 2022–2023, where even
+  day 1 drops to 0.744 / 0.660 (persistence 0.872 / 0.720), so the short horizons miss too.
+- Error split unchanged (same forecasts): yield per cow by forecast year, month 12 +16.7 % (2020),
+  +48.2 % (2021), +36.7 % (2022); week 13 +20.9 % (2022) then −21.2 % (2023).
+- Reading: a damped slope learned from finished errors does not help, because the yield drift is
+  only seen at long horizons 6–12 months after the fact, and the rebounds (2022→2023) reverse it;
+  this matches the synthetic warning (overshoot after a drift ends). The PP1 finding stands on the
+  diagnosis: accurate in stable years, misses come from regime changes, measured by the error split
+  and now by hit rate per forecast year.
