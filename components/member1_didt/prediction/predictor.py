@@ -45,6 +45,10 @@ class FarmXMilkYieldPredictor:
             if artifact_sklearn != sklearn.__version__:
                 raise PredictorUnavailable("The model artifact requires a different scikit-learn version.")
             self.model_version = self.metadata["model_version"]
+        except PredictorUnavailable:
+            # Preserve safe, actionable compatibility failures instead of
+            # disguising them as generic deserialization errors.
+            raise
         except Exception as exc:
             raise PredictorUnavailable("The configured Farm X model artifact could not be loaded.") from exc
 

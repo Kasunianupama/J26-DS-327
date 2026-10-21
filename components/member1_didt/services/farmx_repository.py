@@ -37,7 +37,35 @@ def component_engine() -> Engine:
     )
 
 
-CURRENT_STATE_SQL = text("""
+SELECTED_RECORD_QUALITY_SQL = """
+      d.yield_litres is not null and d.yield_litres >= 0
+      and coalesce(a.is_placeholder,false)=false
+      and coalesce(d.is_unlinked_animal,false)=false
+      and coalesce(d.is_placeholder,false)=false
+      and coalesce(d.is_spike,false)=false
+      and coalesce(d.is_missing_yield,false)=false
+      and coalesce(d.is_bad_date,false)=false
+      and d.dim is not null and d.dim >= 0
+      and (d.lactation_no is null or d.lactation_no >= 0)
+"""
+
+
+CURRENT_STATE_SQL = text(f"""
+    with eligible_records as (
+        select source_row.*,
+               row_number() over (
+                   partition by source_row.animal_key
+                   order by source_row.milk_date desc, source_row.record_key asc
+               ) as latest_rank
+        from core.daily_milk source_row
+        where source_row.animal_key=:animal_ref
+          and source_row.animal_key is not null
+          and source_row.milk_date >= date '2026-01-01'
+          and source_row.milk_date < date '2027-01-01'
+          and source_row.milkings > 0
+    ), selected_record as (
+        select * from eligible_records where latest_rank=1
+    )
     select d.animal_key as animal_ref, d.milk_date as observed_date,
            a.breed, (d.milk_date - a.birth_date) as age_days,
            d.lactation_no, d.dim as days_in_milk, cd.days_pregnant,
@@ -46,7 +74,7 @@ CURRENT_STATE_SQL = text("""
            case when d.dm_consumed >= 0 then d.dm_consumed end as dry_matter_intake,
            case when d.conc_consumed >= 0 then d.conc_consumed end as concentrate_intake,
            case when d.avg_bcs between 1 and 5 then d.avg_bcs end as bcs,
-           case when d.avg_weight > 0 then d.avg_weight end as body_weight,
+           bm.weight as body_weight,
            d.avg_rectal_temp as rectal_temperature,
            w.thi_mean,
            a.n_calvings,
@@ -56,42 +84,52 @@ CURRENT_STATE_SQL = text("""
            (select count(*) from core.treatment_history th
              where th.animal_key=d.animal_key and th.treatment_start_date between d.milk_date - 30 and d.milk_date
                and coalesce(th.is_bad_date,false)=false) as recent_treatment_count
-    from core.daily_milk d
+    from selected_record d
     join core.animal a on a.animal_key=d.animal_key
     left join core.weather_day w on w.date=d.milk_date
+    -- This measurement lookup is intentionally independent of d.milk_date.
+    left join lateral (
+        select measure.weight
+        from core.body_measure measure
+        where measure.animal_key=d.animal_key
+          and measure.measure_type='weight'
+          and measure.weight is not null
+          and measure.weight > 0
+          and measure.weight < 'Infinity'::double precision
+          and measure.event_date is not null
+          and coalesce(measure.is_bad_date,true)=false
+          and coalesce(measure.is_unlinked_animal,true)=false
+        order by measure.event_date desc, measure.event_ts desc nulls last,
+                 measure.record_key asc
+        limit 1
+    ) bm on true
     left join lateral (
         select cow_day.days_pregnant from core.cow_day
         where cow_day.animal_key=d.animal_key and cow_day.milk_date=d.milk_date
         order by cow_day.is_reliable desc nulls last limit 1
     ) cd on true
-    where d.animal_key=:animal_ref
-      and coalesce(a.is_placeholder,false)=false
-      and coalesce(d.is_unlinked_animal,false)=false
-      and coalesce(d.is_placeholder,false)=false
-      and coalesce(d.is_spike,false)=false
-      and coalesce(d.is_missing_yield,false)=false
-      and coalesce(d.is_bad_date,false)=false
-      and d.yield_litres is not null and d.yield_litres >= 0 and d.dim is not null and d.dim >= 0
-      and (d.lactation_no is null or d.lactation_no >= 0)
-    order by d.milk_date desc limit 1
+    where {SELECTED_RECORD_QUALITY_SQL}
 """)
 
 
-AVAILABLE_ANIMALS_SQL = text("""
-    select distinct on (d.animal_key)
-           d.animal_key as animal_ref, d.milk_date as observed_date
-    from core.daily_milk d
-    join core.animal a on a.animal_key=d.animal_key
-    where coalesce(a.is_placeholder,false)=false
-      and coalesce(d.is_unlinked_animal,false)=false
-      and coalesce(d.is_placeholder,false)=false
-      and coalesce(d.is_spike,false)=false
-      and coalesce(d.is_missing_yield,false)=false
-      and coalesce(d.is_bad_date,false)=false
-      and d.yield_litres is not null and d.yield_litres >= 0
-      and d.dim is not null and d.dim >= 0
-      and (d.lactation_no is null or d.lactation_no >= 0)
-    order by d.animal_key, d.milk_date desc
+AVAILABLE_ANIMALS_SQL = text(f"""
+    with eligible_records as (
+        select source_row.*,
+               row_number() over (
+                   partition by source_row.animal_key
+                   order by source_row.milk_date desc, source_row.record_key asc
+               ) as latest_rank
+        from core.daily_milk source_row
+        where source_row.animal_key is not null
+          and source_row.milk_date >= date '2026-01-01'
+          and source_row.milk_date < date '2027-01-01'
+          and source_row.milkings > 0
+    )
+    select d.animal_key as animal_ref,
+           d.milk_date as observed_date
+    from eligible_records d
+    where d.latest_rank=1
+    order by d.animal_key
     limit :limit
 """)
 
@@ -163,7 +201,7 @@ class FarmXRepository:
             if value is not None and not predicate(value):
                 record[key] = None
                 limitations.append(explanation)
-        for key in ("milk_yield_l_day", "dry_matter_intake", "concentrate_intake", "rectal_temperature", "thi_mean"):
+        for key in ("milk_yield_l_day", "dry_matter_intake", "concentrate_intake", "body_weight", "rectal_temperature", "thi_mean"):
             value = record.get(key)
             if value is not None and isinstance(value, (float, int)) and not math.isfinite(value):
                 record[key] = None
@@ -172,7 +210,7 @@ class FarmXRepository:
             ("dry_matter_intake", "Dry matter intake is missing/invalid or its source unit is undocumented."),
             ("concentrate_intake", "Concentrate intake is missing/invalid or its source unit is undocumented."),
             ("bcs", "Body-condition score is unavailable for the latest valid day."),
-            ("body_weight", "Body weight is unavailable for the latest valid day."),
+            ("body_weight", "Body weight is unavailable because no valid measurement exists."),
             ("thi_mean", "Daily THI is unavailable for the latest valid day."),
         ):
             if record.get(key) is None:

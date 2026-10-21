@@ -39,24 +39,50 @@ class CowReference(BaseModel):
 class InterventionScenario(BaseModel):
     model_config = ConfigDict(extra="forbid")
     scenario_id: str | None = Field(default=None, max_length=120)
-    category: Literal["feed", "supplement", "heat", "management"]
+    category: Literal["heat", "management"]
     name: str = Field(min_length=1, max_length=120)
-    feature: Literal["dry_matter_intake", "concentrate_intake", "thi_mean", "milkings_per_day"]
+    feature: Literal["thi_mean", "milkings_per_day"]
     proposed_value: float = Field(allow_inf_nan=False)
     unit: str = Field(min_length=1, max_length=40)
     intervention_description: str = Field(default="", max_length=400)
+
+    @model_validator(mode="after")
+    def validate_supported_intervention(self):
+        supported = {
+            ("heat", "thi_mean", "THI"),
+            ("management", "milkings_per_day", "milkings/day"),
+        }
+        if (self.category, self.feature, self.unit) not in supported:
+            raise ValueError("Unsupported category, feature, or unit combination.")
+        if self.feature == "milkings_per_day" and self.proposed_value <= 0:
+            raise ValueError("Proposed milking frequency must be greater than zero.")
+        return self
+
+
+class CombinedScenarioInput(BaseModel):
+    """A single alternative changing both supported model features."""
+    model_config = ConfigDict(extra="forbid")
+    scenario_id: str = Field(default="combined-thi-milkings", min_length=1, max_length=120)
+    thi_mean: float = Field(allow_inf_nan=False)
+    milkings_per_day: float = Field(gt=0, allow_inf_nan=False)
 
 
 class SimulationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     animal_ref: str = Field(min_length=1, max_length=160)
     prediction_horizon_days: int = Field(default=1, ge=1, le=1)
-    # Each row is one independently simulated alternative; limit is intentional.
-    scenarios: list[InterventionScenario] = Field(min_length=1, max_length=8)
+    # Preserve the established cap of eight independent alternatives; the
+    # separately supplied combined alternative is optional and singular.
+    scenarios: list[InterventionScenario] = Field(default_factory=list, max_length=8)
+    combined_scenario: CombinedScenarioInput | None = None
 
     @model_validator(mode="after")
-    def unique_scenario_ids(self):
+    def validate_alternatives(self):
+        if not self.scenarios and self.combined_scenario is None:
+            raise ValueError("At least one individual or combined alternative is required.")
         ids = [scenario.scenario_id for scenario in self.scenarios if scenario.scenario_id]
+        if self.combined_scenario is not None:
+            ids.append(self.combined_scenario.scenario_id)
         if len(ids) != len(set(ids)):
             raise ValueError("Scenario identifiers must be unique within a request.")
         return self
@@ -78,6 +104,7 @@ class ScenarioEstimate(BaseModel):
     baseline_value: float | None = None
     proposed_value: float
     unit: str
+    model_support_status: Literal["PASSED", "OUTSIDE_TRAINING_SUPPORT", "RANGE_UNAVAILABLE", "NOT_ASSESSED"] = "NOT_ASSESSED"
     change_applied: float | None = None
     baseline_predicted_milk_yield_l_day: float | None = None
     counterfactual_predicted_milk_yield_l_day: float | None = None
@@ -90,8 +117,54 @@ class ScenarioEstimate(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class CombinedScenarioEstimate(BaseModel):
+    scenario_id: str
+    name: str = "Combined THI and milking-frequency what-if"
+    scenario_status: Literal[
+        "ESTIMATED_MODEL_INPUT_PERTURBATION",
+        "BASELINE_FEATURE_UNAVAILABLE",
+        "OUTSIDE_TRAINING_SUPPORT",
+        "PREDICTION_UNAVAILABLE",
+    ]
+    baseline_thi_mean: float | None = None
+    proposed_thi_mean: float
+    baseline_milkings_per_day: float | None = None
+    proposed_milkings_per_day: float
+    baseline_predicted_milk_yield_l_day: float | None = None
+    counterfactual_predicted_milk_yield_l_day: float | None = None
+    absolute_yield_change_l_day: float | None = None
+    percentage_yield_change: float | None = None
+    model_version: str | None = None
+    model_support_status: Literal["PASSED", "OUTSIDE_TRAINING_SUPPORT", "RANGE_UNAVAILABLE", "NOT_ASSESSED"] = "NOT_ASSESSED"
+    estimate_type: str = "model_based_counterfactual_estimate"
+    operational_feasibility_validated: bool = False
+    assumptions: list[str] = Field(default_factory=list)
+    data_limitations: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class RankedAlternative(BaseModel):
+    rank: int
+    scenario_id: str
+    alternative_type: Literal["individual", "combined"]
+    name: str
+    scenario_status: str
+    predicted_milk_yield_l_day: float
+    baseline_predicted_milk_yield_l_day: float
+    absolute_yield_change_l_day: float
+    percentage_yield_change: float | None = None
+    model_version: str | None = None
+    model_support_status: Literal["PASSED"]
+    operational_feasibility_validated: bool = False
+
+
+class ScenarioRecommendation(RankedAlternative):
+    explanation: str
+    limitations: list[str] = Field(default_factory=list)
+
+
 class SimulationResponse(BaseModel):
-    contract_version: str = "1.0"
+    contract_version: str = "1.1"
     animal_ref: str
     observed_date: str | None = None
     observed_milk_yield_l_day: float | None = None
@@ -101,4 +174,8 @@ class SimulationResponse(BaseModel):
     baseline_predicted_milk_yield_l_day: float | None = None
     model_version: str | None = None
     scenarios: list[ScenarioEstimate]
+    combined_scenario: CombinedScenarioEstimate | None = None
+    ranked_alternatives: list[RankedAlternative] = Field(default_factory=list)
+    recommendation: ScenarioRecommendation | None = None
+    recommendation_explanation: str = "No recommendation has been evaluated."
     warnings: list[str] = Field(default_factory=list)

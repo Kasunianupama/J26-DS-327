@@ -1,9 +1,12 @@
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend.app.main import app
+from backend.app.api.routes import interventions
 from components.member1_didt.schemas.counterfactual import CowState, SimulationResponse
 
 
+app = FastAPI()
+app.include_router(interventions.router, prefix="/api/v1")
 client = TestClient(app)
 
 
@@ -50,6 +53,49 @@ def test_request_validation_and_legacy_endpoint_regression():
     assert legacy.json()["validated"] is False
 
 
+def test_api_rejects_feed_concentrate_and_mismatched_scenarios():
+    unsupported_scenarios = [
+        {"category": "feed", "name": "feed", "feature": "dry_matter_intake",
+         "proposed_value": 20, "unit": "kg/day"},
+        {"category": "supplement", "name": "concentrate", "feature": "concentrate_intake",
+         "proposed_value": 7, "unit": "kg/day"},
+        {"category": "heat", "name": "wrong feature", "feature": "milkings_per_day",
+         "proposed_value": 2, "unit": "milkings/day"},
+        {"category": "management", "name": "wrong feature", "feature": "thi_mean",
+         "proposed_value": 68, "unit": "THI"},
+    ]
+    for unsupported in unsupported_scenarios:
+        result = client.post("/api/v1/interventions/simulate-counterfactual", json={
+            "animal_ref": "SYNTH-API-1", "scenarios": [unsupported],
+        })
+        assert result.status_code == 422
+
+
+def test_api_rejects_nonpositive_milking_frequency():
+    for value in (0, -1):
+        result = client.post("/api/v1/interventions/simulate-counterfactual", json={
+            "animal_ref": "SYNTH-API-1", "scenarios": [{
+                "category": "management", "name": "frequency", "feature": "milkings_per_day",
+                "proposed_value": value, "unit": "milkings/day",
+            }],
+        })
+        assert result.status_code == 422
+
+
+def test_api_accepts_combined_only_alternative(monkeypatch):
+    import backend.app.api.routes.interventions as route
+    received = []
+    monkeypatch.setattr(route, "run_simulation", lambda request: (received.append(request) or response()))
+    result = client.post("/api/v1/interventions/simulate-counterfactual", json={
+        "animal_ref": "SYNTH-API-1",
+        "scenarios": [],
+        "combined_scenario": {"scenario_id": "both", "thi_mean": 68, "milkings_per_day": 3},
+    })
+    assert result.status_code == 200
+    assert received[0].combined_scenario.thi_mean == 68
+    assert received[0].scenarios == []
+
+
 def test_missing_animal_and_database_failure_return_safe_http_errors(monkeypatch):
     import backend.app.api.routes.interventions as route
     from components.member1_didt.services.farmx_repository import AnimalNotFound, FarmXDataUnavailable
@@ -78,3 +124,44 @@ def test_available_animal_selector_returns_only_approved_reference_and_date(monk
     result = client.get("/api/v1/interventions/cows")
     assert result.status_code == 200
     assert result.json() == [{"animal_ref": "SYNTH-API-1", "observed_date": "2026-01-02"}]
+
+
+def test_model_support_endpoint_exposes_only_existing_training_ranges(monkeypatch):
+    import backend.app.api.routes.interventions as route
+
+    class PredictorWithMetadata:
+        model_version = "synthetic-test-model"
+        metadata = {"observed_numeric_support": {
+            "thi_mean": {"minimum": 55.25, "maximum": 82.75},
+            "milkings_per_day": {"minimum": 1, "maximum": 4},
+            "body_weight": {"minimum": 400, "maximum": 800},
+        }}
+
+    monkeypatch.setattr(route, "FarmXMilkYieldPredictor", PredictorWithMetadata)
+    result = client.get("/api/v1/interventions/model-support")
+    assert result.status_code == 200
+    assert result.json() == {
+        "status": "AVAILABLE",
+        "model_version": "synthetic-test-model",
+        "features": {
+            "thi_mean": {"minimum": 55.25, "maximum": 82.75},
+            "milkings_per_day": {"minimum": 1.0, "maximum": 4.0},
+        },
+    }
+
+
+def test_model_support_endpoint_fails_safely_without_compatible_model(monkeypatch):
+    import backend.app.api.routes.interventions as route
+
+    def unavailable_predictor():
+        raise RuntimeError("private artifact detail")
+
+    monkeypatch.setattr(route, "FarmXMilkYieldPredictor", unavailable_predictor)
+    result = client.get("/api/v1/interventions/model-support")
+    assert result.status_code == 200
+    assert result.json() == {
+        "status": "UNAVAILABLE",
+        "model_version": None,
+        "features": {"thi_mean": None, "milkings_per_day": None},
+    }
+    assert "private artifact detail" not in result.text
