@@ -124,3 +124,44 @@ def test_available_animal_selector_returns_only_approved_reference_and_date(monk
     result = client.get("/api/v1/interventions/cows")
     assert result.status_code == 200
     assert result.json() == [{"animal_ref": "SYNTH-API-1", "observed_date": "2026-01-02"}]
+
+
+def test_model_support_endpoint_exposes_only_existing_training_ranges(monkeypatch):
+    import backend.app.api.routes.interventions as route
+
+    class PredictorWithMetadata:
+        model_version = "synthetic-test-model"
+        metadata = {"observed_numeric_support": {
+            "thi_mean": {"minimum": 55.25, "maximum": 82.75},
+            "milkings_per_day": {"minimum": 1, "maximum": 4},
+            "body_weight": {"minimum": 400, "maximum": 800},
+        }}
+
+    monkeypatch.setattr(route, "FarmXMilkYieldPredictor", PredictorWithMetadata)
+    result = client.get("/api/v1/interventions/model-support")
+    assert result.status_code == 200
+    assert result.json() == {
+        "status": "AVAILABLE",
+        "model_version": "synthetic-test-model",
+        "features": {
+            "thi_mean": {"minimum": 55.25, "maximum": 82.75},
+            "milkings_per_day": {"minimum": 1.0, "maximum": 4.0},
+        },
+    }
+
+
+def test_model_support_endpoint_fails_safely_without_compatible_model(monkeypatch):
+    import backend.app.api.routes.interventions as route
+
+    def unavailable_predictor():
+        raise RuntimeError("private artifact detail")
+
+    monkeypatch.setattr(route, "FarmXMilkYieldPredictor", unavailable_predictor)
+    result = client.get("/api/v1/interventions/model-support")
+    assert result.status_code == 200
+    assert result.json() == {
+        "status": "UNAVAILABLE",
+        "model_version": None,
+        "features": {"thi_mean": None, "milkings_per_day": None},
+    }
+    assert "private artifact detail" not in result.text
