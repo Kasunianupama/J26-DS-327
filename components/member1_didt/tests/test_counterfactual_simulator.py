@@ -2,6 +2,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 import pytest
+import joblib
 
 from components.member1_didt.prediction.model_training import train_and_evaluate
 from components.member1_didt.prediction.predictor import (
@@ -74,14 +75,42 @@ def test_multiple_scenarios_are_independent_and_original_state_is_unchanged():
     assert state.thi_mean == 70
 
 
-def test_feed_input_is_explicitly_unsupported_and_never_predicted():
-    predictor = FakePredictor()
-    _, _, results, _ = CounterfactualSimulator(predictor).run(
-        cow(), [scenario(feature="dry_matter_intake", value=19, category="feed", unit="kg/day")],
-    )
-    assert results[0].scenario_status == "UNSUPPORTED_INTERVENTION_SEMANTICS"
-    assert results[0].counterfactual_predicted_milk_yield_l_day is None
-    assert len(predictor.states) == 1  # baseline only
+def test_milking_frequency_scenario_changes_only_milkings_and_is_hypothetical():
+    state = cow()
+    predictor = FakePredictor(fn=lambda current: 20 + current.milkings_per_day)
+    intervention = scenario(feature="milkings_per_day", value=3.0, category="management",
+                            unit="milkings/day")
+    baseline, _, results, _ = CounterfactualSimulator(predictor).run(state, [intervention])
+
+    result = results[0]
+    assert baseline == 22.0
+    assert result.counterfactual_predicted_milk_yield_l_day == 23.0
+    assert result.absolute_yield_change_l_day == 1.0
+    assert predictor.states[1].milkings_per_day == 3.0
+    assert predictor.states[1].thi_mean == state.thi_mean
+    assert predictor.states[1].milk_yield_l_day == state.milk_yield_l_day
+    assert state.milkings_per_day == 2.0
+    assert any("operational feasibility are not assessed" in w for w in result.warnings)
+
+
+@pytest.mark.parametrize("scenario_values", [
+    {"category": "feed", "feature": "dry_matter_intake", "unit": "kg/day"},
+    {"category": "supplement", "feature": "concentrate_intake", "unit": "kg/day"},
+    {"category": "heat", "feature": "milkings_per_day", "unit": "milkings/day"},
+    {"category": "management", "feature": "thi_mean", "unit": "THI"},
+    {"category": "heat", "feature": "thi_mean", "unit": "index"},
+])
+def test_request_rejects_unsupported_intervention_combinations(scenario_values):
+    values = {"category": "heat", "feature": "thi_mean", "unit": "THI"}
+    values.update(scenario_values)
+    with pytest.raises(Exception):
+        scenario(**values)
+
+
+@pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan")])
+def test_request_rejects_invalid_milking_frequency_values(value):
+    with pytest.raises(Exception):
+        scenario(feature="milkings_per_day", value=value, category="management", unit="milkings/day")
 
 
 def test_outside_training_support_is_reported_and_prediction_withheld():
@@ -133,6 +162,31 @@ def test_model_artifact_missing_fails_explicitly(tmp_path):
         FarmXMilkYieldPredictor(tmp_path / "missing.joblib")
 
 
+def test_incompatible_model_artifact_reports_safe_version_failure(tmp_path):
+    target = tmp_path / "incompatible.joblib"
+    joblib.dump({
+        "estimator": object(),
+        "metadata": {"scikit_learn_version": "0.0-incompatible", "model_version": "synthetic"},
+    }, target)
+
+    with pytest.raises(PredictorUnavailable, match="different scikit-learn version"):
+        FarmXMilkYieldPredictor(target)
+
+
+def test_current_state_body_weight_is_passed_to_the_model_feature_frame():
+    class CapturingEstimator:
+        def predict(self, frame):
+            self.frame = frame.copy()
+            return [24.0]
+
+    predictor = FarmXMilkYieldPredictor.__new__(FarmXMilkYieldPredictor)
+    predictor.estimator = CapturingEstimator()
+    predictor.model_version = "synthetic-test-only"
+
+    assert predictor.predict(cow(body_weight=537.5)) == 24.0
+    assert predictor.estimator.frame.loc[0, "body_weight"] == 537.5
+
+
 def test_training_uses_chronological_holdout_and_records_empirical_support(tmp_path):
     rows = []
     start = date(2025, 1, 1)
@@ -145,3 +199,7 @@ def test_training_uses_chronological_holdout_and_records_empirical_support(tmp_p
     assert report.train_end_date < report.test_start_date
     assert report.test_rows == 180
     assert target.is_file()
+    predictor = FarmXMilkYieldPredictor(target)
+    assert predictor.model_version == report.model_version
+    prediction = predictor.predict(cow())
+    assert pd.notna(prediction)

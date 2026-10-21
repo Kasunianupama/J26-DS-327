@@ -1,9 +1,12 @@
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend.app.main import app
+from backend.app.api.routes import interventions
 from components.member1_didt.schemas.counterfactual import CowState, SimulationResponse
 
 
+app = FastAPI()
+app.include_router(interventions.router, prefix="/api/v1")
 client = TestClient(app)
 
 
@@ -48,6 +51,35 @@ def test_request_validation_and_legacy_endpoint_regression():
     assert legacy.status_code == 200
     assert legacy.json()["predicted_yield_change_percent"] is None
     assert legacy.json()["validated"] is False
+
+
+def test_api_rejects_feed_concentrate_and_mismatched_scenarios():
+    unsupported_scenarios = [
+        {"category": "feed", "name": "feed", "feature": "dry_matter_intake",
+         "proposed_value": 20, "unit": "kg/day"},
+        {"category": "supplement", "name": "concentrate", "feature": "concentrate_intake",
+         "proposed_value": 7, "unit": "kg/day"},
+        {"category": "heat", "name": "wrong feature", "feature": "milkings_per_day",
+         "proposed_value": 2, "unit": "milkings/day"},
+        {"category": "management", "name": "wrong feature", "feature": "thi_mean",
+         "proposed_value": 68, "unit": "THI"},
+    ]
+    for unsupported in unsupported_scenarios:
+        result = client.post("/api/v1/interventions/simulate-counterfactual", json={
+            "animal_ref": "SYNTH-API-1", "scenarios": [unsupported],
+        })
+        assert result.status_code == 422
+
+
+def test_api_rejects_nonpositive_milking_frequency():
+    for value in (0, -1):
+        result = client.post("/api/v1/interventions/simulate-counterfactual", json={
+            "animal_ref": "SYNTH-API-1", "scenarios": [{
+                "category": "management", "name": "frequency", "feature": "milkings_per_day",
+                "proposed_value": value, "unit": "milkings/day",
+            }],
+        })
+        assert result.status_code == 422
 
 
 def test_missing_animal_and_database_failure_return_safe_http_errors(monkeypatch):

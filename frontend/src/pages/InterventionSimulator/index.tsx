@@ -3,8 +3,8 @@ import axios from 'axios';
 import { api } from '../../services/api';
 import './InterventionSimulator.css';
 
-type Category = 'feed' | 'supplement' | 'heat' | 'management';
-type Feature = 'dry_matter_intake' | 'concentrate_intake' | 'thi_mean' | 'milkings_per_day';
+type Category = 'heat' | 'management';
+type Feature = 'thi_mean' | 'milkings_per_day';
 type ScenarioInput = { category: Category; feature: Feature; proposed_value: string; scenario_id: string };
 type CowState = {
   animal_ref: string; observed_date: string | null; breed: string | null; age_days: number | null;
@@ -30,14 +30,12 @@ type SimulationResponse = {
 };
 
 const featureFor: Record<Category, Feature> = {
-  feed: 'dry_matter_intake', supplement: 'concentrate_intake', heat: 'thi_mean', management: 'milkings_per_day',
+  heat: 'thi_mean', management: 'milkings_per_day',
 };
 const featureName: Record<Feature, string> = {
-  dry_matter_intake: 'Dry matter intake', concentrate_intake: 'Concentrate intake',
   thi_mean: 'Temperature humidity index', milkings_per_day: 'Milkings per day',
 };
 const unitFor: Record<Feature, string> = {
-  dry_matter_intake: 'source unit undocumented', concentrate_intake: 'source unit undocumented',
   thi_mean: 'THI', milkings_per_day: 'milkings/day',
 };
 const emptyScenario = (n: number): ScenarioInput => ({ category: 'heat', feature: 'thi_mean', proposed_value: '', scenario_id: `whatif-${n}` });
@@ -47,6 +45,7 @@ function nextScenarioId(rows: ScenarioInput[]) {
   return `whatif-${index}`;
 }
 const show = (value: number | string | null | undefined, suffix = '') => value == null ? 'Unavailable' : `${value}${suffix}`;
+const showTwoDecimals = (value: number | null | undefined, suffix = '') => value == null ? 'Unavailable' : `${value.toFixed(2)}${suffix}`;
 
 export default function InterventionSimulatorPage() {
   const [animalRef, setAnimalRef] = useState('');
@@ -91,13 +90,13 @@ export default function InterventionSimulatorPage() {
       scenarios: scenarios.map((row) => ({
         scenario_id: row.scenario_id,
         category: row.category,
-        name: `${featureName[row.feature]} what-if`,
+        name: row.category === 'heat' ? 'Hypothetical THI exposure change' : 'Hypothetical milking frequency change',
         feature: row.feature,
         proposed_value: Number(row.proposed_value),
         unit: unitFor[row.feature],
         intervention_description: row.category === 'heat'
-          ? 'THI exposure model-input perturbation; no cooling action is assumed.'
-          : 'User-proposed model-input perturbation; no causal effect is asserted.',
+          ? 'Hypothetical THI exposure change; not a cooling intervention or verified causal effect.'
+          : 'Hypothetical milking frequency change; operational feasibility is not validated, and no causal effect is asserted.',
       })),
     };
     try {
@@ -128,9 +127,9 @@ export default function InterventionSimulatorPage() {
         {state && <>
           <div className="didt-live__facts">
             {([['Observed date', state.observed_date], ['Breed', state.breed], ['Age', show(state.age_days, ' days')],
-              ['Lactation number', state.lactation_no], ['Days in milk', state.days_in_milk], ['Observed milk yield', show(state.milk_yield_l_day, ' L/day')],
+              ['Lactation number', state.lactation_no], ['Days in milk', state.days_in_milk], ['Observed milk yield', showTwoDecimals(state.milk_yield_l_day, ' L/day')],
               ['Milkings/day', state.milkings_per_day], ['Dry matter intake', state.dry_matter_intake], ['Concentrate intake', state.concentrate_intake],
-              ['BCS', state.bcs], ['Body weight', state.body_weight], ['THI', state.thi_mean], ['Days pregnant', state.days_pregnant]] as [string, unknown][])
+              ['BCS', state.bcs], ['Body weight', state.body_weight], ['THI', showTwoDecimals(state.thi_mean)], ['Days pregnant', state.days_pregnant]] as [string, unknown][])
               .map(([label, value]) => <div key={label}><span>{label}</span><b>{value == null ? 'Unavailable' : String(value)}</b></div>)}
           </div>
           {!!state.data_limitations.length && <aside className="didt-live__notice"><b>Data limitations</b><ul>{state.data_limitations.map((item) => <li key={item}>{item}</li>)}</ul></aside>}
@@ -143,13 +142,12 @@ export default function InterventionSimulatorPage() {
         {scenarios.map((scenario, index) => <div className="didt-live__scenario" key={scenario.scenario_id}>
           <label>Input category<select value={scenario.category} onChange={(e) => updateScenario(index, { category: e.target.value as Category })}>
             <option value="heat">THI exposure input</option><option value="management">Milking frequency input</option>
-            <option value="feed">Feed intake input</option><option value="supplement">Concentrate intake input</option>
           </select></label>
           <label>Proposed {featureName[scenario.feature]}<input type="number" step="any" value={scenario.proposed_value} onChange={(e) => updateScenario(index, { proposed_value: e.target.value })} placeholder={`Current: ${show(state[scenario.feature as keyof CowState] as number | null)}`} /></label>
           <div className="didt-live__unit">Unit: {unitFor[scenario.feature]}</div>
           {scenarios.length > 1 && <button className="didt-live__remove" type="button" onClick={() => setScenarios((rows) => rows.filter((_, i) => i !== index))}>Remove</button>}
         </div>)}
-        <p className="didt-live__small">Feed and supplement inputs are not mapped to controllable ration changes because their units/action semantics are undocumented. THI is an exposure input; milking frequency is not checked for farm feasibility.</p>
+        <p className="didt-live__small">Available scenarios: hypothetical THI exposure changes and milking frequency changes. Feed and concentrate interventions are unavailable because the required intervention data and semantics are not sufficiently supported. Milking frequency operational feasibility is not validated.</p>
         <button type="button" onClick={simulate} disabled={busy || !hasValidInputs}>{busy ? 'Estimating…' : 'Run counterfactual estimates'}</button>
       </section>}
 

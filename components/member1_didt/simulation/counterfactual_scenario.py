@@ -2,8 +2,6 @@
 from components.member1_didt.schemas.counterfactual import CowState, InterventionScenario
 
 FEATURE_TO_FIELD = {
-    "dry_matter_intake": "dry_matter_intake",
-    "concentrate_intake": "concentrate_intake",
     "thi_mean": "thi_mean",
     "milkings_per_day": "milkings_per_day",
 }

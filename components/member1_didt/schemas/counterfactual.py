@@ -39,12 +39,24 @@ class CowReference(BaseModel):
 class InterventionScenario(BaseModel):
     model_config = ConfigDict(extra="forbid")
     scenario_id: str | None = Field(default=None, max_length=120)
-    category: Literal["feed", "supplement", "heat", "management"]
+    category: Literal["heat", "management"]
     name: str = Field(min_length=1, max_length=120)
-    feature: Literal["dry_matter_intake", "concentrate_intake", "thi_mean", "milkings_per_day"]
+    feature: Literal["thi_mean", "milkings_per_day"]
     proposed_value: float = Field(allow_inf_nan=False)
     unit: str = Field(min_length=1, max_length=40)
     intervention_description: str = Field(default="", max_length=400)
+
+    @model_validator(mode="after")
+    def validate_supported_intervention(self):
+        supported = {
+            ("heat", "thi_mean", "THI"),
+            ("management", "milkings_per_day", "milkings/day"),
+        }
+        if (self.category, self.feature, self.unit) not in supported:
+            raise ValueError("Unsupported category, feature, or unit combination.")
+        if self.feature == "milkings_per_day" and self.proposed_value <= 0:
+            raise ValueError("Proposed milking frequency must be greater than zero.")
+        return self
 
 
 class SimulationRequest(BaseModel):

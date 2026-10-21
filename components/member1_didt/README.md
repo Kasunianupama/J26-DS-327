@@ -16,7 +16,7 @@ The role also had visibility into `publish.publish_log`; its listed `model_input
 
 ## Predictor
 
-`FarmXMilkYieldPredictor` loads the local ignored artifact at `prediction/artifacts/farmx_milk_yield.joblib` (or `DIDT_MODEL_PATH`). It predicts next-calendar-day yield in litres/cow/day from the observed day using the fitted HistGradientBoosting pipeline with the same feature ordering and transformations for baseline and counterfactual input. The artifact records training ranges used to withhold estimates outside numeric training support. These empirical ranges are not biological limits.
+`FarmXMilkYieldPredictor` loads the local ignored artifact at `prediction/artifacts/farmx_milk_yield.joblib` (or `DIDT_MODEL_PATH`). The current artifact was serialized with scikit-learn 1.6.1, so the runtime uses that exact version; retrain and update the pin together when intentionally changing the model environment. It predicts next-calendar-day yield in litres/cow/day from the observed day using the fitted HistGradientBoosting pipeline with the same feature ordering and transformations for baseline and counterfactual input. The artifact records training ranges used to withhold estimates outside numeric training support. These empirical ranges are not biological limits.
 
 Training is offline from approved actual Farm X history with a chronological holdout and persistence baseline. The API never trains a model. No mock prediction fallback exists: a missing/incompatible artifact or prediction failure returns unavailable estimates. The artifact is ignored by Git and must be trained in each intended environment. Historical forecast metrics do not validate counterfactual effects.
 
