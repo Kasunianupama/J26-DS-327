@@ -77,12 +77,21 @@ def pfoi_runs():
 
 
 @router.get("/pfoi/run")
-def pfoi_run(origin: date | None = Query(default=None, description="Forecast date (YYYY-MM-DD); latest if omitted")):
+def pfoi_run(origin: date | None = Query(default=None, description="Forecast date (YYYY-MM-DD); latest if omitted"),
+             model_version: str | None = Query(default=None, description="Exact version (comparison chart); "
+                                                                         "default: the page's version")):
     """One published page document, or 404 so the page shows its labelled demo."""
-    run = outlook_service.run(origin)
+    run = outlook_service.run(origin, model_version)
     if run is None:
         raise HTTPException(status_code=404, detail="No PFOI run published in c1_output for this date")
     return run
+
+
+@router.get("/pfoi/run/versions")
+def pfoi_run_versions(origin: date = Query(description="Forecast date (YYYY-MM-DD)")):
+    """Model versions published for one forecast date (for the comparison chart)."""
+    return {"source": "model", "origin_date": origin.isoformat(),
+            "versions": outlook_service.run_versions(origin)}
 
 
 @router.get("/pfoi/outlook", response_model=OutlookResponse)

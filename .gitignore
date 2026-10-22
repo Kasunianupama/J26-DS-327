@@ -38,3 +38,18 @@ share/
 *.xls
 *.sqlite
 *.db
+
+# Jupyter autosave copies
+.ipynb_checkpoints/
+.virtual_documents/
+
+# Model run outputs and artefacts (generated from real data)
+/outlook/
+*.pkl
+*.joblib
+*.pt
+*.npz
+*.npy
+
+# Generated doc figures (built locally from real data)
+components/predictive_farm_intelligence/docs/figures/

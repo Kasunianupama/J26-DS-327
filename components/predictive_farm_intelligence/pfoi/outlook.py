@@ -140,6 +140,7 @@ class OutputLayer:
     herd_series: tuple[str, ...]
     herd_model: str = "herd_engine_corrected"
     milk_model: str = "milk_baseline_adaptive"
+    persistence: object | None = None  # T1 runtime adapter; disabled for frozen runs
 
     @staticmethod
     def _nearest(keys, h: int):
@@ -151,14 +152,19 @@ class OutputLayer:
     def adjust(self, grain: str, series: str, h: int, value: float) -> float:
         if series == MILK_SERIES:
             hz = self._nearest([k for g, k in self.milk_level if g == grain], h)
-            return value if hz is None else value * (1.0 + self.milk_level[(grain, hz)])
+            corrected = value if hz is None else value * (1.0 + self.milk_level[(grain, hz)])
+            return corrected if self.persistence is None else self.persistence.adjust(grain, h, corrected)
         if series not in self.herd_series:
             return value
         hz = self._nearest([k for g, sr, k in self.herd_bias if g == grain and sr == series], h)
         return value if hz is None else max(0.0, value - self.herd_bias[(grain, series, hz)])
 
-    def model_for(self, series: str, structural: str) -> str:
+    def model_for(self, series: str, structural: str, grain: str | None = None) -> str:
         if series == MILK_SERIES:
+            if (self.persistence is not None and self.persistence.reference is not None
+                    and grain in ("daily", "weekly")):
+                from .live_persistence import MODEL
+                return MODEL
             return self.milk_model
         return self.herd_model if series in self.herd_series else structural
 
@@ -228,8 +234,8 @@ class FrozenRun:
     def output(self, grain: str, series: str, h: int, value: float) -> float:
         return value if self.layer is None else self.layer.adjust(grain, series, h, value)
 
-    def interval_model(self, series: str, structural: str) -> str:
-        return structural if self.layer is None else self.layer.model_for(series, structural)
+    def interval_model(self, series: str, structural: str, grain: str | None = None) -> str:
+        return structural if self.layer is None else self.layer.model_for(series, structural, grain)
 
     def horizons(self) -> dict[str, tuple[int, ...]]:
         """Published horizons per grain: the fixed sets, or the whole 12-month path (1.1.1)."""
@@ -373,7 +379,7 @@ def build_outlook(source, origin: date, errors: pd.DataFrame | None = None,
                 if run.reconciled and grain != "monthly":
                     iv = _interval(q, RECONCILED_MODEL, grain, PAGE_SERIES_OF[series], h)
                 else:
-                    iv = _interval(q, run.interval_model(series, model), grain, series, h)
+                    iv = _interval(q, run.interval_model(series, model, grain), grain, series, h)
                 lo, hi = (v * (1 + iv[0]), v * (1 + iv[1])) if iv else (np.nan, np.nan)
                 rows.append(dict(origin_date=origin, target_period=s, grain=grain, horizon=h,
                                  series=series, forecast=v, lower=max(lo, 0.0) if iv else np.nan,

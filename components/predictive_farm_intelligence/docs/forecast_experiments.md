@@ -7,6 +7,8 @@ configuration metadata in a new directory, never individual animal records.
 
 ## Implemented candidates
 
+- Linear: plain least squares on 7 compact inputs (level, 7/28/84-day ratios, cows, month);
+  the simple-regression baseline. Results: `linear_baseline.md`.
 - Ridge: direct regression, standardized within each training fold, alpha=100.
 - Boosted: histogram gradient-boosted regression, 100 iterations, seven leaves,
   minimum ten samples per leaf, L2=10, no random validation or early stopping.

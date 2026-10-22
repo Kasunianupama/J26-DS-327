@@ -47,7 +47,8 @@ export interface OutlookRow {
 }
 
 export type MilkFactor =
-  | 'herd_size' | 'stage_mix' | 'parity_mix' | 'pregnancy_mix' | 'yield_level' | 'thi' | 'mastitis' | 'residual';
+  | 'herd_size' | 'stage_mix' | 'parity_mix' | 'pregnancy_mix' | 'yield_level'
+  | 'cow_model_correction' | 'thi' | 'mastitis' | 'residual';
 export type FlowFactor = 'determined' | 'rate_driven';
 export type Factor = MilkFactor | FlowFactor;
 
@@ -197,6 +198,29 @@ export interface PfoiRun {
   outage_simulation?: OutageRow[];
   /** F4: recent heat and the usual heat for the coming weeks (weather only). */
   heat?: HeatSummary;
+  /** Aggregate correction applied after the herd engine; never contains animal-level rows. */
+  cow_model?: {
+    model_version: string;
+    selected_model: string;
+    method: 'structural_plus_cow_torch_v1';
+    trained_through: string;
+    formula: string;
+    explanation: string;
+    intervals: string;
+  };
+  /** pfoi-1.8.0-dev: the milk predictor behind this run's milk rows (other sections keep their model). */
+  milk_model?: {
+    model_version: string;
+    status?: string | null;
+    reason?: string | null;
+    selected_model?: string | null;
+    model_family?: string | null;
+    is_neural_network?: boolean;
+    supported_from?: string | null;
+    supported_to?: string | null;
+    dependency?: string;
+    intervals?: string;
+  };
   /** F5: calving → first recorded service → known conception → next calving. */
   repro_timing?: ReproStepRow[];
   /** F6: separate outcomes by generation within calving period (associations). */
@@ -259,6 +283,7 @@ export interface IntervalMethod {
   milk: 'aci_quality_band' | 'empirical_quantiles';
   staleness_scale: string;
   staleness_days: number | null;
+  cow_model?: string;
 }
 
 export interface OutageRow {
@@ -274,7 +299,23 @@ export interface OutageRow {
 }
 
 export interface HeatDay { date: string; thi_mean: number | null; thi_max: number | null }
-export interface HeatClimate { date: string; p10: number; p50: number; p90: number }
+export interface HeatClimate {
+  date: string; p10: number; p50: number; p90: number;
+  /** Share of past days near this date above the herd's knots: the usual chance of a hot day. */
+  share_above_p75?: number; share_above_p90?: number;
+}
+
+/** One day of the experimental THI forecast. v2 adds the range and hot-day chances. */
+export interface HeatPrediction {
+  date: string;
+  thi_max: number;
+  seasonal?: number;
+  /** 10th / 90th percentile of the model's past errors around `thi_max`. */
+  lower?: number;
+  upper?: number;
+  /** Chance that the day's max THI is above each herd knot (`p75`, `p90`). */
+  p_above?: Record<string, number>;
+}
 
 export interface HeatSummary {
   last_weather_day: string;
@@ -284,6 +325,22 @@ export interface HeatSummary {
   hot_run_days: number | null;
   heat_load_7d: number | null;
   recent: HeatDay[];
+  /** Recorded weather after the forecast date, for comparison only. */
+  realised?: HeatDay[];
+  /** Separate statistical weather baseline; not the milk/herd forecast. */
+  forecast?: {
+    status: 'experimental' | 'unavailable';
+    method: string;
+    trained_through: string | null;
+    n_train: number;
+    predictions: HeatPrediction[];
+    /** v2: THI levels behind `p_above`. */
+    thresholds?: Record<string, number>;
+    /** v2: days ahead over which recent daily changes hand over to the seasonal curve. */
+    taper_days?: [number, number];
+    /** v2: share of a one-day anomaly still present after N days (learned). */
+    persistence_by_lead?: Record<string, number>;
+  };
   climatology: HeatClimate[];
   source: string;
 }
@@ -347,7 +404,7 @@ export interface RegistryRow {
 export const HORIZONS: Record<Grain, number[]> = {
   day: [1, 7, 14, 30, 91, 182, 365],
   week: [1, 4, 13, 26, 52],
-  month: [1, 3, 6, 12],
+  month: [1, 3, 6],
 };
 
 /** Upper bound of any published step; the run's own last step is view.maxHorizon. */
@@ -405,6 +462,7 @@ export const FACTOR_META: Record<Factor, { label: string; kind: 'measured' | 'de
   parity_mix: { label: 'Parity mix', kind: 'derived', blurb: 'Share of first, second and later lactations, each with its own curve.' },
   pregnancy_mix: { label: 'Pregnancy mix', kind: 'derived', blurb: 'Share of cows 150+ or 200+ days pregnant, who yield less (fitted factor).' },
   yield_level: { label: 'Yield level', kind: 'measured', blurb: 'Per-cow level known at the start of the month (recorded milk ÷ curve milk); constant within a forecast.' },
+  cow_model_correction: { label: 'Cow-model correction', kind: 'derived', blurb: 'The neural cow model adjusts the structural herd forecast up or down. This is the exact difference between the final and structural forecasts.' },
   thi: { label: 'Heat (THI)', kind: 'assumed', blurb: 'Forecasts use the THI climatology of the training years; the past uses measured THI.' },
   mastitis: { label: 'Mastitis', kind: 'derived', blurb: 'Expected episodes = cows at risk × rate from the stated rate period.' },
   residual: { label: 'Unexplained', kind: 'measured', blurb: 'Actual minus model. Only past periods have one; a forecast is fully explained by construction.' },
@@ -412,7 +470,7 @@ export const FACTOR_META: Record<Factor, { label: string; kind: 'measured' | 'de
   rate_driven: { label: 'Rate-driven', kind: 'derived', blurb: 'Expected from trailing-window rates; the uncertain part.' },
 };
 
-export const MILK_FACTORS: MilkFactor[] = ['herd_size', 'stage_mix', 'parity_mix', 'pregnancy_mix', 'yield_level', 'thi', 'mastitis', 'residual'];
+export const MILK_FACTORS: MilkFactor[] = ['herd_size', 'stage_mix', 'parity_mix', 'pregnancy_mix', 'yield_level', 'cow_model_correction', 'thi', 'mastitis', 'residual'];
 
 export type Confidence = 'High' | 'Moderate' | 'Limited';
 

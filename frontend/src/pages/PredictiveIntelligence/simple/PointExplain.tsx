@@ -18,23 +18,28 @@ import { PLAIN_CONFIDENCE, PLAIN_SERIES, SimpleTable, about, hasRange, litres, p
 export type PointKind = 'milk' | 'herd' | 'events' | 'mastitis' | 'heat';
 
 /** Which point is picked in one chart, and the handlers that pick it. */
-export function usePointPick() {
-  const [picked, setPicked] = useState<string | null>(null);
+export type PointSelection = { picked: string | null; pick: (at: string | null) => void };
+
+export function usePointPick(controlled?: PointSelection) {
+  const [localPicked, setLocalPicked] = useState<string | null>(null);
+  const picked = controlled ? controlled.picked : localPicked;
+  const setPicked = controlled ? controlled.pick : setLocalPicked;
   /* Recharts passes the clicked category; its row carries `period` (or `date` for days). */
   const onChartClick = (state: { activePayload?: { payload?: Record<string, unknown> }[] } | null) => {
     const row = state?.activePayload?.[0]?.payload;
     const key = (row?.period ?? row?.date) as string | undefined;
-    if (key) setPicked((p) => (p === key ? null : key));
+    if (key) setPicked(picked === key ? null : key);
   };
   return { picked, pick: setPicked, clear: () => setPicked(null), onChartClick };
 }
 
 export function PickHint({ picked }: { picked: string | null }) {
   const t = useT();
-  return <p className="pfie-mgr-hint pfie-noprint"> {picked ? t('Click again or press Close to hide.') : t('Click a point or a row to explain it.')}</p>;
+  /* Once a point is open, its Close button says how to hide it. */
+  return picked ? null : <p className="pfie-mgr-hint pfie-noprint">{t('Click a point or a row to explain it.')}</p>;
 }
 
-export function PointExplanation({ kind, at, onClose }: { kind: PointKind; at: string; onClose: () => void }) {
+export function PointExplanation({ kind, at, onClose, series }: { kind: PointKind; at: string; onClose: () => void; series?: SeriesId[] }) {
   const run = useRun();
   const t = useT();
   const { lang } = useLang();
@@ -44,9 +49,9 @@ export function PointExplanation({ kind, at, onClose }: { kind: PointKind; at: s
   const grain: Grain = kind === 'mastitis' ? 'month' : kind === 'heat' ? 'day' : g;
   const title = kind === 'heat' ? dateLabel(at, lang) : periodText(at, grain, lang);
   return (
-    <div className="pfie-mgr-point" role="region" aria-label={title}>
+    <div className={`pfie-mgr-point pfie-mgr-point-${kind}`} role="region" aria-label={`${t(kind === 'milk' ? 'Total Milk Yield' : kind === 'herd' ? 'Herd population' : kind === 'events' ? 'Herd events' : 'Date')} · ${title}`}>
       <div className="pfie-mgr-point-head">
-        <b> {title}</b>
+        <b>{kind === 'milk' ? `${t('Total Milk Yield')} · ` : kind === 'herd' ? `${t('Herd population')} · ` : kind === 'events' ? `${t('Herd events')} · ` : ''}{title}</b>
         <span className="spacer" />
         {kind !== 'heat' && kind !== 'mastitis' && (
           <button className="pfie-btn" onClick={() => { setSelectedPeriod(at); go('period'); }}>{t('All numbers for this date')}</button>
@@ -55,7 +60,7 @@ export function PointExplanation({ kind, at, onClose }: { kind: PointKind; at: s
       </div>
       {kind === 'milk' && <MilkPoint run={run} t={t} grain={grain} period={at} />}
       {kind === 'herd' && <HerdPoint run={run} t={t} grain={grain} period={at} />}
-      {kind === 'events' && <EventsPoint run={run} t={t} grain={grain} period={at} />}
+      {kind === 'events' && <EventsPoint run={run} t={t} grain={grain} period={at} series={series} />}
       {kind === 'mastitis' && <MastitisPoint run={run} t={t} period={at} />}
       {kind === 'heat' && <HeatPoint run={run} t={t} date={at} />}
     </div>
@@ -106,14 +111,16 @@ function MilkPoint({ run, t, grain, period }: P) {
 
   return (
     <>
+      <div className="pfie-mgr-point-body">
       <div className="pfie-mgr-facts">
         <Fact label={x.future ? t('Expected milk a day') : t('Milk a day (recorded)')} value={`${litres(x.v)} L`}
           sub={x.future ? (hasRange(x.lo, x.hi) ? t('likely {a} – {b}', { a: litres(x.lo!), b: litres(x.hi!) }) : t('no likely range published')) : undefined} />
         {cows && cows.v > 0 && <Fact label={t('Cows in milk')} value={whole(cows.v)} sub={t('{n} L per cow', { n: (x.v / cows.v).toFixed(1) })} />}
         {vsLy !== null && <Fact label={t('A year before')} value={`${litres(lastYear!)} L`} sub={vsLy === 0 ? t('about the same') : vsLy > 0 ? t('{n}% more now', { n: vsLy }) : t('{n}% less now', { n: -vsLy })} />}
         {actual !== null && <Fact label={t('What actually happened')} value={`${litres(actual)} L`} sub={inside ? t('inside the likely range') : t('outside the likely range')} />}
-        {conf && <Fact label={t('Reliability')} value={`${conf.dots} ${t(conf.label)}`} />}
+        {conf && <Fact label={t('Reliability')} value={conf.dots} sub={t(conf.label)} />}
       </div>
+      <div className="pfie-mgr-point-reasons">
       {bd ? (
         <>
           {grain !== 'month' && <p className="pfie-mgr-tagline">{t('Reasons for the whole month of {m}:', { m: periodText(month, 'month', lang) })}</p>}
@@ -124,6 +131,8 @@ function MilkPoint({ run, t, grain, period }: P) {
           />
         </>
       ) : <p className="pfie-mgr-note">{t('No reasons are published for this month.')}</p>}
+      </div>
+      </div>
     </>
   );
 }
@@ -135,12 +144,14 @@ function HerdPoint({ run, t, grain, period }: P) {
   const prev = addPeriods(period, grain, -1);
   const calv = valueAt(run, grain, 'calvings', period);
   const dry = valueAt(run, grain, 'dry_offs', period);
+  const actuals = GROUPS.map((s) => period >= firstTarget(run, grain) ? realisedRow(run, grain, period, s) : undefined);
+  const realised = actuals.some((a) => a?.scoreable && a.value != null);
   return (
     <>
       {calv && dry && <p className="pfie-mgr-lead"><Rich text={t('About **{c}** cows calve and start milking, and about **{d}** are dried off.', { c: about(calv.v), d: about(dry.v) })} /></p>}
       <SimpleTable
-        head={[t('Group'), t('Animals'), t('Likely range'), t('Change from {p}', { p: periodText(prev, grain, lang) })]}
-        rows={GROUPS.map((s) => {
+        head={[t('Group'), t('Animals'), t('Likely range'), t('Change from {p}', { p: periodText(prev, grain, lang) }), ...(realised ? [t('What actually happened')] : [])]}
+        rows={GROUPS.map((s, i) => {
           const now = valueAt(run, grain, s, period);
           const before = valueAt(run, grain, s, prev);
           const d = now && before ? Math.round(now.v - before.v) : null;
@@ -149,6 +160,7 @@ function HerdPoint({ run, t, grain, period }: P) {
             <b>{now ? whole(now.v) : '—'}</b>,
             now && hasRange(now.lo, now.hi) ? `${whole(now.lo!)} – ${whole(now.hi!)}` : '—',
             d === null ? '—' : <span className={d > 0 ? 'up' : d < 0 ? 'down' : ''}>{d > 0 ? '▲ +' : d < 0 ? '▼ −' : ''}{whole(Math.abs(d))}</span>,
+            ...(realised ? [actuals[i]?.scoreable && actuals[i]?.value != null ? whole(actuals[i]!.value!) : '—'] : []),
           ];
         })}
       />
@@ -156,12 +168,13 @@ function HerdPoint({ run, t, grain, period }: P) {
   );
 }
 
-function EventsPoint({ run, t, grain, period }: P) {
+function EventsPoint({ run, t, grain, period, series }: P & { series?: SeriesId[] }) {
   const future = period >= firstTarget(run, grain);
+  const shown = series ?? [...EVENT_SERIES, 'mastitis_episodes' as SeriesId];
   return (
     <SimpleTable
       head={future ? [t('Event'), t('Expected'), t('Likely range'), t('Already known')] : [t('Event'), t('Recorded')]}
-      rows={[...EVENT_SERIES, 'mastitis_episodes' as SeriesId].map((s) => {
+      rows={shown.map((s) => {
         const x = valueAt(run, grain, s, period);
         if (!future) return [t(PLAIN_SERIES[s]), <b>{x ? about(x.v) : '—'}</b>];
         const split = flowSplit(run, grain, period, s);
@@ -202,18 +215,31 @@ function HeatPoint({ run, t, date }: { run: PfoiRun; t: T; date: string }) {
   const h = run.heat;
   if (!h) return null;
   const rec = h.recent.find((d) => d.date === date)?.thi_max ?? null;
+  const actual = date >= run.origin_date ? h.realised?.find((d) => d.date === date)?.thi_max ?? null : null;
   const usual = h.climatology.find((c) => c.date === date);
+  const day = h.forecast?.status === 'experimental' ? h.forecast.predictions.find((d) => d.date === date) : undefined;
+  const predicted = day?.thi_max ?? null;
+  const pct = (v: number) => `${Math.round(100 * v)}%`;
   const peak = h.knot_p75;
-  const v = rec ?? usual?.p50 ?? null;
+  const v = actual ?? rec ?? predicted ?? usual?.p50 ?? null;
   return (
     <>
       <div className="pfie-mgr-facts">
-        {rec !== null && <Fact label={t('Recorded heat')} value={String(Math.round(rec))} />}
+        {rec !== null && <Fact label={t('Recorded heat')} value={`${rec.toFixed(1)} THI`} />}
+        {actual !== null && <Fact label={t('What actually happened')} value={`${actual.toFixed(1)} THI`} />}
+        {predicted !== null && <Fact label={t('Model predicted THI (experimental)')} value={`${predicted.toFixed(1)} THI`}
+          sub={day?.lower != null && day.upper != null ? `${day.lower.toFixed(1)} – ${day.upper.toFixed(1)}` : undefined} />}
+        {day?.p_above?.p75 != null && <Fact label={t('Chance of a hot day')} value={pct(day.p_above.p75)}
+          sub={usual?.share_above_p75 != null ? t('usual {n}', { n: pct(usual.share_above_p75) }) : undefined} />}
+        {day?.p_above?.p90 != null && <Fact label={t('Chance of a very hot day')} value={pct(day.p_above.p90)}
+          sub={usual?.share_above_p90 != null ? t('usual {n}', { n: pct(usual.share_above_p90) }) : undefined} />}
+        {actual !== null && predicted !== null && <Fact label={t('Actual minus model prediction')} value={`${(actual - predicted).toFixed(1)} THI`} />}
+        {actual !== null && usual && <Fact label={t('Actual minus outlook')} value={`${(actual - usual.p50).toFixed(1)} THI`} />}
         {usual && <Fact label={t('Usual in past years')} value={String(Math.round(usual.p50))} sub={`${Math.round(usual.p10)} – ${Math.round(usual.p90)}`} />}
-        {peak !== null && <Fact label={t('Usual peak for this herd')} value={String(Math.round(peak))} />}
+        {peak !== null && <Fact label={t('Hot (hotter than 75% of past days)')} value={peak.toFixed(1)} />}
       </div>
       {v !== null && peak !== null && (
-        <p className="pfie-mgr-lead">{v > peak ? `${t('Above the usual peak: expect heat stress and less milk.')}` : `${t('Below the usual peak: no heat stress from this alone.')}`}</p>
+        <p className="pfie-mgr-lead">{t(v > peak ? 'Above the hot threshold: greater heat stress risk.' : 'At or below the hot threshold; this does not guarantee no heat stress.')}</p>
       )}
     </>
   );

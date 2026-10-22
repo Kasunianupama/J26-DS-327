@@ -3,25 +3,24 @@
  *
  * Herd-level forecasts of milk, herd counts, herd events and mastitis for
  * Farm X, each with its range and its explanation. Three workspaces share one
- * grain / horizon / period selection. The page reads one `PfoiRun`; until the
+ * weekly or monthly grain / horizon / period selection. The page reads one `PfoiRun`; until the
  * model writes `c1_output` that run is synthetic demo data and is labelled so.
  */
 
 import { useEffect, useState } from 'react';
 import {
   GRAIN_LABEL, SEVERITY_META,
-  earliestActual, findings, firstTarget, horizonOptions, maxHorizon, periodLabel, type Grain,
+  earliestActual, findings, firstTarget, horizonOptions, periodLabel, type Grain,
 } from '../../data/pfoi';
 import { PfoiProvider, usePfoi, type HerdTab, type Workspace } from './state';
 import { RunProvider, useRun } from './source';
 import { ForecastInfo, RunStatus } from './RunStatus';
 import { FindingsDrawer, PointDrawer } from './panels/Drawers';
-import { FutureWorkspace } from './workspaces/Future';
+import { FutureWorkspace, OutlookBrief } from './workspaces/Future';
 import { MilkSupply } from './workspaces/MilkSupply';
 import { Reproduction } from './workspaces/Reproduction';
 import { HerdOutcomes } from './workspaces/HerdOutcomes';
 import { HerdGenetics } from './workspaces/HerdGenetics';
-import { Evidence } from './workspaces/Evidence';
 import { ModelEvaluation } from './workspaces/ModelEvaluation';
 import { Tabs } from './ui';
 import { DateField } from './DateField';
@@ -36,12 +35,12 @@ import './pfie.css';
 const WORKSPACES: { id: Workspace; label: string; icon: IconName }[] = [
   { id: 'outlook', label: 'Farm Outlook', icon: 'outlook' },
   { id: 'herd', label: 'Herd & Production', icon: 'herd' },
-  { id: 'confidence', label: 'Forecast Confidence', icon: 'confidence' },
+  { id: 'confidence', label: 'Model evaluation', icon: 'confidence' },
 ];
 
 const HERD_TABS: { id: HerdTab; label: string }[] = [
-  { id: 'milk', label: 'Milk supply' },
   { id: 'flow', label: 'Herd count & movement' },
+  { id: 'milk', label: 'Milk supply' },
   { id: 'events', label: 'Herd events' },
   { id: 'generations', label: 'Generations' },
 ];
@@ -51,7 +50,6 @@ type View = 'simple' | 'detailed';
 const defaultView = (role: string): View => (role === 'farm_manager' || role === 'farm_worker' ? 'simple' : 'detailed');
 
 const GRAINS: { id: Grain; label: string }[] = [
-  { id: 'day', label: 'Day' },
   { id: 'week', label: 'Week' },
   { id: 'month', label: 'Month' },
 ];
@@ -67,7 +65,6 @@ export default function PredictiveIntelligencePage() {
 }
 
 function Shell() {
-  const [evaluation, setEvaluation] = useState(false);
   const { role } = useUser();
   const [view, setView] = useState<View>(() => defaultView(role));
   useEffect(() => { setView(defaultView(role)); }, [role]);
@@ -77,7 +74,8 @@ function Shell() {
   const openFindings = findings(run).filter((f) => !acknowledged.has(f.id)).length;
   const detailOpen = drawer.kind !== 'none';
   /* Older runs publish 14 days and 13 weeks, pfoi-1.1.1 a full year: stay on a step this run has. */
-  const lastStep = maxHorizon(run, grain);
+  const availableHorizons = horizonOptions(run, grain);
+  const lastStep = availableHorizons[availableHorizons.length - 1] ?? 1;
   useEffect(() => {
     if (horizon > lastStep) setHorizon(lastStep);
   }, [horizon, lastStep, setHorizon]);
@@ -113,17 +111,14 @@ function Shell() {
         {!simple && <nav className="pfie-nav" aria-label="Workspaces">
           <div className="pfie-nav-tabs">
             {WORKSPACES.map((w) => (
-              <button key={w.id} aria-current={!evaluation && workspace === w.id ? 'page' : undefined} onClick={() => { setEvaluation(false); go(w.id); }}>
+              <button key={w.id} aria-current={workspace === w.id ? 'page' : undefined} onClick={() => go(w.id)}>
                 <Icon name={w.icon} size={15} />
                 {w.label}
               </button>
             ))}
-            <button aria-current={evaluation ? 'page' : undefined} onClick={() => setEvaluation(true)}>
-              <Icon name="confidence" size={15} />Model evaluation
-            </button>
           </div>
 
-          {!evaluation && <span className="pfie-row tight pfie-horizon">
+          {workspace !== 'confidence' && <span className="pfie-row tight pfie-horizon">
             <span className="pfie-seg compact" role="group" aria-label="Forecast grain">
               {GRAINS.map((g) => (
                 <button key={g.id} aria-pressed={grain === g.id} onClick={() => setGrain(g.id)}>{g.label}</button>
@@ -153,9 +148,8 @@ function Shell() {
         </nav>}
       </header>
 
-      <div className="pfie-body">
+      <div className={`pfie-body${simple && !detailOpen ? ' pfie-body-simple' : ''}`}>
         {simple && !detailOpen && <ManagerView onDetailed={() => setView('detailed')} />}
-        {!simple && <ForecastInfo />}
         {simple && !detailOpen ? null : detailOpen ? (
           <DetailPage />
         ) : (
@@ -167,27 +161,30 @@ function Shell() {
               </div>
             )}
 
-            <RecordStatusBanner />
-
-            {evaluation ? <ModelEvaluation /> : <>
-            <OutcomeBar />
-            <MetricDeck />
-            <SignalBand />
-
-            <div className="pfie-canvas">
-              {workspace === 'outlook' && <FutureWorkspace />}
-              {workspace === 'herd' && (
-                <>
-                  <Tabs tabs={HERD_TABS} value={herdTab} onChange={(t) => go('herd', t)} />
-                  {herdTab === 'milk' && <MilkSupply />}
-                  {herdTab === 'flow' && <Reproduction />}
-                  {herdTab === 'events' && <HerdOutcomes />}
-                  {herdTab === 'generations' && <HerdGenetics />}
-                </>
-              )}
-              {workspace === 'confidence' && <Evidence />}
-            </div>
+            {/* Run details and record checks live with the model evaluation; Outlook leads with the forecast date and the main numbers. */}
+            {workspace === 'confidence' && <>
+              <ForecastInfo />
+              <RecordStatusBanner />
+              <ModelEvaluation />
             </>}
+
+            {workspace === 'outlook' && <>
+              <OutcomeBar />
+              <MetricDeck />
+              <SignalBand />
+              <OutlookBrief />
+              <div className="pfie-canvas"><FutureWorkspace /></div>
+            </>}
+
+            {workspace === 'herd' && (
+              <div className="pfie-canvas">
+                <Tabs tabs={HERD_TABS} value={herdTab} onChange={(t) => go('herd', t)} />
+                {herdTab === 'milk' && <MilkSupply />}
+                {herdTab === 'flow' && <Reproduction />}
+                {herdTab === 'events' && <HerdOutcomes />}
+                {herdTab === 'generations' && <HerdGenetics />}
+              </div>
+            )}
           </>
         )}
 
@@ -273,7 +270,8 @@ function RangePickers({ grain, horizon, setHorizon, historyFrom, setHistoryFrom 
   const unit = GRAIN_LABEL[grain];
   const earliest = earliestActual(run, grain);
   const first = firstTarget(run, grain);
-  const last = maxHorizon(run, grain);
+  const availableHorizons = horizonOptions(run, grain);
+  const last = availableHorizons[availableHorizons.length - 1] ?? 1;
   return (
     <span className="pfie-row tight pfie-pickers">
       <label className="pfie-pick" title={`Any step the model publishes (1–${last} ${unit.many}); the buttons are the scored ones`}>

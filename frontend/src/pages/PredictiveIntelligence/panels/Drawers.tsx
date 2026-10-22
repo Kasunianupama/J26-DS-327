@@ -165,7 +165,7 @@ export function PointDrawer({ period, grain }: { period: string; grain: Grain })
 export function FindingsDrawer() {
   const { closeDrawer } = usePfoi();
   return (
-    <Drawer title="Findings" sub="Herd-level findings computed from this run." onClose={closeDrawer}>
+    <Drawer title="Findings" sub="Herd-level findings computed from this run." onClose={closeDrawer} wide>
       <FindingsList />
     </Drawer>
   );

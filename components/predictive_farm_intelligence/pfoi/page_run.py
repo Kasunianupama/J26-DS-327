@@ -136,7 +136,7 @@ def build_page_run(source, run: FrozenRun, attribution: pd.DataFrame,
                         # the reconciled forecast's own errors at monthly forecast dates
                         model, err_series = RECONCILED_MODEL, sid
                     else:
-                        model = run.interval_model(err_series, model)
+                        model = run.interval_model(err_series, model, grain_model)
                     sub = q[(q["model"] == model) & (q["grain"] == grain_model) & (q["series"] == err_series)]
                     has = len(sub) > 0
                     if has:
@@ -208,8 +208,10 @@ def build_page_run(source, run: FrozenRun, attribution: pd.DataFrame,
                                        run.milk_withheld),
         "withheld": _withheld(run),
         "interval_method": _interval_method(run),
+        **({"blend": run.layer.persistence.audit()} if run.layer is not None
+           and run.layer.persistence is not None else {}),
         # only PP1 development builds (evidence given); frozen documents are unchanged
-        **(_pp1_sections(source, origin, evidence, outlook) if evidence is not None else {}),
+        **(_pp1_sections(source, origin, evidence, outlook, realised_until) if evidence is not None else {}),
     }
 
 
@@ -264,7 +266,8 @@ def _scenarios(outlook_rows: list[dict], summary: pd.DataFrame | None) -> list[d
     return rows
 
 
-def _pp1_sections(source, origin: date, evidence: dict, outlook_rows: list[dict] | None = None) -> dict:
+def _pp1_sections(source, origin: date, evidence: dict, outlook_rows: list[dict] | None = None,
+                  realised_until: date | None = None) -> dict:
     """PP1 development sections (docs/pp1_frontend_plan.md F3-F8). Each is optional: a source
     without the loader, or a missing evidence file, gives an empty section, which the page
     shows as "not available for this run". All are herd-level aggregates."""
@@ -280,8 +283,12 @@ def _pp1_sections(source, origin: date, evidence: dict, outlook_rows: list[dict]
             source.generation_yield(origin), source.generation_days(origin),
             source.repro_steps(origin), alarms))
     if hasattr(source, "driver_daily"):  # F4, M5
-        from .drivers import heat_outlook
-        out["heat"] = heat_outlook(source.driver_daily(DATA_START, origin), origin)
+        from .drivers import heat_observations, heat_outlook
+        # Display-only THI forecast v2 (docs/thi_forecast.md); milk and herd do not use it.
+        out["heat"] = heat_outlook(source.driver_daily(DATA_START, origin), origin, thi_method="v2")
+        # Read outcomes only after fixing the outlook and thresholds from past data.
+        until = min(realised_until, origin + timedelta(days=90)) if realised_until else origin
+        out["heat"]["realised"] = heat_observations(source.driver_daily(origin, until), origin, until) if until > origin else []
     out["scenarios"] = _scenarios(outlook_rows or [], evidence.get("scenarios"))  # 1c
     out["outage_simulation"] = _records(evidence.get("outage"))   # F3, M2
     out["evidence_ladder"] = _records(evidence.get("ladder"))     # F7

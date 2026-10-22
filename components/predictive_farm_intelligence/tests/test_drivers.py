@@ -5,10 +5,45 @@ import numpy as np
 import pandas as pd
 
 from components.predictive_farm_intelligence.pfoi.drivers import (
-    ACTIVE, PROBATION, SHADOW, DriverConfig, FeatureBuilder, driver_layer,
+    ACTIVE, PROBATION, SHADOW, DriverConfig, FeatureBuilder, driver_layer, heat_observations,
 )
 
 START, END = date(2015, 8, 1), date(2024, 1, 1)
+
+
+def test_heat_observations_exclude_missing_incomplete_and_outside_dates():
+    days = pd.DataFrame({
+        "date": pd.date_range("2023-06-01", periods=6).date,
+        "weather_is_complete": [True, True, False, True, True, True],
+        "thi_mean": [70.0] * 6,
+        "thi_max": [75.0, 76.0, 77.0, np.nan, 79.0, 80.0],
+    })
+    rows = heat_observations(days, date(2023, 6, 2), date(2023, 6, 6))
+    assert [r["date"] for r in rows] == ["2023-06-02", "2023-06-05"]
+    assert [r["thi_max"] for r in rows] == [76.0, 79.0]
+    assert heat_observations(days.iloc[:0], START, END) == []
+
+
+def test_later_heat_records_do_not_change_frozen_outlook_or_thresholds():
+    from components.predictive_farm_intelligence.pfoi.page_run import _pp1_sections
+
+    class SyntheticSource:
+        def __init__(self, days):
+            self.days = days
+
+        def driver_daily(self, start, end):
+            d = pd.to_datetime(self.days["date"]).dt.date
+            return self.days.loc[(d >= start) & (d < end)].copy()
+
+    origin, until = date(2023, 6, 1), date(2023, 6, 11)
+    days = _daily()
+    original = _pp1_sections(SyntheticSource(days), origin, {}, realised_until=until)["heat"]
+    days.loc[pd.to_datetime(days["date"]).dt.date >= origin, "thi_max"] += 20
+    changed = _pp1_sections(SyntheticSource(days), origin, {}, realised_until=until)["heat"]
+    assert len(original["realised"]) == 10
+    assert changed["realised"][0]["thi_max"] == original["realised"][0]["thi_max"] + 20
+    assert {k: v for k, v in original.items() if k != "realised"} == {k: v for k, v in changed.items() if k != "realised"}
+    assert _pp1_sections(SyntheticSource(days), origin, {})["heat"]["realised"] == []
 
 
 def _daily(seed=0, sensors_from=date(2021, 6, 1), mastitis_until=date(2020, 1, 1)):
@@ -111,3 +146,15 @@ def test_noise_only_features_are_shrunk():
     late = res.coefficients[res.coefficients["origin"] >= date(2022, 1, 1)]
     assert late["coef"].abs().max() < 0.01
     assert abs(_acc(res.errors) - _acc(e)) < 0.005
+
+
+def test_heat_outlook_v2_gives_hot_chances_on_the_herd_knots_and_usual_shares():
+    from components.predictive_farm_intelligence.pfoi.drivers import heat_outlook
+    daily = _daily()
+    v1 = heat_outlook(daily, date(2023, 6, 5))
+    v2 = heat_outlook(daily, date(2023, 6, 5), thi_method="v2")
+    assert v1["forecast"]["method"].endswith("_v1") and v2["forecast"]["method"].endswith("_v2")
+    assert v2["forecast"]["thresholds"] == {"p75": v2["knot_p75"], "p90": v2["knot_p90"]}
+    assert v1["climatology"] == v2["climatology"]  # the usual pattern does not depend on the model
+    c = v2["climatology"][0]
+    assert 0.0 <= c["share_above_p90"] <= c["share_above_p75"] <= 1.0

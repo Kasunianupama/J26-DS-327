@@ -15,6 +15,15 @@ from typing import Callable
 
 DEMO_ORIGIN = date(2026, 8, 1)
 DEMO_VERSION = "pfoi-demo"
+# Development versions shown only in the model-comparison chart: the page's main charts
+# never pick them as "the" run of a date, even when they are the newest build.
+# PFOI_COMPARISON_ONLY (comma-separated) replaces this list.
+COMPARISON_ONLY = ("pfoi-1.7.0-dev", "pfoi-1.8.0-dev")
+
+
+def comparison_only_versions() -> tuple[str, ...]:
+    env = os.environ.get("PFOI_COMPARISON_ONLY")
+    return tuple(v.strip() for v in env.split(",") if v.strip()) if env is not None else COMPARISON_ONLY
 
 
 def _month(d: date, k: int) -> date:
@@ -52,14 +61,25 @@ class OutlookService:
     def latest_run(self) -> dict | None:
         return self.run()
 
-    def run(self, origin: date | None = None) -> dict | None:
-        """The page document of one forecast date (newest build), or of the latest date."""
-        if origin is None:
+    def run(self, origin: date | None = None, model_version: str | None = None) -> dict | None:
+        """The page document of one forecast date, or of the latest date.
+
+        Without ``model_version``: the newest build that is not comparison-only. With it:
+        exactly that version (the comparison chart)."""
+        skip = list(comparison_only_versions()) or [""]
+        if model_version is not None:
+            rows = self._safe("SELECT document FROM c1_output.run_document WHERE model_version = :v "
+                              "AND (CAST(:o AS date) IS NULL OR origin_date = :o) "
+                              "ORDER BY origin_date DESC, created_at DESC LIMIT 1",
+                              o=origin, v=model_version)
+        elif origin is None:
             rows = self._safe("SELECT document FROM c1_output.run_document "
-                              "ORDER BY origin_date DESC, created_at DESC LIMIT 1")
+                              "WHERE NOT (model_version = ANY(:skip)) "
+                              "ORDER BY origin_date DESC, created_at DESC LIMIT 1", skip=skip)
         else:
             rows = self._safe("SELECT document FROM c1_output.run_document WHERE origin_date = :o "
-                              "ORDER BY created_at DESC LIMIT 1", o=origin)
+                              "AND NOT (model_version = ANY(:skip)) "
+                              "ORDER BY created_at DESC LIMIT 1", o=origin, skip=skip)
         if not rows:
             return None
         doc = rows[0]["document"]
@@ -71,9 +91,21 @@ class OutlookService:
         rows = self._safe(
             "SELECT DISTINCT ON (origin_date) origin_date, model_version, "
             "document->>'realised_through' AS realised_through "
-            "FROM c1_output.run_document ORDER BY origin_date, created_at DESC") or []
+            "FROM c1_output.run_document WHERE NOT (model_version = ANY(:skip)) "
+            "ORDER BY origin_date, created_at DESC",
+            skip=list(comparison_only_versions()) or [""]) or []
         return [{"origin_date": str(r["origin_date"]), "model_version": r["model_version"],
                  "realised_through": r["realised_through"]} for r in rows]
+
+    def run_versions(self, origin: date) -> list[dict]:
+        """Every model version published for one forecast date (newest build each)."""
+        rows = self._safe(
+            "SELECT DISTINCT ON (model_version) model_version, created_at "
+            "FROM c1_output.run_document WHERE origin_date = :o "
+            "ORDER BY model_version, created_at DESC", o=origin) or []
+        skip = set(comparison_only_versions())
+        return [{"model_version": r["model_version"], "created_at": str(r["created_at"]),
+                 "comparison_only": r["model_version"] in skip} for r in rows]
 
     # ------------------------------------------------------------- contract tables
     def _latest_origin(self) -> tuple[date, str] | None:

@@ -13,6 +13,7 @@ import {
   fmt1, fmtInt, hasRealised, isForecast, longDate, outcomeScore, periodLabel, targetPeriod,
   type Grain, type OutcomeScore, type SeriesId,
 } from '../../../data/pfoi';
+import { useState } from 'react';
 import { usePfoi } from '../state';
 import { useRun, useRunPicker } from '../source';
 
@@ -33,6 +34,8 @@ export function OutcomeBar() {
     ? series.map((s) => outcomeScore(run, grain, horizon, s)).filter((x): x is OutcomeScore => !!x)
     : [];
   const last = targetPeriod(run, grain, horizon);
+  /* Only the date picker is always shown; the view kind, the note and the scores open on request. */
+  const [open, setOpen] = useState(false);
 
   return (
     <section className={`pfie-asof kind-${kind}`} aria-label="Forecast date">
@@ -50,17 +53,23 @@ export function OutcomeBar() {
             </button>
           )}
         </span>
-        <span className={`pfie-asof-badge kind-${kind}`}>{run.source === 'demo' ? `Demo · ${label === 'Published outlook' ? 'Outlook' : label}` : label}</span>
         {loading && <span className="pfie-asof-note">Loading…</span>}
+        <button className="pfie-btn ghost pfie-asof-toggle" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+          {open ? 'Hide details' : realised ? 'How this forecast scored' : 'About this forecast'}
+        </button>
+      </div>
+
+      {open && <div className="pfie-asof-head">
+        <span className={`pfie-asof-badge kind-${kind}`}>{run.source === 'demo' ? `Demo · ${label === 'Published outlook' ? 'Outlook' : label}` : label}</span>
         <span className="pfie-asof-note">
           {kind === 'published'
             ? 'No recorded outcomes are supplied for these forecasts. This does not indicate that the forecast is current.'
             : <>Model {run.model_version} used only data before {longDate(run.origin_date)}. What was recorded afterwards
                 {run.realised_through ? <> (to {longDate(run.realised_through)})</> : null} is drawn on top; the model never saw it.</>}
         </span>
-      </div>
+      </div>}
 
-      {realised && (
+      {open && realised && (
         <div className="pfie-asof-scores">
           <span className="pfie-asof-scope">
             {run.source === 'demo' ? 'Synthetic comparison' : `${run.model_version} forecast vs recorded`}, {horizon} {horizon === 1 ? GRAIN_LABEL[grain].one : GRAIN_LABEL[grain].many} ahead
@@ -69,7 +78,7 @@ export function OutcomeBar() {
           {scores.map((s) => <ScoreChip key={s.series} s={s} grain={grain} />)}
         </div>
       )}
-      {realised && <p className="pfie-chart-note">
+      {open && realised && <p className="pfie-chart-note">
         Forecast error is calculated only where recorded outcomes are scoreable. Missing, incomplete or excluded
         records are recording limitations; this comparison alone does not explain a discrepancy's cause.
       </p>}

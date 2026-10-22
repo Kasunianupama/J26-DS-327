@@ -1,14 +1,14 @@
 /**
  * Component 1 (PFOI): the simple view for farm staff.
  *
- * Landing: the short answer, the milk chart and the herd population chart.
- * Everything else is one tab away, so the page stays short. Daily / Weekly /
- * Monthly and the look ahead are shared with the detailed view; English or
+ * Landing: the short answer plus milk, herd population and herd-events charts.
+ * Everything else is one tab away, so the page stays short. Weekly / Monthly
+ * and the look ahead are shared with the detailed view; English or
  * Sinhala is chosen at the top. Numbers are rounded, changes are compared with
  * the last recorded period, and any point can be clicked for an explanation.
  */
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   confidenceOf, findings, flowTotals, fmtInt, headline, horizonOptions, isForecast, milkBreakdown,
   type Finding, type Grain, type PfoiRun,
@@ -18,7 +18,8 @@ import { usePfoi } from './state';
 import { Icon } from './icons';
 import { LangProvider, Rich, aheadText, dateLabel, periodText, useLang, useT, type T } from './simple/i18n';
 import { NavProvider, PLAIN_CONFIDENCE, PLAIN_PULL, hasRange, litres, useNav, type TabId } from './simple/common';
-import { HerdChart, MilkChart } from './simple/Charts';
+import { HerdEventsChart, OverviewCharts } from './simple/Charts';
+import { PointExplanation } from './simple/PointExplain';
 import { ReasonsTab } from './simple/Milk';
 import { PeriodTab } from './simple/Month';
 import { HerdTab } from './simple/Herd';
@@ -42,7 +43,6 @@ export function ManagerView({ onDetailed }: { onDetailed: () => void }) {
 }
 
 const GRAINS: { id: Grain; label: string }[] = [
-  { id: 'day', label: 'Daily' },
   { id: 'week', label: 'Weekly' },
   { id: 'month', label: 'Monthly' },
 ];
@@ -57,6 +57,9 @@ function Simple({ onDetailed }: { onDetailed: () => void }) {
   const rs = run.record_status;
   const [exporting, setExporting] = useState(false);
   const [help, setHelp] = useState(false);
+  const [eventAt, setEventAt] = useState<string | null>(null);
+
+  useEffect(() => { setEventAt(null); }, [run.origin_date, grain, horizon]);
 
   return (
     <div className={`pfie-mgr lang-${lang}`} lang={lang === 'si' ? 'si' : 'en'}>
@@ -99,9 +102,9 @@ function Simple({ onDetailed }: { onDetailed: () => void }) {
       </section>
       {help && (
         <ul className="pfie-mgr-howto">
-          <li> <Rich text={t('**Top:** the answer, the milk chart and the herd chart.')} /></li>
+          <li> <Rich text={t('**Top:** the answer, milk, herd and herd-events charts.')} /></li>
           <li> <Rich text={t('**Tabs below:** pick one to see more.')} /></li>
-          <li> <Rich text={t('**Daily / Weekly / Monthly** and **Next …** change every chart.')} /></li>
+          <li> <Rich text={t('**Weekly / Monthly** and **Next …** change every chart.')} /></li>
           <li> <Rich text={t('**Click a point** or a table row to get it explained.')} /></li>
         </ul>
       )}
@@ -115,9 +118,18 @@ function Simple({ onDetailed }: { onDetailed: () => void }) {
 
       <ShortAnswer steps={h} />
 
-      <div className="pfie-mgr-charts">
-        <MilkChart />
-        <HerdChart />
+      <OverviewCharts />
+
+      <div className="pfie-mgr-charts pfie-mgr-secondary-charts">
+        <HerdEventsChart selection={{ picked: eventAt, pick: setEventAt }} />
+        {eventAt && <div className="pfie-overview-explanation">
+          <PointExplanation
+            kind="events"
+            at={eventAt}
+            onClose={() => setEventAt(null)}
+            series={['calvings', 'dry_offs', 'abortions', 'deaths', 'culls_sales']}
+          />
+        </div>}
       </div>
 
       <Tabs />
@@ -144,16 +156,74 @@ function ForecastDate() {
   const { lang } = useLang();
   const { origins, origin, setOrigin, loading } = useRunPicker();
   const latest = origins[origins.length - 1];
+  const [open, setOpen] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const selectedRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    selectedRef.current?.focus();
+    const closeOutside = (event: PointerEvent) => {
+      if (!pickerRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [open]);
+
+  const chooseOrigin = (next: string) => {
+    setOrigin(next);
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
   return (
     <span className="tb-field">
       <span className="tb-label">{t('Forecast date')}</span>
       {origins.length > 1 ? (
         <>
-          <span className="pfie-mgr-dateselect pfie-noprint">
-            <select value={origin} onChange={(e) => setOrigin(e.target.value)} aria-label={t('Forecast date')}>
-              {[...origins].reverse().map((o) => <option key={o} value={o}>{dateLabel(o, lang)}{o === latest ? ` (${t('latest')})` : ''}</option>)}
-            </select>
-          </span>
+          <div className="pfie-mgr-dateselect pfie-noprint" ref={pickerRef}>
+            <button
+              ref={triggerRef}
+              type="button"
+              className="pfie-mgr-date-trigger"
+              aria-label={t('Forecast date')}
+              aria-haspopup="listbox"
+              aria-expanded={open}
+              onClick={() => setOpen((shown) => !shown)}
+            >
+              <span>{dateLabel(origin, lang)}</span>
+              {origin === latest && <small>{t('latest')}</small>}
+              <i aria-hidden />
+            </button>
+            {open && (
+              <div className="pfie-mgr-date-menu" role="listbox" aria-label={t('Forecast date')}>
+                {[...origins].reverse().map((o) => (
+                  <button
+                    key={o}
+                    ref={o === origin ? selectedRef : undefined}
+                    type="button"
+                    role="option"
+                    aria-selected={o === origin}
+                    onClick={() => chooseOrigin(o)}
+                  >
+                    <span>{dateLabel(o, lang)}</span>
+                    {o === latest && <small>{t('latest')}</small>}
+                    {o === origin && <b aria-hidden>✓</b>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <b className="pfie-printonly">{dateLabel(run.origin_date, lang)}</b>
           {origin !== latest && <button className="pfie-mgr-textbtn pfie-noprint" onClick={() => setOrigin(latest)}>{t('Go to latest')}</button>}
         </>
@@ -179,6 +249,7 @@ function ShortAnswer({ steps }: { steps: number }) {
   const base = milk?.baselinePeriod ?? cows?.baselinePeriod ?? null;
   const level = confidenceOf(milk?.quality);
   const conf = PLAIN_CONFIDENCE[level];
+  const confidenceEvidence = run.qualityBands.find((row) => row.band === milk?.quality);
   const ahead = aheadText(t, grain, steps);
 
   const change = (pctV: number | null | undefined) => {
@@ -197,7 +268,17 @@ function ShortAnswer({ steps }: { steps: number }) {
             : t('No milk forecast for this date.')}
           {mc && <> {mc.r > 0 ? '▲' : mc.r < 0 ? '▼' : '●'} <Rich text={`**${mc.text}**`} /> ({t('last recorded {u}', { u: t(UNIT[grain]) })}).</>}
         </p>
-        <span className={`pfie-mgr-conf conf-${level}`} title={t(conf.help)}>{conf.dots} {t(conf.label)}</span>
+        <span className="pfie-mgr-conf-wrap">
+          <span className={`pfie-mgr-conf conf-${level}`}><span aria-hidden>{conf.dots}</span> {t(conf.label)}</span>
+          <button type="button" className="pfie-mgr-conf-info" aria-label={t('Show confidence details')} aria-describedby="pfie-confidence-tooltip">i</button>
+          <span id="pfie-confidence-tooltip" className="pfie-mgr-conf-tip" role="tooltip">
+            <strong>{t(conf.label)}</strong>
+            <span><i>{t('Forecast')}</i><b>{milk ? `${litres(milk.value)} L/${t('day')}` : '—'}</b></span>
+            <span><i>{t('Likely range')}</i><b>{milk ? `${litres(milk.lower)}–${litres(milk.upper)} L/${t('day')}` : '—'}</b></span>
+            <span><i>{t('Look ahead')}</i><b>{ahead}</b></span>
+            {confidenceEvidence && <span className="wide"><i>{t('Past tests')}</i><b>{Math.round(confidenceEvidence.coverage * 100)}% {t('Inside the likely range').toLowerCase()}</b></span>}
+          </span>
+        </span>
       </div>
 
       <div className="pfie-mgr-tiles">

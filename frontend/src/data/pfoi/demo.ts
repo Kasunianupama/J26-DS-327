@@ -591,7 +591,7 @@ export function demoRun(): PfoiRun {
     coverage: COVERAGE,
     mastitis_rate_period: '2017–2019 (demo)',
     moves: buildMoves(),
-    ...demoPp1(ORIGIN),
+    ...demoPp1(ORIGIN, DATA_THROUGH),
   };
   cached.scenarios = demoScenarios(cached);
   return cached;
@@ -630,7 +630,7 @@ export function demoRunAt(origin: string): PfoiRun {
       && targets.has(`${a.grain}|${a.series}|${a.period}`)),
     realised_through: DATA_THROUGH,
     moves: buildMoves(origin).filter((m) => m.forecast || addPeriods(m.period, m.grain, 1) <= origin),
-    ...demoPp1(origin),
+    ...demoPp1(origin, DATA_THROUGH),
   };
   run.scenarios = demoScenarios(run);
   if (run.record_status?.milk_withheld) {  // F2: no milk number is published when withheld

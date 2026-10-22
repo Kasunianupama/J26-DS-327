@@ -76,7 +76,7 @@ export function FindingsList() {
           {showDone ? 'No findings match this category.' : 'Try All or show handled findings.'}
         </div>
       )}
-      {list.map((f) => <FindingCard key={f.id} f={f} />)}
+      {list.length > 0 && <div className="pfie-findings-grid">{list.map((f) => <FindingCard key={f.id} f={f} />)}</div>}
       {done.length > 0 && (
         <div className="pfie-row tight">
           <button className="pfie-btn ghost" onClick={() => setShowDone(!showDone)}>

@@ -1,11 +1,73 @@
-.pfie-chart-timeline { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 12px 0; font-size: 13px; }
-.pfie-chart-timeline label { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-weight: 600; }
-.pfie-chart-timeline input { font: inherit; color: inherit; background: white; border: 1px solid #dfe7e3; border-radius: 8px; padding: 7px 9px; }
-.pfie-chart-timeline button:disabled { opacity: .5; cursor: default; }
-.pfie-chart-preview { cursor: zoom-in; }
-.pfie-chart-dialog { position: fixed; inset: 0; width: 100vw; max-width: none; height: 100dvh; max-height: none; box-sizing: border-box; margin: 0; padding: 20px; border: 0; background: #f5f8f6; color: #17231f; overflow: auto; }
-.pfie-chart-dialog:not([open]) { display: none; }
-.pfie-chart-dialog::backdrop { background: #17231f99; }
-.pfie-chart-dialog > .pfie-mgr-card { min-height: 100%; box-sizing: border-box; }
+.pfie-chart-timeline { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; font-size: 13px; color: var(--muted); }
+.pfie-chart-timeline-label { font-weight: 600; }
+.pfie-chart-timeline .pfie-datefield { flex: none; max-width: 100%; border-radius: var(--r-pill); border-color: var(--line); }
+.pfie-chart-timeline .pfie-datefield input { min-width: 0; width: 11ch; font-size: 13px; font-weight: 600; padding: 6px 2px; }
+.pfie-chart-timeline .pfie-datefield button { min-width: 26px; min-height: 30px; font-size: 15px; padding: 0 4px; }
+
+/* Landing chart cards: a quiet header, then the chart, legend and hint. */
+.pfie-mgr-charts .pfie-mgr-card, .pfie-chart-dialog > .pfie-mgr-card { gap: 14px; }
+.pfie-mgr-charts .pfie-mgr-card-head, .pfie-chart-dialog .pfie-mgr-card-head { align-items: center; }
+.pfie-mgr-charts .pfie-mgr-card-head .pfie-row, .pfie-chart-dialog .pfie-mgr-card-head .pfie-row { gap: 8px; }
+.pfie-mgr-charts .pfie-mgr-legend, .pfie-chart-dialog .pfie-mgr-legend { gap: 6px 16px; font-size: 13px; }
+.pfie-mgr-charts .pfie-mgr-legend i, .pfie-chart-dialog .pfie-mgr-legend i { width: 18px; }
+.pfie-mgr-charts .pfie-mgr-legend i.dot, .pfie-chart-dialog .pfie-mgr-legend i.dot { width: 10px; height: 10px; }
+.pfie .pfie-mgr-iconbtn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 36px; height: 36px; padding: 0 10px;
+  border: 1px solid var(--line); border-radius: var(--r-pill); background: var(--paper); color: var(--ink-2); font-size: 13px; font-weight: 700;
+}
+.pfie .pfie-mgr-iconbtn:hover { border-color: var(--brand); color: var(--brand-2); background: var(--brand-tint); }
+
+/* Give selected-date explanations the same solid surface as the other cards. */
+.pfie-mgr-charts .pfie-mgr-point, .pfie-chart-dialog .pfie-mgr-point { gap: 12px; padding: 20px 22px; border-width: 1px; border-color: var(--line); border-radius: var(--r); background: var(--paper); box-shadow: var(--shadow-xs); }
+.pfie-mgr-charts .pfie-mgr-point-head b, .pfie-chart-dialog .pfie-mgr-point-head b { font-size: 16px; }
+.pfie-mgr-charts .pfie-mgr-point-head .pfie-btn, .pfie-chart-dialog .pfie-mgr-point-head .pfie-btn { padding: 5px 12px; font-size: 13px; }
+.pfie-mgr-charts .pfie-mgr-facts, .pfie-chart-dialog .pfie-mgr-facts { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.pfie-mgr-charts .pfie-mgr-fact, .pfie-chart-dialog .pfie-mgr-fact { padding: 10px 12px; background: var(--ground); }
+.pfie-mgr-charts .pfie-mgr-fact .lbl, .pfie-chart-dialog .pfie-mgr-fact .lbl { font-size: 12px; }
+.pfie-mgr-charts .pfie-mgr-fact b, .pfie-chart-dialog .pfie-mgr-fact b { font-size: 18px; }
+.pfie-mgr-charts .pfie-mgr-fact small, .pfie-chart-dialog .pfie-mgr-fact small { font-size: 12px; color: var(--muted); }
+.pfie-mgr-charts .pfie-mgr-hint, .pfie-chart-dialog .pfie-mgr-hint { margin-top: -6px; font-size: 12.5px; font-weight: 500; color: var(--muted); }
+/* Expand inside the workspace so the application sidebar remains usable. */
+main:has(> .pfie-chart-dialog) > :not(.pfie-chart-dialog) { display: none; }
+.pfie-chart-dialog { width: 100%; min-height: calc(100dvh - 40px); box-sizing: border-box; margin: 0; padding: 20px; background: #f5f8f6; color: #17231f; }
+.pfie-chart-backbar { display: flex; }
+.pfie-chart-dialog > .pfie-mgr-card { flex: 1; box-sizing: border-box; }
 .pfie-chart-dialog .pfie-mgr-card-head { align-items: center; }
 @media (max-width: 600px) { .pfie-chart-dialog { padding: 8px; } }
+/* Each chart keeps its own height; explanations occupy their own full row. */
+.pfie-mgr-charts { align-items: start; }
+/* Use the available workspace width and retain chart height when an explanation opens. */
+.pfie-chart-dialog.pfie-mgr { max-width: none; }
+.pfie-chart-dialog > .pfie-mgr-card > * { flex-shrink: 0; }
+
+/* Keep a selected date in one readable card, shared by both overview charts. */
+.pfie-overview-explanation { grid-column: 1 / -1; min-width: 0; }
+/* Milk and herd cards share one height: the charts line up at the top and a longer legend takes the spare room at the bottom. */
+.pfie-mgr-charts:not(.pfie-mgr-secondary-charts) { align-items: stretch; }
+.pfie-mgr-charts:not(.pfie-mgr-secondary-charts) > .pfie-mgr-card > .pfie-mgr-legend { margin-top: auto; }
+/* Herd events is the only chart in this row, so it takes the full width. */
+.pfie-mgr-charts.pfie-mgr-secondary-charts { grid-template-columns: minmax(0, 1fr); }
+.pfie-event-switches { display: flex; flex-wrap: wrap; gap: 7px; }
+.pfie .pfie-event-switches button {
+  display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px; border: 1px solid var(--line);
+  border-radius: var(--r-pill); background: var(--ground); color: var(--muted); font-size: 12.5px; font-weight: 700;
+}
+.pfie .pfie-event-switches button[aria-pressed='true'] { background: var(--paper); color: var(--ink); border-color: #c8d5cf; box-shadow: var(--shadow-xs); }
+.pfie-event-switches button i { width: 10px; height: 10px; border-radius: 50%; opacity: 0.35; }
+.pfie-event-switches button[aria-pressed='true'] i { opacity: 1; }
+.pfie-mgr-point-body { display: grid; grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.6fr); gap: 24px; align-items: start; }
+.pfie-mgr-point-body > .pfie-mgr-facts { margin: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.pfie-mgr-point-reasons { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.pfie-mgr-point-reasons .pfie-mgr-tagline { margin: 0; }
+.pfie-mgr-point-reasons .pfie-mgr-lead { margin: 0; font-size: 15px; }
+.pfie-mgr-point-reasons .pfie-mgr-reasons li { grid-template-columns: minmax(0, 1.5fr) minmax(90px, 1fr) 68px; gap: 12px; }
+.pfie-mgr-point-reasons .pfie-mgr-reasons .txt b { font-size: 14px; }
+.pfie-mgr-point-reasons .pfie-mgr-reasons .txt small { margin-top: 3px; color: var(--ink-2); }
+.pfie-mgr-point-reasons .pfie-mgr-reasons-axis { display: none; }
+@media (max-width: 800px) {
+  .pfie-mgr-point-body { grid-template-columns: 1fr; gap: 16px; }
+}
+@media (max-width: 520px) {
+  .pfie-mgr-point-reasons .pfie-mgr-reasons li { grid-template-columns: minmax(0, 1fr) 64px; gap: 6px 12px; }
+  .pfie-mgr-point-reasons .pfie-mgr-reasons .bar { grid-column: 1 / -1; grid-row: 2; }
+}

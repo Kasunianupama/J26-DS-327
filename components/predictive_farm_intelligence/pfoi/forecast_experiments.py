@@ -20,7 +20,7 @@ from .episodes import add_bands, add_recovery, daily_quality
 from .error_diagnostics import KEYS, grouped
 from .periods import HORIZONS, period_bounds
 
-MODELS = ("ridge", "boosted", "tcn", "tcn_residual")
+MODELS = ("linear", "ridge", "boosted", "tcn", "tcn_residual")
 CUTOFF = pd.Timestamp("2024-01-01")
 RAW_TAG = "herd_fitted_p1_g0_ka_w12_ck_kn_rk_lag90"
 ADAPTIVE_TAG = RAW_TAG + "_adhq0.1t365z3"
@@ -92,8 +92,24 @@ def examples(frame, target, grain, horizon, cfg):
     return pd.DataFrame(rows), np.asarray(seqs), np.asarray(statics)
 
 
+def linear_features(seq, static):
+    """Compact inputs for plain OLS: recent level, 7/28/84-day trend ratios, cows, month."""
+    seq = np.asarray(seq).reshape(-1, *np.asarray(seq).shape[-2:])
+    seen = 1-seq[:, :, 2]
+    def ratio(n):
+        w = seen[:, -n:]
+        return (seq[:, -n:, 0]*w).sum(1)/np.maximum(w.sum(1), 1)
+    st = np.asarray(static).reshape(len(seq), -1)
+    return np.column_stack([np.expm1(st[:, 0]), ratio(7), ratio(28), ratio(84),
+                            np.expm1(st[:, 1]), st[:, 2], st[:, 3]])
+
+
 def fit_predict(name, seq, static, y, query_seq, query_static, cfg):
     """Training transforms see training rows only. Fixed settings, no random validation split."""
+    if name == "linear":  # plain least squares on a handful of features, no penalty
+        from sklearn.linear_model import LinearRegression
+        model = LinearRegression().fit(linear_features(seq, static), y)
+        return float(model.predict(linear_features(query_seq[None], query_static[None]))[0])
     from sklearn.preprocessing import StandardScaler
     scaler = StandardScaler()
     x = np.concatenate([seq.reshape(len(seq), -1), static], axis=1)
@@ -326,7 +342,10 @@ def main(argv=None):
     if any(m.startswith("tcn") for m in args.models):
         import torch
     from .data import SqlHerdSource, DATA_START
-    source = SqlHerdSource.from_env()  # USER ONLY; synthetic tests never invoke this loader
+    # USER ONLY; synthetic tests never invoke this loader. The fixed structural candidate
+    # (w12, known cut, recorded conceptions) needs a matching source, or the leakage guard refuses.
+    source = (SqlHerdSource.from_env(cell_table="day_cell_known", conception_known="recorded")
+              if args.generate_structural else SqlHerdSource.from_env())
     target = source.target_daily(DATA_START, args.end.date())
     panel = source.panel_daily(DATA_START, args.end.date())
     frame, t = daily_frame(target, panel), _target_frame(target)

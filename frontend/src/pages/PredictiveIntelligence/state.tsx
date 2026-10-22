@@ -62,7 +62,7 @@ export function PfoiProvider({ children }: { children: ReactNode }) {
   const [horizon, setHorizon] = useState<number>(6);
   const [historyFrom, setHistoryFrom] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<Workspace>('outlook');
-  const [herdTab, setHerdTab] = useState<HerdTab>('milk');
+  const [herdTab, setHerdTab] = useState<HerdTab>('flow');
   const [selectedPeriod, setSelectedPeriod] = useState<string | null>(null);
   const [breakdownMonth, setBreakdownMonth] = useState<string | null>(null);
   const [acknowledged, setAcknowledged] = useState<Set<string>>(new Set());

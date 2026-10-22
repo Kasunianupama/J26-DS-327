@@ -37,6 +37,7 @@ export const PLAIN_PULL: Record<MilkFactor, string> = {
   parity_mix: 'more first-lactation cows',
   pregnancy_mix: 'more cows late in pregnancy',
   yield_level: 'lower yield per cow',
+  cow_model_correction: 'the cow model lowering the structural forecast',
   thi: 'heat stress',
   mastitis: 'mastitis',
   residual: 'other causes',
@@ -124,7 +125,7 @@ export function useChartOrTable() {
   const t = useT();
   const [asTable, setAsTable] = useState(false);
   const toggle = (
-    <span className="pfie-mgr-switch" role="group" aria-label={t('Show as')}>
+    <span className="pfie-mgr-seg small" role="group" aria-label={t('Show as')}>
       <button aria-pressed={!asTable} onClick={() => setAsTable(false)}>{t('Chart')}</button>
       <button aria-pressed={asTable} onClick={() => setAsTable(true)}>{t('Table')}</button>
     </span>

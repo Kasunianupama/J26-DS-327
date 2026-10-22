@@ -9,7 +9,9 @@
   Shipments (before 2020-08) and DelPro (from 2020-08) measure different things, so each
   has its own k. A forecast uses the k of the source current at the origin; if that
   source has fewer than 3 usable months, the other source's k is used and the run is
-  flagged ``source_switch``.
+  flagged ``source_switch``. With ``borrow_other_source_k=False`` that borrowing is refused:
+  the level then comes from recent same-source days (``anchor_first``), or the milk forecast
+  is withheld, and the run is flagged ``no_same_source_k``.
 * Anchored k (default, ``k_mode="anchored"``): k = mean recorded litres over the last
   14 scoreable days before the origin (current source, within the last 28 days) divided
   by the curve litres of the starting herd (the herd on the day before the origin). Both
@@ -63,11 +65,16 @@ class MilkConfig:
     # M3 (docs/pp1_plan.md): anchor only on verified days (targets.md rule: unverified milk,
     # identified share < 0.2 or > 20 L per milking cow, never sets k). False = pfoi-1.1.0.
     anchor_gate: bool = False
+    # Shipments and DelPro measure different things (record source break), so one source's k
+    # must not set the other's level. True (default) keeps pfoi-1.0.0 / 1.1.0: borrow the other
+    # source's 12-month k and flag ``source_switch``. False refuses; see the module docstring.
+    borrow_other_source_k: bool = True
 
     def tag(self) -> str:
         return (f"{self.curve_mode}_p{int(self.pregnancy_factor)}"
                 f"_g{int(self.generation_factor)}_k{K_TAG[self.k_mode]}"
-                + ("g" if self.anchor_gate else ""))
+                + ("g" if self.anchor_gate else "")
+                + ("" if self.borrow_other_source_k else "s"))
 
 
 def calibration_window(origin: date, months: int = 12) -> tuple[date, date]:
@@ -228,13 +235,19 @@ def prepare_milk(source, origin: date, cfg: MilkConfig, hist: MilkHistory,
         flags.append("uses_later_information")
     if src in ks:
         k, k_source = ks[src][0], src
-    elif ks:
+    elif ks and cfg.borrow_other_source_k:
         k_source = max(ks, key=lambda s: ks[s][1])
         k = ks[k_source][0]
         flags.append("source_switch")
     elif cfg.k_mode == "anchor_first":
         k, k_source = float("nan"), "none"  # anchor_k sets it, or withholds the forecast
         flags.append("no_window_k")
+        if ks:  # the other source's k exists but is deliberately not used
+            flags.append("no_same_source_k")
+            notes.append(f"k: too few usable {src} months; the other source's k is not borrowed")
+    elif ks:
+        raise ValueError(f"no same-source k before {origin} (current source {src}; "
+                         "the other source's k is not borrowed)")
     else:
         raise ValueError(f"no usable months to calibrate k before {origin}")
     if k_source in ks:

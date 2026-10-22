@@ -73,6 +73,17 @@ components/predictive_farm_intelligence/CLAUDE.md and start Step 3."*
   written yet. Until data is published, build and unit-test everything on synthetic
   fixtures.
 
+### model_input2 (rebuilt from the app's core, 2026-10-22)
+- Read `docs/model_input2.md` before any modelling on it: every change versus `model_input`,
+  the appended columns, the verified aggregates and the known limits.
+- **Placeholder milk is excluded from all modelling for now** (user decision). Load the
+  placeholder-free daily target described in `docs/model_input2.md` section 5; never use the
+  stored `target_litres`, `herd_milk_measured` or `period_panel` milk sums as they are.
+  Shipped milk (`milk_shipped`, `milk_internal`, `milk_hand_milked_est`) and DelPro-history
+  totals (`milk_delpro_*`) are not used in any modelling either. `pfoi/data.py` applies the
+  placeholder-free target automatically on model_input2 (`clean_target_frame`).
+- Select it with `PFOI_MODEL_INPUT_SCHEMA=model_input2`; write files to `--out logs/pfoi_mi2`.
+
 ## 4. Data contract (inputs)
 
 ### `model_input.day_cell` (herd engine input)

@@ -415,6 +415,13 @@ class FakeHerdSource:
         cd = self._cowdays
         return cd[(cd["month"] >= start) & (cd["month"] < end)].reset_index(drop=True)
 
+    def milking_mix_daily(self, start, end):
+        self.calls.append(("milking_mix_daily", start, end))
+        c = self.cells[(self.cells["state"] == "milking") & (self.cells["date"] >= start)
+                       & (self.cells["date"] < end)]
+        return (c.groupby(["date", "dim_band", "parity_group"])["n_animals"].sum()
+                .rename("n").reset_index())
+
     def target_daily(self, start, end):
         self.calls.append(("target_daily", start, end))
         self._milk_tables()

@@ -74,27 +74,57 @@ function outage(): OutageRow[] {
   return rows;
 }
 
-function heat(origin: string): HeatSummary {
+function heat(origin: string, through?: string): HeatSummary {
   const last = addDays(origin, -6);
   const doy = (iso: string) => {
     const d = new Date(`${iso}T00:00:00Z`);
     return Math.floor((d.getTime() - Date.UTC(d.getUTCFullYear(), 0, 1)) / 86_400_000);
   };
   const usual = (iso: string) => 80 + 3.5 * Math.sin((2 * Math.PI * (doy(iso) - 60)) / 365);
-  const recent = Array.from({ length: 60 }, (_, i) => {
-    const date = addDays(last, i - 59);
-    const bump = i > 50 ? 2.2 : 0;
+  const recent = Array.from({ length: 730 }, (_, i) => {
+    const date = addDays(last, i - 729);
+    const bump = i > 720 ? 2.2 : 0;
     const max = usual(date) + bump + 0.8 * Math.sin(i / 3);
     return { date, thi_mean: Math.round((max - 6) * 100) / 100, thi_max: Math.round(max * 100) / 100 };
   });
+  const knots = { p75: 82.1, p90: 83.6 };
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+  // Chance a normal value with this mean and spread is above t (Abramowitz-Stegun erf).
+  const above = (mean: number, sd: number, t: number) => {
+    const x = (t - mean) / (sd * Math.SQRT2);
+    const k = 1 / (1 + 0.3275911 * Math.abs(x));
+    const erf = 1 - k * (0.254829592 + k * (-0.284496736 + k * (1.421413741 + k * (-1.453152027 + k * 1.061405429)))) * Math.exp(-x * x);
+    return Math.round(1000 * 0.5 * (1 - Math.sign(x) * erf)) / 1000;
+  };
   const climatology = Array.from({ length: 90 }, (_, i) => {
     const date = addDays(origin, i);
     const p50 = usual(date);
-    return { date, p10: Math.round((p50 - 2.4) * 100) / 100, p50: Math.round(p50 * 100) / 100, p90: Math.round((p50 + 2.1) * 100) / 100 };
+    return {
+      date, p10: r2(p50 - 2.4), p50: r2(p50), p90: r2(p50 + 2.1),
+      share_above_p75: above(p50, 1.75, knots.p75), share_above_p90: above(p50, 1.75, knots.p90),
+    };
   });
   return {
-    last_weather_day: last, weather_lag_days: 6, knot_p75: 82.1, knot_p90: 83.6, hot_run_days: 5,
-    heat_load_7d: 0.9, recent, climatology, source: 'demo: synthetic weather',
+    last_weather_day: last, weather_lag_days: 6, knot_p75: knots.p75, knot_p90: knots.p90, hot_run_days: 5,
+    heat_load_7d: 0.9, recent, climatology,
+    realised: climatology.filter((c) => through != null && c.date <= through).map((c, i) => {
+      const max = Math.round((c.p50 + 1.8 * Math.sin(i / 4)) * 100) / 100;
+      return { date: c.date, thi_mean: max - 6, thi_max: max };
+    }),
+    source: 'demo: synthetic weather',
+    forecast: {
+      status: 'experimental', method: 'synthetic_demo_v2', trained_through: last, n_train: 0,
+      thresholds: knots, taper_days: [20, 40], persistence_by_lead: { '7': 0.05, '14': 0.04, '30': 0.06 },
+      predictions: climatology.map((c, i) => {
+        // Fictional: a recent warm spell fading within about a week, then the season.
+        const mean = c.p50 + (1.5 * Math.exp(-(i + 6) / 3) + 0.3) * Math.min(1, Math.max(0, (40 - i) / 20));
+        const sd = Math.min(1.75, 1.2 + 0.04 * i);
+        return {
+          date: c.date, thi_max: r2(mean), seasonal: c.p50, lower: r2(mean - 1.28 * sd), upper: r2(mean + 1.28 * sd),
+          p_above: { p75: above(mean, sd, knots.p75), p90: above(mean, sd, knots.p90) },
+        };
+      }),
+    },
   };
 }
 
@@ -172,7 +202,7 @@ export function demoScenarios(run: Partial<PfoiRun>): ScenarioRow[] {
 }
 
 /** The PP1 sections of the demo run at one forecast date. */
-export function demoPp1(origin: string): Partial<PfoiRun> {
+export function demoPp1(origin: string, through?: string): Partial<PfoiRun> {
   const rs = recordStatus(origin);
   const interval: IntervalMethod = { milk: 'aci_quality_band', staleness_scale: 'demo', staleness_days: rs.staleness_days };
   return {
@@ -180,7 +210,7 @@ export function demoPp1(origin: string): Partial<PfoiRun> {
     withheld: withheldRows(origin),
     interval_method: interval,
     outage_simulation: outage(),
-    heat: heat(origin),
+    heat: heat(origin, through),
     repro_timing: REPRO,
     generation_outcomes: GENERATION,
     evidence_ladder: LADDER,

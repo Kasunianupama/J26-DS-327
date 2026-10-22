@@ -1,7 +1,7 @@
 /**
  * Simple view, "Herd movement" tab: the herd movement picture (as in the
  * detailed view), the groups now and at the end of the look ahead, and the
- * animals moving in and out. Follows the Daily / Weekly / Monthly switch.
+ * animals moving in and out. Follows the Weekly / Monthly switch.
  */
 
 import { EVENT_SERIES, flowTotals, headline, isForecast, lastActual, type SeriesId } from '../../../data/pfoi';

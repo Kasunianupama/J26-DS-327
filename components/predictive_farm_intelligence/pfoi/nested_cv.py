@@ -64,13 +64,28 @@ def _wape(rows: pd.DataFrame) -> float:
     return float((rows["forecast"] - rows["actual"]).abs().sum() / tot) if tot > 0 else np.nan
 
 
+def _miss10(rows: pd.DataFrame) -> float:
+    """Share of forecasts more than 10 % from the record (1 - hit rate within +-10 %)."""
+    r = rows[rows["actual"] > 0]
+    if not len(r):
+        return np.nan
+    return float(((r["forecast"] - r["actual"]).abs() / r["actual"] > 0.10 + 1e-9).mean())
+
+
+METRICS = {"wape": _wape, "miss10": _miss10}
+
+
 def nested_select(candidates: dict[str, pd.DataFrame], objectives: list[tuple[str, str, int]],
-                  fold_years=FOLD_YEARS, min_inner: int = MIN_INNER_PERIODS) -> NestedResult:
+                  fold_years=FOLD_YEARS, min_inner: int = MIN_INNER_PERIODS,
+                  metric: str = "wape", fallback: str | None = None) -> NestedResult:
     """``candidates``: name -> error rows of that candidate (one model per frame).
 
-    Inner score at fold Y = mean WAPE over the objectives that have at least ``min_inner``
-    common periods ending on or before 1 Jan Y. Ties go to the first candidate in order.
+    Inner score at fold Y = mean ``metric`` (WAPE, or ``miss10`` = share outside +-10 %) over
+    the objectives that have at least ``min_inner`` common periods ending on or before 1 Jan Y.
+    Ties go to the first candidate in order. A fold with no inner score uses ``fallback``
+    (if given) instead of being skipped.
     """
+    score = METRICS[metric]
     cands = {c: _prep(f) for c, f in candidates.items()}
     per_obj = {obj: _objective_rows(cands, obj) for obj in objectives}
     fold_rows, picked = [], []
@@ -82,10 +97,10 @@ def nested_select(candidates: dict[str, pd.DataFrame], objectives: list[tuple[st
             if min(len(p) for p in inner.values()) < min_inner:
                 continue
             for c, p in inner.items():
-                scores[c].append(_wape(p))
+                scores[c].append(score(p))
         means = {c: (float(np.mean(v)) if v else np.nan) for c, v in scores.items()}
         valid = {c: m for c, m in means.items() if not np.isnan(m)}
-        choice = min(valid, key=lambda c: (valid[c], list(cands).index(c))) if valid else None
+        choice = min(valid, key=lambda c: (valid[c], list(cands).index(c))) if valid else fallback
         for c in cands:
             fold_rows.append(dict(fold_year=year, candidate=c, inner_score=means[c],
                                   n_objectives=len(scores[c]), selected=(c == choice)))
@@ -117,3 +132,35 @@ def _summary(per_obj, sel: pd.DataFrame, fold_years) -> pd.DataFrame:
         row["optimism"] = row["acc_best_in_hindsight"] - row["acc_nested"]
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+DEVELOPMENT_YEARS = tuple(range(2017, 2024))
+
+
+def choose_trend_by_year(errors: pd.DataFrame, base_model: str, cfg, grid, years=DEVELOPMENT_YEARS,
+                         metric: str = "miss10", min_inner: int = MIN_INNER_PERIODS,
+                         breaks: list | None = None):
+    """Damped-trend settings of the adaptive correction chosen year by year (pfoi-1.2.1-dev).
+
+    Candidates: the plain level ("off", today's ``<base>_adaptive``) and one corrected series
+    per ``TrendConfig`` in ``grid``. For forecast year Y the candidate with the fewest misses
+    beyond +-10 % on periods that had ended by 1 Jan Y (all horizons of the series, equal
+    weight) is used for the origins of Y; ties and years with no earlier periods use "off".
+    Returns (off rows, chosen rows as ``<base>_adaptive_trend`` with column ``trend_setting``,
+    fold table).
+    """
+    from .adaptive import adaptive_corrected
+
+    off = adaptive_corrected(errors, base_model, f"{base_model}_adaptive", cfg, breaks=breaks)
+    cands = {"off": off}
+    for t in grid:
+        if not t.off:
+            cands[t.label()] = adaptive_corrected(errors, base_model, cfg=cfg, breaks=breaks, trend=t)
+    objectives = sorted({(s, g, int(h)) for s, g, h in off[["series", "grain", "horizon"]].itertuples(index=False)})
+    res = nested_select(cands, objectives, fold_years=years, min_inner=min_inner,
+                        metric=metric, fallback="off")
+    chosen = res.selected_rows
+    if len(chosen):
+        chosen = (chosen.drop(columns="fold_year").rename(columns={"candidate": "trend_setting"})
+                  .assign(model=f"{base_model}_adaptive_trend"))
+    return off, chosen, res.folds
