@@ -1,40 +1,18 @@
-import React, { useState } from 'react';
-import { useLocation } from 'react-router-dom';
-import { useUser } from '../../context/UserContext';
-import { NationalDashboard } from './NationalDashboard';
+import React from 'react';
+import { Navigate, useLocation } from 'react-router-dom';
 import { FarmLevelDashboard } from './FarmLevelDashboard';
 import './dairyCrisis.css';
+import './farmIntelligence.css';
 
 export const DairyCrisisDashboard: React.FC = () => {
   const { pathname } = useLocation();
-  const { role } = useUser();
-  const [selectedFarmId, setSelectedFarmId] = useState<string>('farm-1');
 
-  // Determine active view mode based on URL route or role
-  let isNationalView = false;
-  if (pathname.includes('/national')) {
-    isNationalView = true;
-  } else if (pathname.includes('/farm')) {
-    isNationalView = false;
-  } else {
-    // Default fallback based on role if navigating directly to /risk-management
-    isNationalView = role === 'board_management';
-  }
-
-  const handleSelectFarm = (farmId: string) => {
-    setSelectedFarmId(farmId);
-  };
+  // Keep old farm/national and crisis-forecasting bookmarks working.
+  if (pathname !== '/risk-management') return <Navigate to="/risk-management" replace />;
 
   return (
     <div className="dairy-crisis-workspace-only">
-      {isNationalView ? (
-        <NationalDashboard onSelectFarm={handleSelectFarm} />
-      ) : (
-        <FarmLevelDashboard
-          selectedFarmId={selectedFarmId}
-          onSelectFarmId={(id) => setSelectedFarmId(id)}
-        />
-      )}
+      <FarmLevelDashboard />
     </div>
   );
 };
