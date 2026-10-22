@@ -50,3 +50,6 @@ share/
 *.pt
 *.npz
 *.npy
+
+# Generated doc figures (built locally from real data)
+components/predictive_farm_intelligence/docs/figures/
