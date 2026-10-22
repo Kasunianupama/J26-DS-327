@@ -36,10 +36,6 @@ const navigation: {label: string; items: NavItem[]}[] = [
         to: '/risk-management',
         label: 'Risk management',
         icon: 'shield-emoji',
-        subItems: [
-          {to: '/risk-management/farm', label: 'Farm Dashboard', icon: 'farm'},
-          {to: '/risk-management/national', label: 'National Dashboard', icon: 'chart'},
-        ],
       },
       {to: '/assistant', label: 'Digital agronomist', icon: 'sparkles'},
       {to: '/reports', label: 'Reports', icon: 'report'},
@@ -87,11 +83,7 @@ export function Layout() {
   const handleRoleChange = (newRole: typeof role) => {
     setRole(newRole);
     if (pathname.startsWith('/risk-management')) {
-      if (newRole === 'board_management') {
-        navigate('/risk-management/national');
-      } else {
-        navigate('/risk-management/farm');
-      }
+      navigate('/risk-management');
     }
   };
 
