@@ -1,0 +1,2 @@
+# Optional local CPU speech runtime, independent from other components.
+faster-whisper>=1.2,<2

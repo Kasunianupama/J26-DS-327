@@ -1,0 +1,24 @@
+/* Scoped local historical C4 chat; technical provenance stays expandable. */
+.local-risk-chat {width:min(960px,100%);margin:auto;padding:24px;box-sizing:border-box;color:#203c33;}
+.local-risk-chat h1 {font-size:1.7rem;margin:8px 0;}
+.local-risk-chat p {line-height:1.65;}
+.local-risk-label {font-size:.75rem;font-weight:700;letter-spacing:.07em;}
+.local-risk-date {display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:20px 0;}
+.local-risk-chat input {padding:10px;border:1px solid #789486;border-radius:7px;background:#fff;color:#203c33;}
+.local-risk-examples {display:flex;gap:10px;flex-wrap:wrap;}
+.local-risk-chat button {padding:10px 14px;background:#205f49;color:#fff;border:0;border-radius:7px;cursor:pointer;}
+.local-risk-chat button:disabled {opacity:.6;cursor:default;}
+.local-risk-turns article {border:1px solid #dae4de;background:#fff;padding:20px;margin:20px 0;border-radius:10px;}
+.local-risk-question {font-weight:700;}
+.local-risk-question small {display:block;font-size:.8rem;font-weight:400;}
+.local-risk-source {font-size:.85rem;color:#52665d;overflow-wrap:anywhere;}
+.local-risk-chat details {border-top:1px solid #dae4de;padding-top:12px;}
+.local-risk-chat summary {cursor:pointer;font-weight:600;}
+.local-risk-chat dt {font-weight:600;margin-top:10px;}
+.local-risk-chat dd {margin:3px 0;overflow-wrap:anywhere;}
+.local-risk-chat li {margin:8px 0;line-height:1.5;}
+.local-risk-composer {padding:20px 0;}
+.local-risk-composer label {display:block;margin-bottom:8px;}
+.local-risk-composer > div {display:flex;gap:10px;}
+.local-risk-composer input {flex:1;min-width:0;}
+@media(max-width:600px) {.local-risk-chat {padding:16px;}.local-risk-composer > div {flex-wrap:wrap;}.local-risk-composer input {flex-basis:100%;}}
