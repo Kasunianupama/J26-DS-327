@@ -161,7 +161,8 @@ def build_samples(dl: Daily, origins, target_end: date | None, cfg: LSTMConfig =
         seq = np.stack([level, g.astype(float), change, ypc_rel, cows_rel, ids], axis=1)
         g7 = g[-7:]
         ch = _safe_log(lit[-7:][g7].mean(), R) if g7.any() else 0.0
-        vol = float(np.std(change[1:][both[-(REF_DAYS - 1):]])) if both[-(REF_DAYS - 1):].sum() >= 2 else 0.0
+        b28 = both[-(REF_DAYS - 1):]
+        vol = float(np.std(change[-(REF_DAYS - 1):][b28])) if b28.sum() >= 2 else 0.0
         other = np.nonzero((dl.source[:i] != cur) & (dl.source[:i] != None))[0]  # noqa: E711
         age = (i - other[-1]) if len(other) else i
         c_now = np.nanmean(dl.cows[i - 7:i]) if np.isfinite(dl.cows[i - 7:i]).any() else np.nan
@@ -349,6 +350,7 @@ def run_folds(dl: Daily, predict_origins, cfg: LSTMConfig = LSTMConfig()) -> Fol
         scaler = Scaler(train.stat)
         nets = []
         for seed in cfg.seeds:
+            _torch().manual_seed(seed)  # initial weights depend on the seed only (reproducible runs)
             net = make_net(cfg)
             log = fit(net, train, val, scaler, seed, cfg)
             nets.append(net)
@@ -376,14 +378,13 @@ def lstm_rows(base: pd.DataFrame, paths: dict, model: str = MODEL, cells=LSTM_CE
     b = _keyed(base).drop_duplicates(["grain", "horizon", "origin", "period_start"])
     keep = set(cells)
     rows = []
-    for r in b.itertuples(index=False):
-        if (r.grain, int(r.horizon)) not in keep or r.origin not in paths:
+    for d in b.to_dict("records"):
+        if (d["grain"], int(d["horizon"])) not in keep or d["origin"] not in paths:
             continue
-        a, e = (r.period_start - r.origin).days, (r.period_end - r.origin).days
+        a, e = (d["period_start"] - d["origin"]).days, (d["period_end"] - d["origin"]).days
         if a < 0 or e > H:
             continue
-        R, p = paths[r.origin]
-        d = r._asdict()
+        R, p = paths[d["origin"]]
         d.update(model=model, forecast=float(R * np.exp(p[a:e]).sum()))
         rows.append(d)
     out = pd.DataFrame(rows)

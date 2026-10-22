@@ -592,3 +592,63 @@ def run_gate_audit(errors: pd.DataFrame, daily: pd.DataFrame, base_model: str,
                      auc_target=auc_target_table(pred) if len(pred) else pd.DataFrame(),
                      verdict=verdict, go=go,
                      switch=sw, predictions=pred)
+
+
+# --------------------------------------------------------------------------- classifier report
+
+def classification_report(pred: pd.DataFrame, gates=("logistic", "lgbm", "base_rate"),
+                          threshold: float = 0.5, by: tuple[str, ...] = ()) -> pd.DataFrame:
+    """Gate as a classifier of later misses (1 = outside +-10 %): confusion matrix at ``threshold``,
+    accuracy, balanced accuracy, precision, recall, F1, AUC (pooled and within grain x horizon),
+    Brier score and MAE of the probabilities. One row per gate (x ``by`` group). Aggregates only."""
+    rows = []
+    groups = [((), pred)] + (list(pred.groupby(list(by))) if by else [])
+    for key, g in groups:
+        key = key if isinstance(key, tuple) else (key,)
+        y = g["miss"].to_numpy().astype(int)
+        for m in gates:
+            col = m if m.startswith("p_") else f"p_{m}"
+            if col not in g:
+                continue
+            p = g[col].to_numpy(dtype=float)
+            hat = (p > threshold).astype(int)
+            tp, tn = int(((hat == 1) & (y == 1)).sum()), int(((hat == 0) & (y == 0)).sum())
+            fp, fn = int(((hat == 1) & (y == 0)).sum()), int(((hat == 0) & (y == 1)).sum())
+            prec = tp / (tp + fp) if tp + fp else np.nan
+            rec = tp / (tp + fn) if tp + fn else np.nan
+            spec = tn / (tn + fp) if tn + fp else np.nan
+            row = dict(zip(by, key)) if key else {k: "all" for k in by}
+            row.update(gate=col[2:], n=len(g), misses=int(y.sum()), tp=tp, fp=fp, fn=fn, tn=tn,
+                       accuracy=(tp + tn) / len(g) if len(g) else np.nan,
+                       balanced_accuracy=np.nanmean([rec, spec]),
+                       precision=prec, recall=rec, specificity=spec,
+                       f1=2 * prec * rec / (prec + rec) if prec and rec and np.isfinite(prec + rec) else np.nan,
+                       auc_pooled=_auc(y, p), auc_within=_auc_within(g, col),
+                       brier=float(np.mean((p - y) ** 2)), mae=float(np.mean(np.abs(p - y))))
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def plot_confusion(report: pd.DataFrame, path, title: str = "") -> None:
+    """2 x 2 confusion matrices (overall rows of ``report``), one panel per gate."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    r = report.reset_index(drop=True)
+    fig, axes = plt.subplots(1, len(r), figsize=(3.6 * len(r), 3.6), squeeze=False)
+    for ax, (_, x) in zip(axes[0], r.iterrows()):
+        mat = np.array([[x["tn"], x["fp"]], [x["fn"], x["tp"]]])
+        ax.imshow(mat, cmap="Blues")
+        for i in range(2):
+            for j in range(2):
+                ax.text(j, i, f"{mat[i, j]}\n{mat[i, j] / x['n']:.0%}", ha="center", va="center", fontsize=10,
+                        color="white" if mat[i, j] > mat.max() / 2 else "black")
+        ax.set_xticks([0, 1], ["said stable", "said unstable"])
+        ax.set_yticks([0, 1], ["hit (within 10 %)", "missed"])
+        ax.set_title(f"{x['gate']}: acc {x['accuracy']:.2f}, AUC {x['auc_within']:.2f}", fontsize=10)
+    fig.suptitle(title or "Stability gate: was the forecast later a miss?", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)

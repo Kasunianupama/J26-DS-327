@@ -181,8 +181,22 @@ def plot_versions(docs: list[tuple[str, dict]], origin: date, path, series=SERIE
             f = f[f["series"] == sid].sort_values("period")
             if not len(f):
                 continue
-            ax.plot(f["period"], f["forecast"], "--", color=colour, lw=1.8, label=label)
-            ax.fill_between(f["period"], f["lower"], f["upper"], color=colour, alpha=0.08, lw=0)
+            # Markers keep a one-period forecast (e.g. pfoi-1.8.0-dev milk) visible.
+            ax.plot(f["period"], f["forecast"], "--", color=colour, lw=1.8, marker="o", ms=3.5,
+                    label=label)
+            ranged = f["lower"].notna() & f["upper"].notna() & (f["upper"] > f["lower"])
+            r = f[ranged]
+            if len(r):
+                ax.fill_between(r["period"], r["lower"], r["upper"], color=colour, alpha=0.08, lw=0)
+                for bound in ("lower", "upper"):  # the 5-95 % boundaries themselves
+                    ax.plot(r["period"], r[bound], ":", color=colour, lw=0.9)
+                ax.errorbar(r["period"], r["forecast"],
+                            yerr=[r["forecast"] - r["lower"], r["upper"] - r["forecast"]],
+                            fmt="none", ecolor=colour, elinewidth=0.9, capsize=3, alpha=0.8)
+            if (~ranged).any():  # never draw a zero-width band as if it were a range
+                nr = f[~ranged]
+                ax.scatter(nr["period"], nr["forecast"], s=30, facecolor="white", edgecolor=colour,
+                           zorder=7, label=f"{label}: no calibrated range")
             if "confidence" in f:
                 low = f[f["confidence"] == "low"]
                 if len(low):

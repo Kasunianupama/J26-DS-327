@@ -37,6 +37,7 @@ export const PLAIN_PULL: Record<MilkFactor, string> = {
   parity_mix: 'more first-lactation cows',
   pregnancy_mix: 'more cows late in pregnancy',
   yield_level: 'lower yield per cow',
+  cow_model_correction: 'the cow model lowering the structural forecast',
   thi: 'heat stress',
   mastitis: 'mastitis',
   residual: 'other causes',

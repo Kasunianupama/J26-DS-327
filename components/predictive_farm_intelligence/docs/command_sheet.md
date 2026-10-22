@@ -127,6 +127,10 @@ python -m components.predictive_farm_intelligence.pfoi.outage_sim --preset pfoi-
 
 # break reset check
 $PFOI.cli break-reset --preset pfoi-1.1
+
+# experimental structural TCN: direct weeks 1/4/8/13 and months 1/3/6/12
+# (development folds only; prints aggregates and writes a new _tcn tag)
+$PFOI.cli specialist-tcn --device auto
 ```
 
 ---

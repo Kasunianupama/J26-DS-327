@@ -96,6 +96,15 @@ export function MasterTimeline({ bands = ['milk', 'cows', 'herd', 'events'], pla
   const [events, setEvents] = useState<SeriesId[]>(['calvings', 'dry_offs', 'abortions']);
   const [milkMode, setMilkMode] = useState<MilkMode>('total');
   const [overlay, setOverlay] = useState<{ milking: boolean; total_herd: boolean }>({ milking: true, total_herd: true });
+  /* Lines shown in the cows and herd-population bands; each chip turns one on or off, like the event chips. */
+  const [cowLines, setCowLines] = useState<SeriesId[]>(['milking', 'dry']);
+  const [popLines, setPopLines] = useState<string[]>(['total_herd', ...POPULATION.map((g) => g.key)]);
+  const flip = <T,>(set: (f: (cur: T[]) => T[]) => void, v: T) => set((cur) => (cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v]));
+  const chip = (key: string, on: boolean, color: string, label: string, onClick: () => void) => (
+    <button key={key} className={`pfie-serieschip${on ? ' on' : ''}`} onClick={onClick} aria-pressed={on}>
+      <i style={{ background: color }} />{label}
+    </button>
+  );
   const milkUnit = milkMode === 'per_cow' ? `L/cow/${grain}` : `L/${grain}`;
   const rows = useMemo(() => withDerived(points, grain, milkMode), [points, grain, milkMode]);
   const tick = (iso: string) => periodLabel(iso, grain, true);
@@ -116,7 +125,7 @@ export function MasterTimeline({ bands = ['milk', 'cows', 'herd', 'events'], pla
     <>
       <CartesianGrid stroke="#eef2f0" vertical={false} />
       <XAxis dataKey="period" tickFormatter={tick} tick={{ fontSize: 11, fill: '#70827a' }} minTickGap={24} />
-      <YAxis tick={{ fontSize: 11, fill: '#70827a' }} width={52} tickFormatter={(v: number) => fmtInt(v)} label={{ value: unit, angle: -90, position: 'insideLeft', fontSize: 10, fill: '#70827a' }} />
+      <YAxis tick={{ fontSize: 11, fill: '#70827a' }} width={unit.startsWith('L/') ? 70 : 52} tickFormatter={(v: number) => fmtInt(v)} label={{ value: unit, angle: -90, position: 'insideLeft', fontSize: 10, fill: '#70827a' }} />
       {origin && <ReferenceLine x={origin} stroke="#5b7fa6" strokeDasharray="4 3" label={{ value: realised ? 'Forecast date' : 'Origin', position: 'insideTopRight', fontSize: 10, fill: '#5b7fa6' }} />}
       {selected && <ReferenceLine x={selected} stroke="#9a4f27" strokeWidth={1.5} />}
     </>
@@ -136,8 +145,8 @@ export function MasterTimeline({ bands = ['milk', 'cows', 'herd', 'events'], pla
       {player && <TimelinePlayer points={points} />}
 
       {bands.includes('milk') && (
-        <div className="pfie-band">
-          <div className="pfie-row between">
+        <div className="pfie-band pfie-tlband">
+          <div className="pfie-row between pfie-tlband-head">
             <h4 className="pfie-bandctl-label">Milk · {milkUnit}</h4>
             <span className="pfie-row tight">
               <Segmented<MilkMode>
@@ -218,12 +227,17 @@ export function MasterTimeline({ bands = ['milk', 'cows', 'herd', 'events'], pla
       )}
 
       {bands.includes('cows') && (
-        <div className="pfie-band">
-          <h4 className="pfie-bandctl-label">Cows · milking and dry · head (daily average)</h4>
+        <div className="pfie-band pfie-tlband">
+          <div className="pfie-row between pfie-tlband-head">
+            <h4 className="pfie-bandctl-label">Cows · milking and dry · head (daily average)</h4>
+            <span className="pfie-row tight">
+              {(['milking', 'dry'] as SeriesId[]).map((s) => chip(s, cowLines.includes(s), SERIES_META[s].color, s === 'dry' ? 'Dry cows' : 'Milking cows', () => flip(setCowLines, s)))}
+            </span>
+          </div>
           <ResponsiveContainer width="100%" height={200}>
             <ComposedChart {...common(200)}>
               {axes('head')}
-              {(['milking', 'dry'] as SeriesId[]).flatMap((s) => [
+              {(['milking', 'dry'] as SeriesId[]).filter((s) => cowLines.includes(s)).flatMap((s) => [
                 <Area key={`${s}_band`} dataKey={`${s}_band`} stroke="none" fill={SERIES_META[s].color} fillOpacity={0.12} isAnimationActive={false} />,
                 <Line key={s} dataKey={s} stroke={SERIES_META[s].color} strokeWidth={2} dot={false} isAnimationActive={false} />,
                 <Line key={`${s}_f`} dataKey={`${s}_f`} stroke={SERIES_META[s].color} strokeWidth={2} strokeDasharray="5 4" dot={false} isAnimationActive={false} />,
@@ -233,8 +247,6 @@ export function MasterTimeline({ bands = ['milk', 'cows', 'herd', 'events'], pla
             </ComposedChart>
           </ResponsiveContainer>
           <div className="pfie-legend">
-            <span><i style={{ background: SERIES_META.milking.color }} />Milking cows</span>
-            <span><i style={{ background: SERIES_META.dry.color }} />Dry cows</span>
             <span><i className="dash" />Forecast, with 5–95% range</span>
             {realised && <OutcomeLegend color={SERIES_META.milking.color} />}
           </div>
@@ -243,16 +255,24 @@ export function MasterTimeline({ bands = ['milk', 'cows', 'herd', 'events'], pla
       )}
 
       {bands.includes('herd') && (
-        <div className="pfie-band">
-          <h4 className="pfie-bandctl-label">Herd population · head (daily average)</h4>
+        <div className="pfie-band pfie-tlband">
+          <div className="pfie-row between pfie-tlband-head">
+            <h4 className="pfie-bandctl-label">Herd population · head (daily average)</h4>
+            <span className="pfie-row tight">
+              {chip('total_herd', popLines.includes('total_herd'), SERIES_META.total_herd.color, 'Total herd', () => flip(setPopLines, 'total_herd'))}
+              {POPULATION.map((g) => chip(g.key, popLines.includes(g.key), g.color, g.label, () => flip(setPopLines, g.key)))}
+            </span>
+          </div>
           <ResponsiveContainer width="100%" height={220}>
             <ComposedChart {...common(220)}>
               {axes('head')}
-              <Area dataKey="total_herd_band" stroke="none" fill={SERIES_META.total_herd.color} fillOpacity={0.1} isAnimationActive={false} />
-              <Line dataKey="total_herd" stroke={SERIES_META.total_herd.color} strokeWidth={2.6} dot={false} isAnimationActive={false} />
-              <Line dataKey="total_herd_f" stroke={SERIES_META.total_herd.color} strokeWidth={2.6} strokeDasharray="5 4" dot={false} isAnimationActive={false} />
-              {realised && <Line dataKey="total_herd_r" stroke={SERIES_META.total_herd.color} strokeWidth={2.6} dot={outcomeDot(SERIES_META.total_herd.color)} isAnimationActive={false} />}
-              {POPULATION.flatMap((g) => [
+              {popLines.includes('total_herd') && <>
+                <Area dataKey="total_herd_band" stroke="none" fill={SERIES_META.total_herd.color} fillOpacity={0.1} isAnimationActive={false} />
+                <Line dataKey="total_herd" stroke={SERIES_META.total_herd.color} strokeWidth={2.6} dot={false} isAnimationActive={false} />
+                <Line dataKey="total_herd_f" stroke={SERIES_META.total_herd.color} strokeWidth={2.6} strokeDasharray="5 4" dot={false} isAnimationActive={false} />
+                {realised && <Line dataKey="total_herd_r" stroke={SERIES_META.total_herd.color} strokeWidth={2.6} dot={outcomeDot(SERIES_META.total_herd.color)} isAnimationActive={false} />}
+              </>}
+              {POPULATION.filter((g) => popLines.includes(g.key)).flatMap((g) => [
                 <Line key={g.key} dataKey={g.key} stroke={g.color} strokeWidth={1.6} dot={false} isAnimationActive={false} />,
                 <Line key={`${g.key}_f`} dataKey={`${g.key}_f`} stroke={g.color} strokeWidth={1.6} strokeDasharray="4 3" dot={false} isAnimationActive={false} />,
                 ...(realised ? [<Line key={`${g.key}_r`} dataKey={`${g.key}_r`} stroke={g.color} strokeWidth={1.6} dot={outcomeDot(g.color, 2)} isAnimationActive={false} />] : []),
@@ -261,8 +281,6 @@ export function MasterTimeline({ bands = ['milk', 'cows', 'herd', 'events'], pla
             </ComposedChart>
           </ResponsiveContainer>
           <div className="pfie-legend">
-            <span><i style={{ background: SERIES_META.total_herd.color }} />Total herd</span>
-            {POPULATION.map((g) => <span key={g.key}><i style={{ background: g.color }} />{g.label}</span>)}
             <span><i className="dash" />Forecast</span>
             {realised && <OutcomeLegend color={SERIES_META.total_herd.color} />}
           </div>
@@ -274,20 +292,11 @@ export function MasterTimeline({ bands = ['milk', 'cows', 'herd', 'events'], pla
       )}
 
       {bands.includes('events') && (
-        <div className="pfie-band">
-          <div className="pfie-row between">
+        <div className="pfie-band pfie-tlband">
+          <div className="pfie-row between pfie-tlband-head">
             <h4 className="pfie-bandctl-label">Herd events · per {grain}</h4>
             <span className="pfie-row tight">
-              {EVENT_CHOICES.map((s) => (
-                <button
-                  key={s}
-                  className={`pfie-serieschip${events.includes(s) ? ' on' : ''}`}
-                  onClick={() => setEvents((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]))}
-                  aria-pressed={events.includes(s)}
-                >
-                  <i style={{ background: SERIES_META[s].color }} />{SERIES_META[s].label}
-                </button>
-              ))}
+              {EVENT_CHOICES.map((s) => chip(s, events.includes(s), SERIES_META[s].color, SERIES_META[s].label, () => flip(setEvents, s)))}
             </span>
           </div>
           <ResponsiveContainer width="100%" height={190}>

@@ -47,6 +47,12 @@ export const PLAIN_FACTOR: Partial<Record<Factor, { name: string; up: string; do
     down: 'Cows milking below their expected level',
     why: 'How well the cows milk compared with what their stage and age predict. A forecast keeps it at the last recorded level.',
   },
+  cow_model_correction: {
+    name: 'Cow-model correction',
+    up: 'Cow model lifts the structural forecast',
+    down: 'Cow model lowers the structural forecast',
+    why: 'The herd engine predicts cow numbers and lactation structure. The neural model adjusts only the yield level; this bar is the exact adjustment in litres.',
+  },
   thi: {
     name: 'Heat stress',
     up: 'Less heat stress',

@@ -113,7 +113,7 @@ export function HeatTab() {
         {t('Hot: THI > {low} (hotter than 75% of past days).', { low: hot.toFixed(1) })}
         {veryHot !== null && <> {t('Very hot: THI > {high} (hotter than 90% of past days).', { high: veryHot.toFixed(1) })}</>}
       </p>}
-      {predicted && !chances && <p className="pfie-mgr-note">{t('Experimental THI forecast: a separate statistical model fitted to past weather. Accuracy on Farm X records has not been validated. It does not change the milk or herd forecast.')}</p>}
+      {predicted && <p className="pfie-mgr-note">{t('Experimental THI forecast: a separate statistical weather model. It does not change the milk, cow-model correction or herd forecast.')}</p>}
       {!predicted && <p className="pfie-mgr-note">{t('No model-predicted THI is included in this run. The seasonal average is shown separately.')}</p>}
       <div className="pfie-mgr-facts">
         <div className={`pfie-mgr-fact ${h.hot_run_days ? 'warn' : ''}`}>
@@ -151,7 +151,6 @@ export function HeatTab() {
             {predicted && <Line dataKey="near" stroke={PREDICTED} strokeWidth={3} dot={false} connectNulls={false} isAnimationActive={false} />}
             {predicted && <Line dataKey="far" stroke={PREDICTED} strokeDasharray="2 4" strokeWidth={2.5} dot={false} connectNulls={false} isAnimationActive={false} />}
             <Line dataKey="recorded" stroke={RECORDED} strokeWidth={2.5} dot={false} isAnimationActive={false} />
-            {observed && <Line dataKey="actual" stroke={ACTUAL} strokeWidth={2.5} dot={{ r: 2.5, fill: '#fff', stroke: ACTUAL, strokeWidth: 1.5 }} connectNulls={false} isAnimationActive={false} />}
             {rows.some((r) => r.date === run.origin_date) && <ReferenceLine x={run.origin_date} stroke="#17231f" strokeDasharray="3 3" label={{ value: t('Forecast starts'), position: 'top', fontSize: 12 }} />}
             {picked && <ReferenceLine x={picked} stroke="#9a4f27" strokeWidth={6} strokeOpacity={0.2} />}
             {hot !== null && <ReferenceLine y={hot} ifOverflow="extendDomain" stroke={LIMIT} strokeDasharray="4 3" label={{ value: t('Hot'), position: 'insideTopLeft', fontSize: 12, fill: LIMIT }} />}
@@ -179,7 +178,6 @@ export function HeatTab() {
       </div>
       <Legend items={[
         { label: t('Recorded heat'), color: RECORDED },
-        ...(observed ? [{ label: t('What actually happened'), color: ACTUAL }] : []),
         ...(predicted ? [{ label: t('Predicted THI (dotted after 14 days: mostly the usual season)'), color: PREDICTED }] : []),
         ...(chances ? [{ label: t('Prediction range (10–90%)'), color: 'rgba(114, 84, 163, 0.22)', kind: 'band' as const }] : []),
         { label: t('Usual in past years'), color: FORECAST_COLOR, kind: 'dash' },
@@ -209,11 +207,11 @@ export function HeatTab() {
         </div>
       )}
       <PickHint picked={picked} />
-      {(!predicted || !observed) && <p className="pfie-mgr-note" role="status">{t('Missing comparison lines? This published run needs a heat-data refresh. Reload the page after refreshing the run. Actual values stop at the last available weather record.')}</p>}
+      {!predicted && <p className="pfie-mgr-note" role="status">{t('Missing comparison lines? This published run needs a heat-data refresh. Reload the page after refreshing the run. Actual values stop at the last available weather record.')}</p>}
       {picked && <PointExplanation kind="heat" at={picked} onClose={clear} />}
       {chances
         ? <Explain>{t('The purple line is predicted daily maximum THI: the seasonal pattern plus recent day-to-day changes, which fade within about a week. After 14 days it is dotted because it is then mostly the usual season. The shaded purple range is where 80% of the model’s past errors fell. The grey area marks days whose weather was not yet published at the forecast date.')}</Explain>
-        : <Explain><Rich text={t('The dashed blue line is the model’s seasonal heat assumption from past years, **not a weather forecast**. The shaded band covers the middle 80% of past values for these dates; it is not a forecast confidence interval. Dots after the forecast date show **what actually happened**, only where recorded weather is available.')} /></Explain>}
+        : <Explain><Rich text={t('The dashed blue line is the model’s seasonal heat assumption from past years, **not a weather forecast**. The shaded band covers the middle 80% of past values for these dates; it is not a forecast confidence interval.')} /></Explain>}
       {predicted && !chances && <Explain>{t('The purple line is predicted daily maximum THI. It learns the seasonal pattern and adds a recent-weather adjustment that fades over time. The shaded historical range is not uncertainty for this prediction.')}</Explain>}
       {!observed && <p className="pfie-mgr-note">{t('No later heat observations are included in this run yet.')}</p>}
       <DemoLine run={run} />

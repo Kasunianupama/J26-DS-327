@@ -39,7 +39,7 @@ export function PickHint({ picked }: { picked: string | null }) {
   return picked ? null : <p className="pfie-mgr-hint pfie-noprint">{t('Click a point or a row to explain it.')}</p>;
 }
 
-export function PointExplanation({ kind, at, onClose }: { kind: PointKind; at: string; onClose: () => void }) {
+export function PointExplanation({ kind, at, onClose, series }: { kind: PointKind; at: string; onClose: () => void; series?: SeriesId[] }) {
   const run = useRun();
   const t = useT();
   const { lang } = useLang();
@@ -49,9 +49,9 @@ export function PointExplanation({ kind, at, onClose }: { kind: PointKind; at: s
   const grain: Grain = kind === 'mastitis' ? 'month' : kind === 'heat' ? 'day' : g;
   const title = kind === 'heat' ? dateLabel(at, lang) : periodText(at, grain, lang);
   return (
-    <div className={`pfie-mgr-point pfie-mgr-point-${kind}`} role="region" aria-label={`${t(kind === 'milk' ? 'Milk per day' : kind === 'herd' ? 'Herd population' : 'Date')} · ${title}`}>
+    <div className={`pfie-mgr-point pfie-mgr-point-${kind}`} role="region" aria-label={`${t(kind === 'milk' ? 'Total Milk Yield' : kind === 'herd' ? 'Herd population' : kind === 'events' ? 'Herd events' : 'Date')} · ${title}`}>
       <div className="pfie-mgr-point-head">
-        <b>{kind === 'milk' ? `${t('Milk per day')} · ` : kind === 'herd' ? `${t('Herd population')} · ` : ''}{title}</b>
+        <b>{kind === 'milk' ? `${t('Total Milk Yield')} · ` : kind === 'herd' ? `${t('Herd population')} · ` : kind === 'events' ? `${t('Herd events')} · ` : ''}{title}</b>
         <span className="spacer" />
         {kind !== 'heat' && kind !== 'mastitis' && (
           <button className="pfie-btn" onClick={() => { setSelectedPeriod(at); go('period'); }}>{t('All numbers for this date')}</button>
@@ -60,7 +60,7 @@ export function PointExplanation({ kind, at, onClose }: { kind: PointKind; at: s
       </div>
       {kind === 'milk' && <MilkPoint run={run} t={t} grain={grain} period={at} />}
       {kind === 'herd' && <HerdPoint run={run} t={t} grain={grain} period={at} />}
-      {kind === 'events' && <EventsPoint run={run} t={t} grain={grain} period={at} />}
+      {kind === 'events' && <EventsPoint run={run} t={t} grain={grain} period={at} series={series} />}
       {kind === 'mastitis' && <MastitisPoint run={run} t={t} period={at} />}
       {kind === 'heat' && <HeatPoint run={run} t={t} date={at} />}
     </div>
@@ -168,12 +168,13 @@ function HerdPoint({ run, t, grain, period }: P) {
   );
 }
 
-function EventsPoint({ run, t, grain, period }: P) {
+function EventsPoint({ run, t, grain, period, series }: P & { series?: SeriesId[] }) {
   const future = period >= firstTarget(run, grain);
+  const shown = series ?? [...EVENT_SERIES, 'mastitis_episodes' as SeriesId];
   return (
     <SimpleTable
       head={future ? [t('Event'), t('Expected'), t('Likely range'), t('Already known')] : [t('Event'), t('Recorded')]}
-      rows={[...EVENT_SERIES, 'mastitis_episodes' as SeriesId].map((s) => {
+      rows={shown.map((s) => {
         const x = valueAt(run, grain, s, period);
         if (!future) return [t(PLAIN_SERIES[s]), <b>{x ? about(x.v) : '—'}</b>];
         const split = flowSplit(run, grain, period, s);

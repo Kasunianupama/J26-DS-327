@@ -42,6 +42,19 @@ main:has(> .pfie-chart-dialog) > :not(.pfie-chart-dialog) { display: none; }
 
 /* Keep a selected date in one readable card, shared by both overview charts. */
 .pfie-overview-explanation { grid-column: 1 / -1; min-width: 0; }
+/* Milk and herd cards share one height: the charts line up at the top and a longer legend takes the spare room at the bottom. */
+.pfie-mgr-charts:not(.pfie-mgr-secondary-charts) { align-items: stretch; }
+.pfie-mgr-charts:not(.pfie-mgr-secondary-charts) > .pfie-mgr-card > .pfie-mgr-legend { margin-top: auto; }
+/* Herd events is the only chart in this row, so it takes the full width. */
+.pfie-mgr-charts.pfie-mgr-secondary-charts { grid-template-columns: minmax(0, 1fr); }
+.pfie-event-switches { display: flex; flex-wrap: wrap; gap: 7px; }
+.pfie .pfie-event-switches button {
+  display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px; border: 1px solid var(--line);
+  border-radius: var(--r-pill); background: var(--ground); color: var(--muted); font-size: 12.5px; font-weight: 700;
+}
+.pfie .pfie-event-switches button[aria-pressed='true'] { background: var(--paper); color: var(--ink); border-color: #c8d5cf; box-shadow: var(--shadow-xs); }
+.pfie-event-switches button i { width: 10px; height: 10px; border-radius: 50%; opacity: 0.35; }
+.pfie-event-switches button[aria-pressed='true'] i { opacity: 1; }
 .pfie-mgr-point-body { display: grid; grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.6fr); gap: 24px; align-items: start; }
 .pfie-mgr-point-body > .pfie-mgr-facts { margin: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .pfie-mgr-point-reasons { min-width: 0; display: flex; flex-direction: column; gap: 8px; }

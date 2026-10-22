@@ -227,3 +227,16 @@ def test_gate_audit_command_end_to_end_with_mocked_source(tmp_path, monkeypatch,
     for f in ("folds", "scores", "features", "switch", "auc_target"):
         frame = pd.read_csv(tmp_path / f"gate_{f}_{adapt_tag}_milk_baseline_adaptive.csv")
         assert "origin" not in frame.columns
+
+
+def test_classification_report_counts_and_chart(tmp_path, signal_case):
+    from components.predictive_farm_intelligence.pfoi.gate import classification_report, plot_confusion
+
+    pred = pd.DataFrame(dict(grain="weekly", horizon=[1, 1, 1, 1, 4, 4], miss=[1, 0, 1, 0, 1, 0],
+                             p_logistic=[0.9, 0.2, 0.3, 0.7, 0.8, 0.1]))
+    r = classification_report(pred, ("logistic",)).iloc[0]
+    assert (r["tp"], r["fp"], r["fn"], r["tn"]) == (2, 1, 1, 2)
+    assert r["accuracy"] == pytest.approx(4 / 6) and r["recall"] == pytest.approx(2 / 3)
+    assert r["mae"] == pytest.approx(np.mean([0.1, 0.2, 0.7, 0.7, 0.2, 0.1]))
+    plot_confusion(classification_report(pred, ("logistic",)), tmp_path / "cm.png")
+    assert (tmp_path / "cm.png").exists()

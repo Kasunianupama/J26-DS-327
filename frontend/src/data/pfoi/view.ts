@@ -476,7 +476,7 @@ export function findings(run: PfoiRun): Finding[] {
     title: 'Mastitis records look incomplete',
     summary: `${fmtInt(recorded)} episodes were recorded in the last 12 months, while the rate from ${run.mastitis_rate_period} implies about ${fmtInt(nextYear)} a year for a herd of ~${fmtInt(expectedMilking / 12)} milking cows. Treat the mastitis layer as an expectation, not a measurement.`,
     confidence: 'Limited',
-    link: { label: 'See data coverage', workspace: 'confidence' },
+    link: { label: 'See model evaluation', workspace: 'confidence' },
   });
 
   /* Lactation-curve evidence. */
@@ -490,7 +490,7 @@ export function findings(run: PfoiRun): Finding[] {
       title: 'Lactation curves rest on older per-cow records',
       summary: `Reliable cow-days fall below ${fmtInt(Math.max(...recent.map((c) => c.reliable_cow_days)))} a year after 2022, so the curves are fitted mainly on ${fitted.length ? `${Math.min(...fitted)}–${Math.max(...fitted)}` : 'earlier years'}.`,
       confidence: 'Moderate',
-      link: { label: 'See data coverage', workspace: 'confidence' },
+      link: { label: 'See model evaluation', workspace: 'confidence' },
     });
   }
 

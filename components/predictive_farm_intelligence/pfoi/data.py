@@ -20,6 +20,7 @@ from later calvings, part of the "known pregnancy" information is hindsight.
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -35,7 +36,19 @@ from .herd_engine import OriginState
 from .origin_state import build_origin_state
 from .rates import RateInputs, conception_per_ai, max_live_gestation
 
-DATA_START = date(2015, 8, 1)
+MI2_SCHEMA = "model_input2"
+MI2_DATA_START = date(2015, 11, 1)  # user decision 2026-10-22: model_input2 runs start 2015-11
+
+
+def _data_start() -> date:
+    """First data day: 2015-08-01, or 2015-11-01 when ``PFOI_MODEL_INPUT_SCHEMA`` is model_input2
+    (environment only, docs/model_input2.md section 1)."""
+    if os.environ.get("PFOI_MODEL_INPUT_SCHEMA", "").strip() == MI2_SCHEMA:
+        return MI2_DATA_START
+    return date(2015, 8, 1)
+
+
+DATA_START = _data_start()
 
 
 class LeakageError(RuntimeError):
@@ -265,6 +278,52 @@ def prefetch_snapshots(source, origins: list[date], cfg: EngineConfig,
                 else:
                     out[(name, asof, ku[asof])] = f
     return out
+
+
+# ------------------------------------------------------ placeholder-free target
+
+# model_input2 (docs/model_input2.md, section 5): placeholder milk and shipped milk are never
+# modelled. The target is milk per recorded (identified) cow x milking herd, always an estimate.
+CLEAN_TARGET_COLUMN = "milk_per_recorded_cow"  # its presence marks a model_input2 day_panel
+CLEAN_MIN_COWS = 10
+CLEAN_PER_COW_LIMIT = 18.0
+CLEAN_WINDOW_DAYS = 28  # past-only window of the suspect flags, as in the build SQL
+PLACEHOLDER_ANIMAL = "A_PLACEHOLDER"
+CLEAN_RAW_COLUMNS = ("date", "milk_per_recorded_cow", "observed_milking_cows", "milking",
+                     "milk_record_type")
+
+
+def clean_target_frame(raw: pd.DataFrame) -> pd.DataFrame:
+    """``target_daily`` frame from model_input2 day_panel columns, without placeholder milk.
+
+    Kept: days with a record type other than ``none``, at least ``CLEAN_MIN_COWS``
+    identified cows and identified-cow mean yield in (0, 18] L; litres = milk per
+    recorded cow x milking herd. Placeholder/shipment columns and values above 18 L
+    never enter the returned target. Suspect flags are
+    recomputed past-only on this series (low: below half the previous 28-day mean; high:
+    per-cow above 1.5x its previous 28-day mean; implausible: above 18 L per cow).
+    ``identified_share`` is 1 on kept days: the target holds no unidentified milk."""
+    d = raw.sort_values("date").reset_index(drop=True)
+    per_cow = pd.to_numeric(d["milk_per_recorded_cow"], errors="coerce")
+    cows = pd.to_numeric(d["observed_milking_cows"], errors="coerce").fillna(0)
+    milking = pd.to_numeric(d["milking"], errors="coerce")
+    keep = (per_cow.gt(0) & per_cow.le(CLEAN_PER_COW_LIMIT)
+            & (cows >= CLEAN_MIN_COWS) & (milking > 0)
+            & d["milk_record_type"].fillna("none").ne("none"))
+    litres = (per_cow * milking).where(keep)
+    per_cow = per_cow.where(keep)
+    prev = lambda s: s.where(s > 0).shift(1).rolling(CLEAN_WINDOW_DAYS, min_periods=1).mean()  # noqa: E731
+    low = (litres < 0.5 * prev(litres)).fillna(False)
+    high = (per_cow > 1.5 * prev(per_cow)).fillna(False)
+    has = litres.notna()
+    return pd.DataFrame({
+        "date": d["date"],
+        "target_source": pd.Series("delpro", index=d.index).where(has, None),
+        "target_litres": litres,
+        "is_scoreable": has & ~low & ~high,
+        "identified_share": pd.Series(1.0, index=d.index).where(has),
+        "data_gap": ~has,
+    })
 
 
 # --------------------------------------------------------------------------- SQL
@@ -873,7 +932,7 @@ class SqlHerdSource:
                   AND NOT COALESCE(d.is_spike, false)
                   AND NOT COALESCE(d.is_missing_yield, false)
                   AND NOT COALESCE(d.is_placeholder, false)
-                  AND d.yield_litres > 0 AND d.dim BETWEEN 1 AND 400
+                  AND d.yield_litres > 0 AND d.dim BETWEEN 1 AND 400{self._cow_day_clean()}
                 GROUP BY 1, 2, 3, 4""",
             start=start, end=end,
         )
@@ -918,8 +977,42 @@ class SqlHerdSource:
         frame["date"] = pd.to_datetime(frame["date"]).dt.date
         return frame
 
+    def placeholder_free(self) -> bool:
+        """True when the input schema is model_input2 (day_panel has ``milk_per_recorded_cow``):
+        the milk target is then rebuilt without placeholder or shipped milk."""
+        if getattr(self, "_placeholder_free", None) is None:
+            found = self._q(
+                """SELECT COUNT(*) AS n FROM information_schema.columns
+                   WHERE table_schema = :schema AND table_name = 'day_panel'
+                     AND column_name = :column""",
+                schema=self.mi, column=CLEAN_TARGET_COLUMN,
+            )
+            self._placeholder_free = bool(int(found["n"].iloc[0]))
+        return self._placeholder_free
+
+    def _cow_day_clean(self) -> str:
+        """Extra ``cow_day d`` filter on model_input2: no record above 18 L and no placeholder
+        animal (docs/model_input2.md section 5). Empty on model_input (frozen versions unchanged)."""
+        if not self.placeholder_free():
+            return ""
+        return (f"\n                  AND d.yield_litres <= {CLEAN_PER_COW_LIMIT:g}"
+                f" AND d.animal_key <> '{PLACEHOLDER_ANIMAL}'")
+
     def target_daily(self, start: date, end: date) -> pd.DataFrame:
-        """Herd milk target per day (herd level): source, litres, scoreable flag."""
+        """Herd milk target per day (herd level): source, litres, scoreable flag.
+        On model_input2: placeholder-free (``clean_target_frame``, docs/model_input2.md)."""
+        if self.placeholder_free():
+            raw = self._q(
+                f"""SELECT {", ".join(CLEAN_RAW_COLUMNS)}
+                    FROM {self.mi}.day_panel
+                    WHERE date >= CAST(:start AS date) - {CLEAN_WINDOW_DAYS}
+                      AND date < CAST(:end AS date)
+                    ORDER BY date""",
+                start=start, end=end,
+            )
+            raw["date"] = pd.to_datetime(raw["date"]).dt.date
+            frame = clean_target_frame(raw)
+            return frame[frame["date"] >= start].reset_index(drop=True)
         frame = self._q(
             f"""SELECT date, target_source, target_litres, is_scoreable, identified_share,
                        data_gap
@@ -934,6 +1027,9 @@ class SqlHerdSource:
     def delpro_daily(self, start: date, end: date) -> pd.DataFrame:
         """Herd-level DelPro litres per day (identified + unidentified), recorded milking cows,
         identified share and gap flag: input of the DelPro-only target (``delpro_target``)."""
+        if self.placeholder_free():
+            raise ValueError("the DelPro-only target includes unidentified (placeholder) milk; "
+                             "it is not used on model_input2 (docs/model_input2.md)")
         frame = self._q(
             f"""SELECT date, milk_delpro_total, milking, identified_share, data_gap
                 FROM {self.mi}.day_panel
@@ -958,6 +1054,11 @@ class SqlHerdSource:
             start=start, end=end,
         )
         frame["date"] = pd.to_datetime(frame["date"]).dt.date
+        if self.placeholder_free():
+            clean = self.target_daily(start, end)[["date", "target_litres", "is_scoreable",
+                                                   "identified_share"]]
+            frame = frame.drop(columns=["target_litres", "is_scoreable", "identified_share"]) \
+                .merge(clean, on="date", how="left")
         return frame
 
     def sensor_daily(self, start: date, end: date) -> pd.DataFrame:
@@ -1157,7 +1258,7 @@ class SqlHerdSource:
                     WHERE d.milk_date < CAST(:asof AS date) AND d.is_reliable
                       AND NOT COALESCE(d.is_spike, false) AND NOT COALESCE(d.is_missing_yield, false)
                       AND NOT COALESCE(d.is_placeholder, false)
-                      AND d.yield_litres > 0 AND d.dim BETWEEN 1 AND 400)
+                      AND d.yield_litres > 0 AND d.dim BETWEEN 1 AND 400{self._cow_day_clean()})
                 SELECT period, generation_group, parity_group, dim_band, heat_band,
                        COUNT(*)::float AS cow_days, SUM(yield_litres)::float AS litres
                 FROM y GROUP BY 1, 2, 3, 4, 5""",

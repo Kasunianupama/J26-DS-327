@@ -1,9 +1,10 @@
 /**
  * Component 1 (PFOI): Farm Outlook.
  *
- * The timeline leads, then one plain-language brief for the selected grain
- * and horizon, the biggest drivers of the milk change, and the findings. The
- * brief reads the same headline helper as the metric deck, so they never
+ * The page shell puts the plain-language brief for the selected grain and
+ * horizon after the forecast date, the metric deck and the priority signals; this workspace
+ * holds the timeline, the biggest drivers of the milk change and the findings.
+ * The brief reads the same headline helper as the metric deck, so they never
  * disagree.
  */
 
@@ -31,7 +32,7 @@ import { Icon } from '../icons';
 import { MasterTimeline } from '../panels/MasterTimeline';
 import { ContributionChart } from '../panels/ContributionChart';
 import { FindingsList } from '../panels/Findings';
-import { HeatOutlook, MilkWithheldCard, ScenarioBands } from '../panels/Pp1Panels';
+import { HeatOutlook, MilkWithheldCard } from '../panels/Pp1Panels';
 
 /* The arc only places the level on the dial; it is not a measured percentage, so the face shows the level, not a number. */
 const CONFIDENCE_ARC: Record<Confidence, number> = { High: 86, Moderate: 58, Limited: 30 };
@@ -40,10 +41,6 @@ export function FutureWorkspace() {
   const { grain, horizon, go, openDrawer, setBreakdownMonth } = usePfoi();
   const run = useRun();
   const milk = headline(run, grain, horizon, 'milk_litres');
-  const milking = headline(run, grain, horizon, 'milking');
-  const mastitis = headline(run, grain, horizon, 'mastitis_episodes');
-  const calvings = isForecast(run, grain, 'calvings') ? flowTotals(run, grain, horizon, 'calvings') : null;
-  const reach = `${horizon} ${horizon === 1 ? GRAIN_LABEL[grain].one : GRAIN_LABEL[grain].many}`;
   const month = milk ? periodStart(milk.period, 'month') : null;
   const breakdown = month ? milkBreakdown(run, month) : null;
   const prevMonth = month ? addPeriods(month, 'month', -1) : null;
@@ -52,44 +49,11 @@ export function FutureWorkspace() {
   const cowsNow = month ? cowsAt(month) : null;
   const cowsBefore = prevMonth ? cowsAt(prevMonth) : null;
   const cowDelta = cowsNow !== null && cowsBefore !== null ? Math.round(cowsNow - cowsBefore) : null;
-  const conf = confidenceOf(milk?.quality);
 
   return (
     <div className="pfie-stack" style={{ gap: 20 }}>
       <MasterTimeline />
       <MilkWithheldCard />
-
-      {milk && (
-        <section className="pfie-brief">
-          <div className="pfie-brief-inner">
-            <div>
-              <span className="eyebrow"><i aria-hidden />Farm outlook · {reach} ahead</span>
-              <p className="lead">
-                In {periodLabel(milk.period, grain)}, milk is expected at about <b>{fmtInt(milk.value)} L/day</b>{' '}
-                (likely {fmtInt(milk.lower)}–{fmtInt(milk.upper)})
-                {milk.changePct !== null && milk.baselinePeriod && (
-                  <>, <b>{Math.abs(milk.changePct).toFixed(1)}% {milk.changePct < 0 ? 'lower' : 'higher'}</b> than {periodLabel(milk.baselinePeriod, grain)}, the last recorded {GRAIN_LABEL[grain].one}</>
-                )}
-                .
-                {milking && <> About <b>{fmtInt(milking.value)} cows</b> are expected in milk.</>}
-                {calvings && calvings.total > 0 && (
-                  <> {fmtInt(calvings.total)} calvings are expected along the way, {Math.round((calvings.determined / calvings.total) * 100)}% of them already fixed by recorded conceptions.</>
-                )}
-              </p>
-              <div className="meta">
-                <div>Target period<b>{periodLabel(milk.period, grain)}</b></div>
-                <div>Milk<b>{fmtInt(milk.value)} L/day</b></div>
-                <div>Milking cows<b>{milking ? fmtInt(milking.value) : 'weekly / monthly'}</b></div>
-                <div>Calvings to horizon<b>{calvings ? fmtInt(calvings.total) : 'weekly / monthly'}</b></div>
-                <div>Mastitis expected<b>{mastitis ? fmt1(mastitis.pathTotal) : 'weekly / monthly'}</b></div>
-              </div>
-            </div>
-            <div className="pfie-brief-gauge">
-              <Gauge pct={CONFIDENCE_ARC[conf]} face={CONFIDENCE_META[conf].mark} caption={conf} size={158} sub="Forecast quality" />
-            </div>
-          </div>
-        </section>
-      )}
 
       {breakdown && month && (
         <Card
@@ -118,8 +82,6 @@ export function FutureWorkspace() {
         </Card>
       )}
 
-      <ScenarioBands />
-
       <HeatOutlook />
 
       <Card icon="flag" title="Findings" sub="Herd-level findings computed from this run.">
@@ -132,5 +94,50 @@ export function FutureWorkspace() {
         from the climatology of the training years, not from a weather forecast).
       </Note>
     </div>
+  );
+}
+
+/** The headline brief: milk, cows in milk and calvings to the selected horizon. */
+export function OutlookBrief() {
+  const { grain, horizon } = usePfoi();
+  const run = useRun();
+  const milk = headline(run, grain, horizon, 'milk_litres');
+  const milking = headline(run, grain, horizon, 'milking');
+  const mastitis = headline(run, grain, horizon, 'mastitis_episodes');
+  const calvings = isForecast(run, grain, 'calvings') ? flowTotals(run, grain, horizon, 'calvings') : null;
+  const reach = `${horizon} ${horizon === 1 ? GRAIN_LABEL[grain].one : GRAIN_LABEL[grain].many}`;
+  const conf = confidenceOf(milk?.quality);
+  if (!milk) return null;
+
+  return (
+    <section className="pfie-brief">
+      <div className="pfie-brief-inner">
+        <div>
+          <span className="eyebrow"><i aria-hidden />Farm outlook · {reach} ahead</span>
+          <p className="lead">
+            In {periodLabel(milk.period, grain)}, milk is expected at about <b>{fmtInt(milk.value)} L/day</b>{' '}
+            (likely {fmtInt(milk.lower)}–{fmtInt(milk.upper)})
+            {milk.changePct !== null && milk.baselinePeriod && (
+              <>, <b>{Math.abs(milk.changePct).toFixed(1)}% {milk.changePct < 0 ? 'lower' : 'higher'}</b> than {periodLabel(milk.baselinePeriod, grain)}, the last recorded {GRAIN_LABEL[grain].one}</>
+            )}
+            .
+            {milking && <> About <b>{fmtInt(milking.value)} cows</b> are expected in milk.</>}
+            {calvings && calvings.total > 0 && (
+              <> {fmtInt(calvings.total)} calvings are expected along the way, {Math.round((calvings.determined / calvings.total) * 100)}% of them already fixed by recorded conceptions.</>
+            )}
+          </p>
+          <div className="meta">
+            <div>Target period<b>{periodLabel(milk.period, grain)}</b></div>
+            <div>Milk<b>{fmtInt(milk.value)} L/day</b></div>
+            <div>Milking cows<b>{milking ? fmtInt(milking.value) : 'weekly / monthly'}</b></div>
+            <div>Calvings to horizon<b>{calvings ? fmtInt(calvings.total) : 'weekly / monthly'}</b></div>
+            <div>Mastitis expected<b>{mastitis ? fmt1(mastitis.pathTotal) : 'weekly / monthly'}</b></div>
+          </div>
+        </div>
+        <div className="pfie-brief-gauge">
+          <Gauge pct={CONFIDENCE_ARC[conf]} face={CONFIDENCE_META[conf].mark} caption={conf} size={158} sub="Forecast quality" />
+        </div>
+      </div>
+    </section>
   );
 }

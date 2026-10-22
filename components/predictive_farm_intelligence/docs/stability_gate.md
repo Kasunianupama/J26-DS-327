@@ -325,7 +325,7 @@ often. Likely reason (opinion, not tested): DelPro days are noisier (system outa
 swings), so the 14-day anchor of k and the short-horizon targets move more. Monthly cells have only
 13–21 periods. Code kept, off; the recorded target stays.
 
-## pfoi-1.2.1-dev: gate confidence flag and gate-conditional ranges (implemented, real-data runs pending)
+## pfoi-1.2.1-dev: gate confidence flag and gate-conditional ranges (kept and built)
 
 User decision (2026-10-22): the new development version is **pfoi-1.2.1-dev = pfoi-1.2.0-dev forecasts,
 unchanged, plus the stability gate's confidence flag and ranges calibrated separately for low- and
@@ -346,11 +346,123 @@ tests `tests/test_gate_intervals.py`, `tests/test_gate_outlook.py`.
 low-confidence coverage closer to 0.90 than pooled and ≥ 0.80; normal coverage ≥ 0.85 with width at
 most 10 % above pooled; all forecasts 0.85–0.95. Herd stocks reported, not ruled on.
 
-Not published: documents go to `logs/pfoi/outlook/pfoi-1.2.1-dev/` for `compare-runs` only. Writing to
-`c1_output` / the frontend waits for the user's decision after seeing the comparison.
+The comparison documents were initially kept under `logs/pfoi/outlook/pfoi-1.2.1-dev/`. After reviewing
+the comparison, the user kept the gated `pfoi-1.2.1-dev` version and built it.
 
 ```bash
 python -m components.predictive_farm_intelligence.pfoi.cli gate-intervals
 python -m components.predictive_farm_intelligence.pfoi.cli gate-outlook
 python -m components.predictive_farm_intelligence.pfoi.cli compare-runs --origins 2019-09-01 2020-08-01 2022-09-01 2023-06-01 2023-11-01 2024-07-01 --base pfoi-1.1.0 --candidate pfoi-1.2.0-dev --also pfoi-1.2.1-dev persistence
+```
+
+### pfoi-1.2.1-dev result (user run, 2026-10-22): gated version kept; interval rule failed
+
+Milk, trusted periods, forecast years 2020–2023, 90 % range coverage (gate-conditional vs pooled):
+all 0.681 vs 0.664 (n 1,338); low confidence 0.466 vs 0.319 (n 204); normal 0.720 vs 0.726 (n 1,134).
+Rule: low closer to 0.90 than pooled **passed**; low ≥ 0.80 failed; normal ≥ 0.85 failed; all in
+0.85–0.95 failed. By year (both methods): 2020 0.763, 2021 0.899, **2022 0.420**, 2023 0.563 (gate) vs
+0.492 (pooled). Monthly low-confidence rows (n 19) had too few earlier flagged errors and kept pooled
+ranges. Herd stocks (reported only): milking low 0.671 vs 0.619, normal 0.770 vs 0.772.
+
+Reading: the gate moves ranges the right way (low-confidence coverage +15 points, wider ranges where
+unstable, normal unchanged), but every 1.2.0-dev range is too narrow from 2022 on, flagged or not:
+ranges are built from past errors, and the 2022–2023 errors were far larger than any earlier ones.
+The under-coverage is a regime problem of the error history, not of the gate. The pre-registered
+interval-calibration rule failed, but that result did **not** drop the gated model version: the user
+kept and built `pfoi-1.2.1-dev`. The earlier damped-trend candidate that first used the 1.2.1-dev
+name remains tested and dropped (code kept, off).
+
+## G2 Track A2: LSTM-attention specialist behind the 1.2.1-dev confidence flag (tested, dropped)
+
+User request (2026-10-22): where pfoi-1.2.1-dev's confidence is `low` (G1 logistic gate p > 0.5,
+`gate_intervals.attach_gate`), a deep-learning model makes the milk forecast; elsewhere 1.2.0-dev is unchanged.
+Code `pfoi/lstm_specialist.py`, command `specialist-lstm`; tests `tests/test_lstm_specialist.py` (synthetic,
+no database). This differs from the rejected GRU (`neural.py`, 2026-10-21): it is used only on low-confidence
+forecasts, trained on the whole history with both sources pooled, refitted per fold year, and it does not
+correct the engine path.
+
+* **Model `lstm_attn`:** LSTM over the 56 days before the forecast date (litres relative to the 28-day level R,
+  trusted mask, day-on-day change, yield per cow and milking cows relative to their 28-day level, identified
+  share), additive attention over those days (query = last hidden state), static features (source, source age,
+  trusted share, season, 7-vs-28-day change and its size, 28-day volatility, yield-per-cow level, 90-day change
+  in milking cows). Output: 98-day daily log path, |log(forecast / R)| <= 1. Covers day 1-14, week 1-13,
+  month 1-3. Months 6 and 12 stay 1.2.0-dev.
+* **Sensitive to major changes:** attention, change channels, and a loss weight
+  `1 + |log(L7 / L28)| / 0.05` (capped at 4) on windows whose last week moved away from the 28-day level.
+* **Not fed in order:** every past day is an independent window; windows shuffled every epoch.
+* **Leakage:** fold year Y (2019-2023): training origins before 1 July Y-1 with targets masked from then;
+  validation (early stopping only) origins 1 July Y-1 to 1 January Y, targets masked from 1 January Y.
+  Test block never read. Synthetic test: a jump after the fold start leaves earlier forecasts identical.
+* **Settings fixed before any real run** (`LSTMConfig`): hidden 32, attention 16, dropout 0.1, Adam 1e-3,
+  weight decay 1e-4, batch 64, at most 150 epochs, patience 15, 5 seeds averaged.
+
+**Keep rule (fixed 2026-10-22, before any real-data run):** the G2 Track A rule unchanged (mean over Track A
+cells +2 points, no Track A cell -1 point, 2019 -1 point at most) **plus week 13 falls by at most 1 point**;
+periods the gate scored (trusted, fold years 2019-2023). Also printed: hits on the replaced low-confidence
+periods only, the LSTM ungated (descriptive) and attention on the last 7 days.
+
+Expectation (before real numbers): G2's re-level helped only where the gate switched (2022-2023, about 16-33 %
+of Track A forecasts), so the same +2-point bar is hard; a deep model has few unstable windows to learn from
+(about five episodes).
+
+```bash
+python -m components.predictive_farm_intelligence.pfoi.cli specialist-lstm
+```
+
+**User-run result (2026-10-22): DROP.** Mean Track A hit-rate change +0.005 (rule +0.02),
+worst cell -0.022 (rule no worse than -0.01), stable 2019 unchanged, and week 13 +0.060.
+The LSTM alone was worse than the structural baseline in every displayed cell; attention on the
+last 7 of 56 days was 0.125 in every fold (uniform after rounding). Code kept, off. The 2024+
+final test block was not read.
+
+## G2 Track C: structural gated TCN, direct weekly and monthly horizons (implemented, real-data run pending)
+
+User request (2026-10-22): a deep-learning candidate that is highly sensitive to recent herd,
+milk-per-cow and health changes, updates causally, and directly forecasts weekly and monthly cells.
+Code `pfoi/tcn_specialist.py`, command `specialist-tcn`; tests `tests/test_tcn_specialist.py`
+(fictional synthetic herd aggregates, no database).
+
+* **Structure is retained:** the model predicts a bounded log correction to
+  `milk_baseline_adaptive`, not unconstrained litres. Zero correction reproduces the baseline exactly,
+  so a baseline change driven by projected milking cows passes through proportionally.
+* **Direct outputs:** weeks 1, 4, 8 and 13; months 1, 3, 6 and 12. It does not create a daily path and
+  sum it. Week 13 and months 6/12 have a tighter correction bound (x0.67 to x1.5); the other cells are
+  bounded to x0.5 to x2.
+* **Recent-change encoder:** a causal TCN reads the 112 days before the origin. Channels include
+  trusted milk and yield per cow relative to their recent levels, changes in milking and total-herd
+  counts, exits and real abortions per herd exposure, mastitis per milking-cow exposure, THI,
+  identified share, and explicit recording/weather masks. Static features contain signed and
+  absolute 7-vs-28-day changes plus the structural forecast at every output horizon.
+  An isolated greater-than-twofold stock jump is masked until a second observation confirms the
+  new level; two consecutive observations are retained as a real candidate break.
+* **Continuous shock gate:** separate stable and shock experts are blended by a learned probability
+  for each horizon. There is no hard p=0.5 switch. Training windows with large recent milk/cow/herd
+  changes receive up to 4x loss weight.
+* **Sparse health is not zero:** mastitis is usable only from the first positive record through 180
+  days after the latest positive record. Outside that interval it is masked as not recorded.
+* **Causal update:** after the TCN forecast, a small per-horizon adapter uses exponentially weighted
+  log errors from this candidate's target periods that ended before the new origin (last 180 days,
+  at least 3, 60-day half-life, capped at x0.8 to x1.25). This gives walk-forward updating without
+  changing the encoder on one new observation.
+* **Leakage:** fold year Y is trained only on origins before July Y-1 whose target periods ended by
+  then. Validation origins are July--December Y-1 and only targets ended by 1 January Y count.
+  The network is then frozen for origins in Y; only the completed-error adapter updates. The 2024+
+  final test block is never read. Five deterministic seeds are averaged.
+* **Fixed settings:** 112 days, six causal blocks with dilations 1/2/4/8/16/32, 32 channels,
+  kernel 3, dropout 0.1, Adam 1e-3, weight decay 1e-4, batch 64, at most 150 epochs, patience 15.
+  `--device auto` selects CUDA, then Apple MPS, then CPU; a forced unavailable backend fails rather
+  than silently changing devices. CPU remains the exact reproducibility reference because GPU kernels
+  can differ slightly even with identical seeds.
+
+**Keep rule (fixed 2026-10-22, before the first real-data run):** over the eight weekly/monthly cells,
+mean share within +/-10 % rises by at least 2 points; no cell falls by more than 1 point; stable 2019
+falls by at most 1 point; and the observation-weighted hit rate on shock origins (maximum absolute
+milk/yield-per-cow/milking/total-herd 7-vs-28-day log change at least 0.10, at least 16 matched cell
+observations) rises. All checks must pass. No tuning follows the result; a failed candidate is recorded
+and kept off.
+
+```bash
+python -m components.predictive_farm_intelligence.pfoi.cli specialist-tcn
+# Apple-silicon GPU explicitly (fails with a clear message if MPS is unavailable to Python):
+python -m components.predictive_farm_intelligence.pfoi.cli specialist-tcn --device mps
 ```

@@ -68,7 +68,54 @@ def test_run_by_forecast_date(monkeypatch):
     runs = client.get("/api/v1/predictive/pfoi/runs").json()
     assert [r["origin_date"] for r in runs["runs"]] == ["2024-01-01", "2026-08-01"]
     assert client.get("/api/v1/predictive/pfoi/run?origin=2024-01-01").json()["origin_date"] == "2024-01-01"
-    assert seen[-1][1] == {"o": date(2024, 1, 1)}  # bound parameter, never formatted into the SQL
+    # bound parameters, never formatted into the SQL
+    assert seen[-1][1] == {"o": date(2024, 1, 1), "skip": ["pfoi-1.7.0-dev", "pfoi-1.8.0-dev"]}
     assert client.get("/api/v1/predictive/pfoi/run").json()["origin_date"] == "2026-08-01"
     assert client.get("/api/v1/predictive/pfoi/run?origin=2025-03-01").status_code == 404
     assert client.get("/api/v1/predictive/pfoi/run?origin=not-a-date").status_code == 422
+
+
+def _versioned_fake(builds):
+    """In-memory run_document: (origin, version, created) -> document; mimics the queries."""
+    class Fake(OutlookService):
+        def _query(self, sql, **params):
+            skip = set(params.get("skip") or [])
+            rows = [(o, v, c, d) for (o, v, c), d in builds.items()]
+            if "DISTINCT ON (model_version)" in sql:
+                rows = sorted((r for r in rows if r[0] == params["o"]), key=lambda r: (r[1], -r[2]))
+                seen, out = set(), []
+                for o, v, c, d in rows:
+                    if v not in seen:
+                        seen.add(v)
+                        out.append({"model_version": v, "created_at": c})
+                return out
+            if "WHERE model_version = :v" in sql:
+                rows = [r for r in rows if r[1] == params["v"] and params["o"] in (None, r[0])]
+            elif "WHERE origin_date = :o" in sql:
+                rows = [r for r in rows if r[0] == params["o"] and r[1] not in skip]
+            else:
+                rows = [r for r in rows if r[1] not in skip]
+            rows.sort(key=lambda r: (r[0], r[2]), reverse=True)
+            return [{"document": rows[0][3]}] if rows else []
+    return Fake(enabled=True)
+
+
+def test_comparison_versions_never_replace_the_page_run(monkeypatch):
+    o = date(2026, 8, 1)
+    builds = {(o, "pfoi-1.2.0-dev", 1): {"source": "model", "model_version": "pfoi-1.2.0-dev"},
+              (o, "pfoi-1.8.0-dev", 2): {"source": "model", "model_version": "pfoi-1.8.0-dev"}}
+    monkeypatch.setattr(predictive, "outlook_service", _versioned_fake(builds))
+    page = client.get("/api/v1/predictive/pfoi/run?origin=2026-08-01").json()
+    assert page["model_version"] == "pfoi-1.2.0-dev"  # newer 1.8.0-dev build is comparison-only
+    assert client.get("/api/v1/predictive/pfoi/run").json()["model_version"] == "pfoi-1.2.0-dev"
+    exact = client.get("/api/v1/predictive/pfoi/run?origin=2026-08-01&model_version=pfoi-1.8.0-dev").json()
+    assert exact["model_version"] == "pfoi-1.8.0-dev"
+    assert client.get("/api/v1/predictive/pfoi/run?origin=2026-08-01&model_version=nope").status_code == 404
+    versions = client.get("/api/v1/predictive/pfoi/run/versions?origin=2026-08-01").json()["versions"]
+    assert {(v["model_version"], v["comparison_only"]) for v in versions} == {
+        ("pfoi-1.2.0-dev", False), ("pfoi-1.8.0-dev", True)}
+
+
+def test_versions_endpoint_without_database_is_empty():
+    body = client.get("/api/v1/predictive/pfoi/run/versions?origin=2026-08-01").json()
+    assert body["versions"] == []

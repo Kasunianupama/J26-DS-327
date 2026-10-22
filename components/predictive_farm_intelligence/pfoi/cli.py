@@ -8,6 +8,7 @@
     python -m components.predictive_farm_intelligence.pfoi.cli explain-milk --origin 2023-06-01
     python -m components.predictive_farm_intelligence.pfoi.cli explain-herd --origin 2023-06-01
     python -m components.predictive_farm_intelligence.pfoi.cli explain-generation --origin 2023-06-01
+    python -m components.predictive_farm_intelligence.pfoi.cli layer2-cow
 
 Database settings come from the root .env (APP_DB_* and APP_DB_PFOI_USER/PASSWORD). Output is aggregate only:
 herd-level rates, totals and error metrics. Files go to logs/pfoi/ (gitignored).
@@ -1157,6 +1158,230 @@ def _cmd_specialist_a(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_specialist_lstm(args: argparse.Namespace) -> int:
+    """LSTM-attention specialist used where pfoi-1.2.1-dev's confidence is low (day 1 to week 13)."""
+    from dataclasses import replace
+
+    from .freeze import DATA_END
+    from .lstm_specialist import GATED, LSTM_CELLS, MODEL, LSTMConfig, run_lstm_specialist
+
+    out = Path(args.out)
+    base_e = _milk_files(out, args.tag)
+    probs_path = out / f"gate_probs_{args.tag}_{args.base}.csv"
+    if base_e is None or not probs_path.exists():
+        print(f"need the base milk files and {probs_path.name} (run gate-audit first)")
+        return 1
+    src = SqlHerdSource.from_env()
+    target = src.target_daily(DATA_START, DATA_END)
+    panel = src.panel_daily(DATA_START, DATA_END)
+    daily = target.merge(panel[["date", "milking"]], on="date", how="left")
+    base = base_e[base_e["model"] == args.base]
+    probs = pd.read_csv(probs_path)
+    cfg = replace(LSTMConfig(), seeds=tuple(range(args.seeds)))
+    print(f"Training {MODEL} once per fold year {cfg.fold_years[0]}-{cfg.fold_years[-1]} x {len(cfg.seeds)} seeds "
+          "on CPU (herd-level daily aggregates; nothing leaves this machine).")
+    res = run_lstm_specialist(base, daily, probs, base_model=args.base, cfg=cfg)
+    new_tag = f"{args.tag}_glstm"
+    parts = [base, res.gated.drop(columns="switched")] + ([res.lstm] if len(res.lstm) else [])
+    _write_grain_files(pd.concat(parts, ignore_index=True), out, new_tag)
+    res.fits.to_csv(out / f"lstm_fits_{new_tag}.csv", index=False)
+    res.attention.to_csv(out / f"lstm_attention_{new_tag}.csv", index=False)
+    pd.set_option("display.width", 220)
+    cells = set(LSTM_CELLS)
+    is_c = lambda t: [(g, int(h)) in cells for g, h in zip(t["grain"], t["horizon"])]  # noqa: E731
+    piv = lambda h: (h.pivot_table(index=["grain", "horizon"], columns="model", values="within_10").round(3)  # noqa: E731
+                     .assign(n=h.groupby(["grain", "horizon"])["n"].max()))
+    print(f"{MODEL}: LSTM (56 days) + attention, change-weighted loss, shuffled windows from the whole history, "
+          "used where pfoi-1.2.1-dev confidence is low (gate p > 0.5); development fold years, periods the gate "
+          "scored (trusted).")
+    print("\n=== training per fold year (mean over seeds) ===")
+    f = res.fits.dropna(subset=["seed"]) if "seed" in res.fits else res.fits
+    if len(f):
+        print(f.groupby("fold_year")[["train_windows", "val_windows", "best_epoch", "train_l1", "val_l1"]]
+              .mean().round(4).to_string())
+    g = res.gated.assign(year=pd.to_datetime(res.gated["origin"]).dt.year)
+    print("\n=== share of forecasts switched to the LSTM (low confidence), by year ===")
+    print(g[is_c(g)].groupby("year")["switched"].mean().round(3).to_string())
+    print("\n=== share within +-10 %: 1.2.0-dev vs 1.2.0-dev with the LSTM where confidence is low ===")
+    print(piv(res.hits).to_string())
+    if len(res.hits_low):
+        print("\n=== only the low-confidence periods the LSTM replaced ===")
+        print(piv(res.hits_low).to_string())
+    if len(res.hits_ungated):
+        print("\n=== LSTM alone on every period (descriptive, not the candidate) ===")
+        print(piv(res.hits_ungated).to_string())
+    hy = res.hits_y[is_c(res.hits_y)]
+    print("\n=== by forecast year, mean over the LSTM cells ===")
+    print(hy.groupby(["year", "model"])["within_10"].mean().unstack().round(3).to_string())
+    if len(res.attention):
+        a = res.attention
+        recent = a[a["lag_days"] <= 7].groupby("fold_year")["mean_attention"].sum()
+        print("\n=== attention on the last 7 of 56 days (uniform would be 0.125) ===")
+        print(recent.round(3).to_string())
+    print("\n=== pre-registered rule (G2 Track A rule + week 13) ===")
+    print(res.checks.round(3).to_string(index=False))
+    print(f"Verdict: {'KEEP ' + GATED if res.keep else 'DROP (record as tested; code kept, off)'}")
+    print(f"Wrote milk_backtest_errors_{{monthly,weekly}}_{new_tag}.csv, lstm_fits_{new_tag}.csv, "
+          f"lstm_attention_{new_tag}.csv")
+    return 0
+
+
+def _cmd_specialist_tcn(args: argparse.Namespace) -> int:
+    """Direct weekly/monthly structural TCN with a continuous learned shock gate."""
+    from dataclasses import replace
+
+    from .freeze import DATA_END
+    from .gate_intervals import attach_gate
+    from .specialists import gated_switch, matched_hits
+    from .tcn_specialist import CELLS, MODEL, TCNConfig, resolve_device, run_tcn_specialist
+
+    out = Path(args.out)
+    base_e = _milk_files(out, args.tag)
+    if base_e is None:
+        print("need the base milk files")
+        return 1
+    probs_path = out / f"gate_probs_{args.tag}_{args.base}.csv"
+    if args.report_scope == "low-confidence-months" and not probs_path.exists():
+        print(f"need {probs_path.name} (run gate-audit first)")
+        return 1
+    # User-run only: aggregate day_panel inputs.  The AI agent never runs this command.
+    src = SqlHerdSource.from_env()
+    target = src.target_daily(DATA_START, DATA_END)
+    panel = src.panel_daily(DATA_START, DATA_END)
+    drivers = src.driver_daily(DATA_START, DATA_END)
+    daily = target.merge(panel, on="date", how="left")
+    driver_cols = ["date", "weather_is_complete", "thi_mean", "mastitis_episodes"]
+    daily = daily.merge(drivers[driver_cols], on="date", how="left")
+    base = base_e[base_e["model"] == args.base]
+    device = resolve_device(args.device)
+    cfg = replace(TCNConfig(), seeds=tuple(range(args.seeds)), device=device)
+    print(f"Training {MODEL} once per fold year {cfg.fold_years[0]}-{cfg.fold_years[-1]} x "
+          f"{len(cfg.seeds)} seeds on {device.upper()} (112 past days; direct weeks 1/4/8/13 and months 1/3/6/12; "
+          "herd-level aggregates only).")
+    res = run_tcn_specialist(base, daily, base_model=args.base, cfg=cfg)
+    gated_name = "confidence_gated_tcn"
+    gated = None
+    if probs_path.exists():
+        probs = pd.read_csv(probs_path)
+        flagged = attach_gate(base, probs)
+        gate_probs = flagged[["grain", "horizon", "origin", "period_start", "p_gate"]]
+        gated = gated_switch(base, res.candidate, gate_probs, gate="gate", threshold=0.5,
+                             cells=CELLS, new_model=gated_name)
+    new_tag = f"{args.tag}_tcn"
+    output_parts = [base, res.candidate]
+    if gated is not None:
+        output_parts.append(gated.drop(columns="switched"))
+    _write_grain_files(pd.concat(output_parts, ignore_index=True), out, new_tag)
+    res.fits.to_csv(out / f"tcn_fits_{new_tag}.csv", index=False)
+    res.gate_summary.to_csv(out / f"tcn_gate_summary_{new_tag}.csv", index=False)
+    pd.set_option("display.width", 220)
+    print(f"{MODEL}: causal multi-scale TCN correction of {args.base}; continuous stable/shock experts; "
+          "causal online calibration uses completed prior candidate errors only. Development folds only; "
+          "the 2024+ test block is not read.")
+    trained = res.fits.dropna(subset=["seed"]) if "seed" in res.fits else res.fits
+    print("\n=== training per fold year (mean over seeds) ===")
+    if len(trained):
+        print(trained.groupby("fold_year")[["train_windows", "val_windows", "best_epoch",
+                                             "train_huber", "val_huber"]].mean().round(4).to_string())
+    if args.report_scope == "low-confidence-months":
+        switched = gated[gated["switched"] & (gated["grain"] == "monthly")]
+        low = matched_hits({args.base: base, MODEL: res.candidate}, keys_from=switched)
+        print("\n=== pfoi-1.2.1-dev LOW-confidence periods only: monthly horizons "
+              "(logistic gate p > 0.5) ===")
+        if len(low):
+            print(low.pivot_table(index=["grain", "horizon"], columns="model", values="within_10")
+                  .round(3).assign(n=low.groupby(["grain", "horizon"])["n"].max()).to_string())
+            print(f"\nLow-confidence monthly forecasts replaced: {len(switched)}. This is a descriptive "
+                  "post-run subset; it does not replace the already-recorded pre-registered verdict.")
+        else:
+            print("none (there are no scored low-confidence monthly forecasts replaced by the TCN)")
+        return 0
+    print("\n=== share within +-10 %: structural baseline vs structural gated TCN ===")
+    if len(res.hits):
+        print(res.hits.pivot_table(index=["grain", "horizon"], columns="model", values="within_10")
+              .round(3).assign(n=res.hits.groupby(["grain", "horizon"])["n"].max()).to_string())
+    print("\n=== by forecast year, mean over the weekly/monthly cells ===")
+    if len(res.hits_y):
+        print(res.hits_y.groupby(["year", "model"])["within_10"].mean().unstack().round(3).to_string())
+    print(f"\n=== shock origins (score >= {cfg.shock_threshold:.2f}; descriptive) ===")
+    if len(res.shock_hits):
+        print(res.shock_hits.pivot_table(index=["grain", "horizon"], columns="model", values="within_10")
+              .round(3).assign(n=res.shock_hits.groupby(["grain", "horizon"])["n"].max()).to_string())
+    else:
+        print("none")
+    print("\n=== learned shock gate and online update, aggregate by year ===")
+    if len(res.gate_summary):
+        print(res.gate_summary.groupby("year")[["n", "mean_shock_score", "mean_shock_gate",
+                                                 "mean_abs_online_adjustment"]]
+              .agg({"n": "sum", "mean_shock_score": "mean", "mean_shock_gate": "mean",
+                    "mean_abs_online_adjustment": "mean"}).round(4).to_string())
+    print("\n=== pre-registered TCN rule ===")
+    print(res.checks.round(3).to_string(index=False))
+    print(f"Verdict: {'KEEP ' + MODEL if res.keep else 'DROP (record as tested; code kept, off)'}")
+    print(f"Wrote milk_backtest_errors_{{monthly,weekly}}_{new_tag}.csv, tcn_fits_{new_tag}.csv, "
+          f"tcn_gate_summary_{new_tag}.csv")
+    return 0
+
+
+def _cmd_specialist_mlp(args: argparse.Namespace) -> int:
+    """Simple herd/health/milk MLP, evaluated only where confidence is low."""
+    from dataclasses import replace
+
+    from .freeze import DATA_END
+    from .mlp_specialist import FEATURES, GATED, MODEL, MLPConfig, run_mlp_specialist
+    from .tcn_specialist import resolve_device
+
+    out = Path(args.out)
+    base_e = _milk_files(out, args.tag)
+    probs_path = out / f"gate_probs_{args.tag}_{args.base}.csv"
+    if base_e is None or not probs_path.exists():
+        print(f"need the base milk files and {probs_path.name} (run gate-audit first)")
+        return 1
+    # User-run only: aggregate inputs. The AI agent never runs this command.
+    src = SqlHerdSource.from_env()
+    target = src.target_daily(DATA_START, DATA_END)
+    panel = src.panel_daily(DATA_START, DATA_END)
+    drivers = src.driver_daily(DATA_START, DATA_END)
+    daily = target.merge(panel, on="date", how="left")
+    daily = daily.merge(drivers[["date", "mastitis_episodes"]], on="date", how="left")
+    base = base_e[base_e["model"] == args.base]
+    probs = pd.read_csv(probs_path)
+    device = resolve_device(args.device)
+    cfg = replace(MLPConfig(), seeds=tuple(range(args.seeds)), device=device)
+    print(f"Training {MODEL} once per fold year {cfg.fold_years[0]}-{cfg.fold_years[-1]} x "
+          f"{len(cfg.seeds)} seeds on {device.upper()} (112 past days; 256->128->64 MLP; "
+          "herd-level aggregates only).")
+    print("Learned inputs only: " + ", ".join(FEATURES))
+    res = run_mlp_specialist(base, daily, probs, base_model=args.base, cfg=cfg)
+    new_tag = f"{args.tag}_gmlp"
+    _write_grain_files(pd.concat([base, res.candidate, res.gated.drop(columns="switched")],
+                                 ignore_index=True), out, new_tag)
+    res.fits.to_csv(out / f"mlp_fits_{new_tag}.csv", index=False)
+    pd.set_option("display.width", 220)
+    trained = res.fits.dropna(subset=["seed"]) if "seed" in res.fits else res.fits
+    print("\n=== training per fold year (mean over seeds) ===")
+    if len(trained):
+        print(trained.groupby("fold_year")[["train_windows", "val_windows", "best_epoch",
+                                             "train_huber", "val_huber"]].mean().round(4).to_string())
+    switched = res.gated[res.gated["switched"]]
+    print("\n=== share of forecasts switched where pfoi-1.2.1-dev confidence is LOW, by year ===")
+    if len(switched):
+        total = res.gated.assign(year=pd.to_datetime(res.gated["origin"]).dt.year)
+        print(total.groupby("year")["switched"].mean().round(3).to_string())
+    else:
+        print("none")
+    print("\n=== LOW-confidence periods replaced: monthly horizons only (gate p > 0.5) ===")
+    low_monthly = res.hits_low[res.hits_low["grain"] == "monthly"] if len(res.hits_low) else pd.DataFrame()
+    if len(low_monthly):
+        print(low_monthly.pivot_table(index=["grain", "horizon"], columns="model", values="within_10")
+              .round(3).assign(n=low_monthly.groupby(["grain", "horizon"])["n"].max()).to_string())
+    else:
+        print("none (no scored low-confidence monthly forecasts were replaceable)")
+    print("\nExploratory result only: this model and rule were added after earlier TCN results were seen.")
+    print(f"Wrote milk_backtest_errors_{{monthly,weekly}}_{new_tag}.csv and mlp_fits_{new_tag}.csv")
+    return 0
+
+
 def _specialist_b_tuned(args, base: pd.DataFrame, herd: pd.DataFrame, daily: pd.DataFrame) -> int:
     from .episodes import VERIFIED_BANDS
     from .specialists import (DEV_END, TRACK_B_CELLS, chronos2_pipeline, matched_hits, predictor_from,
@@ -1383,7 +1608,7 @@ def _cmd_gate_outlook(args: argparse.Namespace) -> int:
     for suffix in ("", "_posthoc"):
         for g in ("monthly", "weekly"):
             path = out / f"milk_backtest_errors_{g}_{args.tag}{suffix}.csv"
-            if path.exists():
+            if path.exists() and _has_rows(path):
                 frames.append(pd.read_csv(path))
     if not frames:
         print(f"no milk error files for {args.tag}")
@@ -1466,6 +1691,48 @@ def _cmd_gate_intervals(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_gate_report(args: argparse.Namespace) -> int:
+    """Stability gate as a classifier: confusion matrix, accuracy, AUC, MAE (aggregates; no database)."""
+    from .gate import classification_report, plot_confusion
+
+    out = Path(args.out)
+    path = out / f"gate_probs_{args.tag}_{args.base}.csv"
+    if not path.exists():
+        print(f"{path.name} not found (run gate-audit first)")
+        return 1
+    pred = pd.read_csv(path)
+    pred["year"] = pd.to_datetime(pred["origin"]).dt.year
+    gates = ("logistic", "lgbm", "base_rate")
+    tuned = out / f"gate_probs_tuned_{args.tag}_{args.base}.csv"
+    if tuned.exists():
+        t = pd.read_csv(tuned)[["grain", "horizon", "origin", "period_start", "p_tuned"]]
+        pred = pred.merge(t, on=["grain", "horizon", "origin", "period_start"], how="left")
+        gates = gates + ("tuned",) if pred["p_tuned"].notna().all() else gates
+    overall = classification_report(pred, gates, args.threshold)
+    by_year = classification_report(pred, ("logistic",), args.threshold, by=("year",))
+    by_cell = classification_report(pred, ("logistic",), args.threshold, by=("grain", "horizon"))
+    pd.set_option("display.width", 240)
+    cols = ["n", "misses", "tp", "fp", "fn", "tn", "accuracy", "balanced_accuracy", "precision", "recall",
+            "f1", "auc_within", "auc_pooled", "brier", "mae"]
+    print(f"Stability gate as a classifier of later misses beyond +-10 % (development fold years 2019-2023; "
+          f"threshold {args.threshold}; tp = said unstable and missed, fn = said stable but missed).")
+    print("\n=== all forecasts, by gate ===")
+    print(overall.set_index("gate")[cols].round(3).to_string())
+    print("\n=== logistic gate by forecast year ===")
+    print(by_year.set_index("year")[cols].round(3).to_string())
+    print("\n=== logistic gate by grain x horizon ===")
+    print(by_cell.set_index(["grain", "horizon"])[cols].round(3).to_string())
+    print("\nbase_rate = always the horizon's past miss rate (no-skill reference); "
+          "accuracy alone flatters a gate when most forecasts are hits, so read balanced accuracy and AUC.")
+    dest = out / "compare"
+    dest.mkdir(parents=True, exist_ok=True)
+    png = dest / "gate_confusion_matrix.png"
+    plot_confusion(overall, png)
+    overall.to_csv(out / f"gate_report_{args.tag}.csv", index=False)
+    print(f"Chart: {png}")
+    return 0
+
+
 def _cmd_thi_backtest(args: argparse.Namespace) -> int:
     """Experimental THI forecasts (v1, v2) vs persistence and climatology, aggregates only."""
     from .freeze import DATA_END
@@ -1504,6 +1771,95 @@ def _cmd_thi_backtest(args: argparse.Namespace) -> int:
         q.columns = ["p10", "median", "p90"]
         print(q.to_string(float_format=fmt))
     print(f"\nWrote {out / f'thi_backtest_summary_{tag}.csv'} (aggregates only).")
+    return 0
+
+
+def _cmd_layer2_cow(args: argparse.Namespace) -> int:
+    """Layer 2: cow-level Wood mixed model and EBM, summed to the herd (aggregates only)."""
+    from datetime import timedelta
+
+    from .cow_data import load_cowdays
+    from .cow_layer import DEFAULT_SPLIT, run_layer2, write_layer2_outputs
+    from .freeze import DATA_END
+
+    end = date.fromisoformat(args.end) if args.end else DATA_END - timedelta(days=1)
+    source = SqlHerdSource.from_env()
+    print(f"Loading milking cow-days {DEFAULT_SPLIT.start} .. {end} from {source.core} "
+          "(held in memory only; nothing cow-level is printed or written).")
+    frame = load_cowdays(source, DEFAULT_SPLIT.start, end)
+    ebm_kwargs = {"outer_bags": args.ebm_bags, "interactions": args.ebm_interactions}
+    result = run_layer2(frame, models=tuple(args.models), score_test=args.score_test,
+                        ebm_kwargs=ebm_kwargs, calendar_level=not args.no_calendar_level,
+                        trailing_days=args.trailing_days)
+    del frame
+    out = Path(args.out) / "layer2"
+    files = write_layer2_outputs(result, out)
+    pd.set_option("display.width", 220)
+    pd.set_option("display.max_columns", 30)
+    print(f"Split: {DEFAULT_SPLIT}")
+    print("Test period " + ("SCORED (run once)." if args.score_test else "not scored."))
+    print("Calendar level: " + ("off" if args.no_calendar_level else "one per training half-year")
+          + f"; trailing level factor: previous {args.trailing_days} days (variant 'trailing').")
+    for title, t in (("input per year", result.input_summary),
+                     ("cow-day scores", result.cow_scores),
+                     ("herd-day scores (recorded cows, days with >= 20)", result.herd_scores),
+                     ("share of scored cow-days from cows seen in training", result.known_cow_share)):
+        print(f"\n=== {title} ===")
+        print(t.round(3).to_string(index=False))
+    print("\n=== level factor (recalibrate period, actual / predicted) ===")
+    for k, v in result.level_factors.items():
+        print(f"  {k}: {v:.3f}")
+    if "wood" in result.models:
+        print("\n=== Wood parameters (typical cow) ===")
+        print(result.models["wood"].summary().round(4).to_string(index=False))
+        if not args.no_calendar_level:
+            print("\n=== Wood calendar level (factor vs the last training half-year) ===")
+            print(result.models["wood"].level_table().round(3).to_string(index=False))
+    if "ebm" in result.models:
+        print("\n=== EBM term importance ===")
+        print(result.models["ebm"].importances().round(4).to_string(index=False))
+    print(f"\n{len(files)} aggregate files in {out}/.")
+    return 0
+
+
+def _cmd_cow_yield(args: argparse.Namespace) -> int:
+    """Individual-cow yield model (pfoi-cow-yield-1.6.0-dev); aggregates only, no outlook/DB."""
+    from .cow_accuracy import TEST_END, TRAIN_START, load_accuracy_inputs
+    from .cow_runner import CowRunSettings, print_cow_run, run_cow_yield, synthetic_inputs, \
+        write_cow_run
+
+    settings = CowRunSettings(
+        tag=args.tag, exclude_gap=args.gap == "exclude", tune=args.tune == "on",
+        trials_lgbm=args.trials_lgbm, trials_rf=args.trials_rf,
+        include_ebm=args.ebm == "on", min_source_records=args.min_source_records,
+        yearly_refit=args.yearly_refit == "on", n_jobs=args.jobs,
+        parallel_grains=args.parallel == "on", parallel_folds=args.parallel_folds,
+        window_blocks=args.windows, verbose=not args.quiet)
+    if args.synthetic:
+        print("SYNTHETIC fictional data (smoke run); not Farm X.")
+        raw, events = synthetic_inputs()
+    else:
+        source = SqlHerdSource.from_env()
+        print(f"Loading cow-days, health and treatment events {TRAIN_START} .. {TEST_END} from "
+              f"{source.core} (read-only, held in memory; nothing cow-level is printed or "
+              "written).")
+        inputs = load_accuracy_inputs(source, TRAIN_START, TEST_END)
+        raw = inputs.pop("raw")
+        events = inputs
+    result = run_cow_yield(raw, events, settings)
+    del raw, events
+    out = Path(args.out) / ("synthetic_only" if args.synthetic else "")
+    folder = write_cow_run(result, out)
+    print_cow_run(result, folder)
+    return 0
+
+
+def _cmd_cow_yield_compare(args: argparse.Namespace) -> int:
+    """Compare saved cow-yield runs by tag (selected models, test block)."""
+    from .cow_runner import compare_cow_runs
+
+    pd.set_option("display.width", 220)
+    print(compare_cow_runs(Path(args.out), args.tags).to_string())
     return 0
 
 
@@ -1867,6 +2223,14 @@ def _cmd_explain_generation(args: argparse.Namespace) -> int:
     return 0
 
 
+def _has_rows(path: Path) -> bool:
+    """False for an error file written with no rows (e.g. every post-hoc milk origin withheld)."""
+    try:
+        return not pd.read_csv(path, nrows=1).empty
+    except pd.errors.EmptyDataError:
+        return False
+
+
 def _load_backtests(out: Path, herd_tag: str = "w12", milk_tag: str = "herd_fitted_p1_g0_ka_w12",
                     later: tuple[str, str] = ("test", "_test")) -> dict[tuple[str, str], pd.DataFrame | None]:
     """Backtest error files of one configuration (default: the frozen one), by (kind, block).
@@ -1879,8 +2243,10 @@ def _load_backtests(out: Path, herd_tag: str = "w12", milk_tag: str = "herd_fitt
             frames = []
             for g in ("monthly", "weekly"):
                 path = out / pattern.format(g=g, b=suffix)
-                if path.exists():
+                if path.exists() and _has_rows(path):
                     frames.append(pd.read_csv(path))
+                elif path.exists():
+                    print(f"NOTE: {path.name} is empty (no scored periods)", file=sys.stderr)
                 else:
                     print(f"NOTE: {path.name} not found", file=sys.stderr)
             found[(kind, block)] = pd.concat(frames, ignore_index=True) if frames else None
@@ -2262,6 +2628,420 @@ def _cmd_blend_outlook(args: argparse.Namespace) -> int:
     return run(args.out, args.source, args.origins, tag=args.tag, min_obs=args.min_obs)
 
 
+def _cmd_cow_torch_outlook(args: argparse.Namespace) -> int:
+    """Join aggregate cow-model artifacts to built herd-engine page documents."""
+    import json
+
+    from .cow_torch_outlook import HYBRID_VERSION, run
+
+    try:
+        files = run(args.out, args.source, args.artifacts, args.origins)
+    except (FileNotFoundError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(f"Wrote {len(files)} {HYBRID_VERSION} documents. Each milk row is structural + the exact "
+          "aggregate cow-model correction; herd, mastitis and Heat are unchanged.")
+    if args.write:
+        from sqlalchemy import create_engine
+
+        from .config import DatabaseSettings
+        from .outlook import write_run_document
+
+        engine = create_engine(DatabaseSettings.from_env().url)
+        for path in files:
+            write_run_document(engine, json.loads(path.read_text()))
+        print(f"written to c1_output.run_document: {len(files)} {HYBRID_VERSION} documents")
+    else:
+        print("not written to the database (inspect the files, then add --write)")
+    return 0
+
+
+def _cmd_cow_torch_artifact(args: argparse.Namespace) -> int:
+    """Persist one aggregate cow correction path and past-only interval cells."""
+    from .cow_torch_outlook import (
+        build_correction_artifact, calibration_from_errors, write_correction_artifact,
+    )
+
+    origin = date.fromisoformat(args.origin)
+    path_file = Path(args.path)
+    if not path_file.is_file():
+        print(
+            f"Missing aggregate future path: {path_file}\n"
+            "build-outlook creates only the structural herd forecast, and Notebook 6 currently "
+            "creates historical evaluation predictions only. Do not create a dummy CSV: a "
+            "leakage-safe future cow-path producer must create date, structural_litres, "
+            "cow_model_litres and cow_reference_litres first.",
+            file=sys.stderr,
+        )
+        return 1
+    errors_file = Path(args.errors) if args.errors else None
+    if errors_file is not None and not errors_file.is_file():
+        print(f"Missing aggregate hybrid backtest errors: {errors_file}. "
+              "Omit --errors only for an uncalibrated development preview.", file=sys.stderr)
+        return 1
+    path = pd.read_csv(path_file)
+    cells = calibration_from_errors(pd.read_csv(errors_file), origin) if errors_file else []
+    artifact = build_correction_artifact(
+        origin, path, cells, selected_model=args.model,
+        trained_through=date.fromisoformat(args.trained_through) if args.trained_through else None,
+        taper_days=args.taper_days,
+        anchor_correction_litres_per_day=args.anchor_correction,
+    )
+    target = Path(args.artifacts) / f"cow_correction_{origin:%Y%m}.json"
+    write_correction_artifact(target, artifact)
+    factors = [float(r["cow_factor"]) for r in artifact["daily"]]
+    print(f"Wrote aggregate artifact {target}: {len(factors)} herd-days; "
+          f"cow factor min/mean/max {min(factors):.4f}/{sum(factors) / len(factors):.4f}/{max(factors):.4f}; "
+          f"calibration cells {len(cells)}. No animal rows were stored or printed.")
+    return 0
+
+
+def _cmd_cow_torch_produce(args: argparse.Namespace) -> int:
+    """Fit the pre-origin cow model and create its aggregate future correction path."""
+    import json
+    from datetime import timedelta
+
+    from .cow_accuracy import TRAIN_START, load_accuracy_inputs
+    from .cow_torch_outlook import calibration_from_errors, write_correction_artifact
+    from .cow_torch_production import produce_correction_artifact, structural_daily_from_outlook
+
+    origin = date.fromisoformat(args.origin)
+    source_file = Path(args.out) / "outlook" / args.source / f"run_{origin:%Y%m}.json"
+    outlook_file = Path(args.out) / "outlook" / args.source / f"outlook_{origin:%Y%m}.csv"
+    if not source_file.is_file():
+        print(f"Missing structural outlook {source_file}; run build-outlook first.", file=sys.stderr)
+        return 1
+    if not outlook_file.is_file():
+        print(f"Missing complete structural path {outlook_file}; run build-outlook first.",
+              file=sys.stderr)
+        return 1
+    errors_file = Path(args.errors) if args.errors else None
+    if errors_file is not None and not errors_file.is_file():
+        print(f"Missing aggregate hybrid backtest errors: {errors_file}.", file=sys.stderr)
+        return 1
+    cells = calibration_from_errors(pd.read_csv(errors_file), origin) if errors_file else []
+    try:
+        structural_daily = structural_daily_from_outlook(pd.read_csv(outlook_file), origin)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    source = SqlHerdSource.from_env()
+    end = origin - timedelta(days=1)
+    print(f"Loading restricted cow modelling inputs {TRAIN_START} .. {end} (read-only, held "
+          "in memory; no cow-level values are printed or stored).")
+    inputs = load_accuracy_inputs(source, TRAIN_START, end)
+    raw = inputs.pop("raw")
+    try:
+        artifact = produce_correction_artifact(
+            json.loads(source_file.read_text()), raw, inputs, origin, cells,
+            selected_model=args.model,
+            calibration_days=args.calibration_days,
+            recent_days=args.recent_days,
+            min_cows=args.min_cows,
+            taper_days=args.taper_days,
+            device=args.device,
+            params={"max_epochs": args.max_epochs},
+            options={"ensemble": args.ensemble},
+            verbose=not args.quiet,
+            structural_daily=structural_daily,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    finally:
+        del raw, inputs
+    target = Path(args.artifacts) / f"cow_correction_{origin:%Y%m}.json"
+    write_correction_artifact(target, artifact)
+    estimate = artifact["origin_estimate"]
+    factors = [float(r["cow_factor"]) for r in artifact["daily"]]
+    print(f"Wrote {target}: selected {estimate['selected_model']} vs "
+          f"{estimate['reference_model']}; {estimate['n_cows']} eligible cows; aggregate "
+          f"origin factor {estimate['factor']:.4f}; tapered factor min/mean/max "
+          f"{min(factors):.4f}/{sum(factors) / len(factors):.4f}/{max(factors):.4f}; "
+          f"calibration cells {len(cells)}. No cow rows were printed or persisted.")
+    return 0
+
+
+def _cmd_nb6_selection(args: argparse.Namespace) -> int:
+    """Read Notebook 6's validation selection (aggregate CSVs) and save the monthly one."""
+    import json
+
+    from .cow_milk_predictor import (FIXED_ORIGIN_GRAIN, NEURAL_MILK_VERSION,
+                                     selection_from_notebook6, selection_to_json)
+
+    rows = []
+    for grain in ("daily", "weekly", "monthly"):
+        try:
+            sel = selection_from_notebook6(args.run_dir, grain, args.blend_weights, args.data_scope)
+        except (FileNotFoundError, ValueError) as exc:
+            rows.append({"grain": grain, "model": f"ERROR: {exc}"})
+            continue
+        rows.append({"grain": grain, "model": sel.model, "base": sel.base_model,
+                     **{k: v for k, v in sel.selection_scores.items() if k != "block"},
+                     "use_for_fixed_origin": grain == FIXED_ORIGIN_GRAIN})
+        if grain == FIXED_ORIGIN_GRAIN:
+            dest = Path(args.out) / "models" / NEURAL_MILK_VERSION
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / "selection_monthly.json").write_text(
+                json.dumps(selection_to_json(sel) | {"notebook_run": str(args.run_dir)}, indent=1))
+    pd.set_option("display.width", 200)
+    print("Notebook 6 winners (validation-pooled cow-period scores; test never used):")
+    print(pd.DataFrame(rows).round(2).to_string(index=False))
+    print("Only the monthly protocol (features frozen on the 1st, leads 0-30 days) is a "
+          "fixed-origin forecast; daily = one-day-ahead updated, weekly = re-read each Monday.")
+    if not any(r["grain"] == FIXED_ORIGIN_GRAIN and not str(r["model"]).startswith("ERROR")
+               for r in rows):
+        return 1
+    print(f"Saved {Path(args.out) / 'models' / NEURAL_MILK_VERSION / 'selection_monthly.json'}")
+    return 0
+
+
+def _cmd_neural_milk_produce(args: argparse.Namespace) -> int:
+    """Fit, persist, reload-verify the Notebook 6 predictor and write aggregate herd milk."""
+    import json
+    from datetime import timedelta
+
+    from .cow_accuracy import MIN_COWS_PER_DAY, TRAIN_START, load_accuracy_inputs
+    from .cow_milk_backtest import MODEL as BT_MODEL
+    from .cow_milk_predictor import (NEURAL_MILK_VERSION, build_forecast_artifact,
+                                     fit_predictor, herd_daily, inference_input, milking_path,
+                                     origin_cohort, origin_history, origin_safe_events,
+                                     selection_from_json, supported_end, verify_reload)
+    from .cow_torch import assert_torch_safe_process
+    from .cow_torch_outlook import calibration_from_errors
+
+    assert_torch_safe_process()
+    out = Path(args.out)
+    sel_file = Path(args.selection or out / "models" / NEURAL_MILK_VERSION / "selection_monthly.json")
+    if not sel_file.is_file():
+        print(f"Missing {sel_file}; run nb6-selection first.", file=sys.stderr)
+        return 1
+    sel_json = json.loads(sel_file.read_text())
+    notebook_run = sel_json.pop("notebook_run", None)
+    selection = selection_from_json(sel_json)
+    if args.months > 1 and not args.calibration:
+        print("--months > 1 needs --calibration (backtest evidence for those horizons).",
+              file=sys.stderr)
+        return 2
+    bt = None
+    if args.calibration:
+        bt = pd.read_csv(args.calibration)
+        bt = bt[(bt["model"] == BT_MODEL) & bt["forecast"].notna() & bt["actual"].notna()]
+    source = SqlHerdSource.from_env()
+    status = 0
+    for o in args.origins:
+        origin = date.fromisoformat(o)
+        end = supported_end(origin, args.months)
+        cells = [c for c in calibration_from_errors(bt, origin) if c.horizon <= args.months] \
+            if bt is not None else []
+        csv = out / "outlook" / args.source / f"outlook_{origin:%Y%m}.csv"
+        if not csv.is_file():
+            print(f"{origin}: missing {csv}; build {args.source} first.", file=sys.stderr)
+            status = 1
+            continue
+        milking, milking_audit = milking_path(pd.read_csv(csv), origin, end)
+        print(f"{origin}: loading restricted cow inputs {TRAIN_START} .. "
+              f"{origin - timedelta(days=1)} (read-only, in memory; nothing row-level is "
+              "printed or stored)")
+        inputs = load_accuracy_inputs(source, TRAIN_START, origin - timedelta(days=1))
+        raw = inputs.pop("raw")
+        events = origin_safe_events(inputs, origin)
+        hist = origin_history(raw, origin, selection.data_scope)
+        future, counts = origin_cohort(hist, origin, end, args.cohort_days)
+        print(f"{origin}: {len(cells)} monthly calibration cells from backtest errors that "
+              f"ended by {origin}" if bt is not None else f"{origin}: no calibration (uncalibrated)")
+        dest = out / "outlook" / NEURAL_MILK_VERSION
+        dest.mkdir(parents=True, exist_ok=True)
+        target = dest / f"neural_milk_{origin:%Y%m}.json"
+        if counts["cohort_cows"] < MIN_COWS_PER_DAY:
+            reason = ("no_clean_cow_records_before_origin" if counts["cows_recorded_in_window"] == 0
+                      else "cohort_below_minimum")
+            artifact = build_forecast_artifact(origin, None, milking.assign(cohort_cows=0),
+                                               counts, milking_audit, {}, "missing", reason,
+                                               months=args.months)
+            artifact["selection"] = sel_json
+            target.write_text(json.dumps(artifact, indent=1))
+            print(f"{origin}: NO NEURAL MILK FORECAST ({reason}; cohort counts {counts}). "
+                  f"Wrote {target} with status missing.")
+            status = max(status, 3)
+            continue
+        raw_all = inference_input(hist, future, origin)
+        predictor, frame, final = fit_predictor(raw_all, events, origin, selection,
+                                                device=args.device, verbose=not args.quiet,
+                                                notebook_run=notebook_run)
+        folder = predictor.save(out / "models" / NEURAL_MILK_VERSION / f"{origin:%Y%m}")
+        loaded, fx, stages, audit = verify_reload(folder, raw_all, events, frame, final)
+        daily = herd_daily(fx, stages, milking)
+        artifact = build_forecast_artifact(origin, loaded, daily, counts, milking_audit, audit,
+                                           months=args.months, calibration=cells,
+                                           calibration_source=args.calibration)
+        target.write_text(json.dumps(artifact, indent=1))
+        ok = daily["herd_litres"].notna()
+        print(f"{origin}: {selection.model} ({selection.grain} protocol) trained through "
+              f"{predictor.spec['train_end']} on {predictor.spec['training']['cow_days']:,} "
+              f"cow-days; cohort {counts['cohort_cows']} cows; forecast days {int(ok.sum())}"
+              f"/{len(daily)}; cohort cows per day min/max "
+              f"{int(daily['cohort_cows'].min())}/{int(daily['cohort_cows'].max())}; "
+              f"total {daily.loc[ok, 'herd_litres'].sum():,.0f} L; reload max diff "
+              f"{audit['max_abs_diff_litres']:.2e} L. Predictor in {folder}; "
+              f"aggregate forecast {target}.")
+        del raw, inputs, raw_all, frame, fx
+    print("Nothing was written to the database.")
+    return status
+
+
+def _cmd_neural_milk_compose(args: argparse.Namespace) -> int:
+    """pfoi-1.8.0-dev documents from 1.2.0-dev documents + neural milk forecasts (files only)."""
+    import json
+
+    from .cow_milk_predictor import NEURAL_MILK_VERSION
+    from .neural_milk_outlook import milk_summary, run, verify_document
+
+    try:
+        files = run(args.out, args.origins, args.source)
+    except (FileNotFoundError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    rows = [milk_summary(json.loads(p.read_text())) for p in files]
+    for r in rows:
+        print(f"{r['origin']}: milk rows {r['milk_rows']}; withheld: {', '.join(r['withheld']) or '-'}")
+    print(f"Wrote {len(files)} documents to {Path(args.out) / 'outlook'}/.")
+    empty = [r["origin"] for r in rows if not sum(r["milk_rows"].values())]
+    if empty and not args.allow_missing_milk:
+        print(f"NO MILK FORECAST in {', '.join(empty)} (see withheld reasons). Rerun with "
+              "--allow-missing-milk to accept documents without milk.", file=sys.stderr)
+        return 3
+    # Verify every document against its 1.2.0-dev source before anything can be written.
+    root = Path(args.out) / "outlook"
+    failed = []
+    for p in files:
+        doc = json.loads(p.read_text())
+        stamp = p.stem.split("_")[1]
+        checks = verify_document(json.loads((root / args.source / p.name).read_text()), doc,
+                                 json.loads((root / NEURAL_MILK_VERSION / f"neural_milk_{stamp}.json").read_text()))
+        print(f"\n{doc['origin_date']} checks:")
+        for c in checks:
+            print(f"  [{'ok' if c['ok'] else 'FAIL'}] {c['check']}: {c['detail']}")
+        if not all(c["ok"] for c in checks if c["check"] != "milk forecast present"):
+            failed.append(doc["origin_date"])
+    if failed:
+        print(f"\nChecks FAILED for {', '.join(failed)}; nothing written.", file=sys.stderr)
+        return 4
+    if not args.write:
+        print("\nNot written to the database (all checks passed; add --write to publish).")
+        return 0
+    from sqlalchemy import create_engine
+
+    from .config import DatabaseSettings
+    from .outlook import write_run_document
+
+    engine = create_engine(DatabaseSettings.from_env().url)
+    for p in files:
+        write_run_document(engine, json.loads(p.read_text()))
+    print(f"\nWritten to c1_output.run_document: {len(files)} documents as {NEURAL_MILK_VERSION} "
+          "(replaces only rows of this version and date; other versions untouched).")
+    return 0
+
+
+def _cmd_milk_panel_check(args: argparse.Namespace) -> int:
+    from .milk_panel_check import check
+
+    t = check(args.out, args.versions, args.origins, args.artifacts)
+    pd.set_option("display.width", 220)
+    print("Milk inputs of the compare-runs milk panel (counts only):")
+    print(t.to_string(index=False))
+    if "artifacts" in t.attrs:
+        print("\npfoi-1.7.0-dev cow-correction artifacts:")
+        print(t.attrs["artifacts"].to_string(index=False))
+    return 0
+
+
+def _cmd_neural_milk_backtest(args: argparse.Namespace) -> int:
+    """Rolling-origin backtest of the Notebook 6 milk predictor; aggregate files only."""
+    import json
+
+    from .cow_accuracy import TRAIN_START, load_accuracy_inputs
+    from .cow_milk_backtest import (MODEL, ORACLE, add_intervals, add_reference, backtest_origin,
+                                    block_of, monthly_milking_projection, summarise,
+                                    summarise_cows)
+    from .cow_milk_predictor import NEURAL_MILK_VERSION, selection_from_json, supported_end
+    from .cow_torch import assert_torch_safe_process
+
+    assert_torch_safe_process()
+    out = Path(args.out)
+    sel_file = Path(args.selection or out / "models" / NEURAL_MILK_VERSION / "selection_monthly.json")
+    sel = json.loads(sel_file.read_text())
+    sel.pop("notebook_run", None)
+    selection = selection_from_json(sel)
+    herd = pd.concat([pd.read_csv(f) for f in args.herd_errors], ignore_index=True)
+    projection = monthly_milking_projection(herd, args.herd_model)
+    if args.origins:
+        origins = sorted(date.fromisoformat(x) for x in args.origins)
+    else:
+        origins, o = [], date.fromisoformat(args.start)
+        while o <= date.fromisoformat(args.end):
+            origins.append(o)
+            o = supported_end(o)
+        origins = origins[::args.every]
+    last = supported_end(origins[-1], args.max_months)
+    source = SqlHerdSource.from_env()
+    print(f"Loading restricted inputs {TRAIN_START} .. {last} once (read-only, in memory). Each "
+          "origin uses only records before it; outcomes are read after its forecasts are fixed.")
+    inputs = load_accuracy_inputs(source, TRAIN_START, last)
+    raw = inputs.pop("raw")
+    target = source.target_daily(TRAIN_START, last)[["date", "target_litres", "is_scoreable"]]
+    panel = source.panel_daily(TRAIN_START, last)
+    milking = pd.Series(panel["milking"].to_numpy(float),
+                        index=pd.to_datetime(panel["date"]).dt.date)
+    rows, cows, audits = [], [], []
+    for i, origin in enumerate(origins, 1):
+        r, c, a = backtest_origin(raw, inputs, target, milking, projection, origin, selection,
+                                  max_months=args.max_months, cohort_days=args.cohort_days)
+        rows += r
+        cows += c
+        audits.append(a)
+        print(f"[{i}/{len(origins)}] {origin}: {a['status']}, cohort {a['cohort_cows']} cows"
+              + (f", fit {a.get('fit_seconds')}s" if "fit_seconds" in a else ""), flush=True)
+    del raw, inputs
+    errors = pd.DataFrame(rows)
+    if args.milk_errors:
+        ref = pd.concat([pd.read_csv(f) for f in args.milk_errors], ignore_index=True)
+        errors = add_reference(errors, ref, args.milk_model)
+    errors = add_intervals(errors)
+    errors["block"] = errors["origin"].map(block_of)
+    dest = out / "backtest" / NEURAL_MILK_VERSION
+    dest.mkdir(parents=True, exist_ok=True)
+    errors.to_csv(dest / "milk_backtest_errors_monthly.csv", index=False)
+    cow_table = pd.DataFrame(cows)
+    cow_table.to_csv(dest / "cow_level_by_origin.csv", index=False)
+    pd.DataFrame(audits).to_csv(dest / "origins.csv", index=False)
+    pd.set_option("display.width", 220)
+    audit = pd.DataFrame(audits)
+    print(f"\nOrigins: {len(audit)}; status counts: {audit['status'].value_counts().to_dict()}")
+    if "pfoi-1.2.0-dev" in set(errors["model"]):
+        if "reference_actual" in errors:
+            ra = errors.dropna(subset=["reference_actual", "actual"])
+            print("1.2.0-dev file actual vs this backtest's actual: max abs diff "
+                  f"{(ra['reference_actual'] - ra['actual']).abs().max():,.1f} L over {len(ra)} periods")
+    sets = [[MODEL, "persistence", "seasonal_naive"] + (["pfoi-1.2.0-dev"] if args.milk_errors else []),
+            [MODEL, ORACLE]]
+    for models in sets:
+        for by in (("horizon",), ("block", "horizon")):
+            t = summarise(errors, models, by)
+            print(f"\nHerd milk, monthly, identical periods for {models}, by {by}:")
+            print(t.round(2).to_string(index=False) if len(t) else "  no common scoreable periods")
+    print("\nCow level (cohort cow-days vs their own records), by horizon:")
+    sc = summarise_cows(cow_table)
+    print(sc.round(3).to_string(index=False) if len(sc) else "  none")
+    cov = errors[(errors["model"] == MODEL)].groupby("horizon").agg(
+        forecasts=("forecast", lambda x: int(x.notna().sum())),
+        cohort_share_mean=("cohort_share_of_milking", "mean"))
+    print("\nForecasts made and mean cohort share of projected milking cows, by horizon:")
+    print(cov.round(3).to_string())
+    print(f"\nFiles (aggregate) in {dest}/. Nothing was written to the database.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pfoi")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -2582,6 +3362,37 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default="logs/pfoi")
     p.set_defaults(func=_cmd_specialist_a)
 
+    p = sub.add_parser("specialist-lstm", help="LSTM-attention milk model used where pfoi-1.2.1-dev confidence "
+                                               "is low (day 1 to week 13, month 1-3), pre-registered keep rule")
+    p.add_argument("--tag", default="herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_adhq0.1t365z3")
+    p.add_argument("--base", default="milk_baseline_adaptive")
+    p.add_argument("--seeds", type=int, default=5, help="ensemble size (seeds 0..n-1)")
+    p.add_argument("--out", default="logs/pfoi")
+    p.set_defaults(func=_cmd_specialist_lstm)
+
+    p = sub.add_parser("specialist-tcn", help="change-sensitive structural TCN with direct weekly 1/4/8/13 "
+                                              "and monthly 1/3/6/12 outputs, continuous shock gate and "
+                                              "past-only online calibration")
+    p.add_argument("--tag", default="herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_adhq0.1t365z3")
+    p.add_argument("--base", default="milk_baseline_adaptive")
+    p.add_argument("--seeds", type=int, default=5, help="ensemble size (seeds 0..n-1)")
+    p.add_argument("--device", default="auto", choices=["auto", "cpu", "mps", "cuda"],
+                   help="compute backend; auto prefers CUDA, then Apple MPS, then CPU")
+    p.add_argument("--report-scope", default="all", choices=["all", "low-confidence-months"],
+                   help="print the full fixed evaluation or only monthly horizons where the existing gate is low")
+    p.add_argument("--out", default="logs/pfoi")
+    p.set_defaults(func=_cmd_specialist_tcn)
+
+    p = sub.add_parser("specialist-mlp", help="simple 256-128-64 herd/health/milk neural network, used "
+                                              "only where pfoi-1.2.1-dev confidence is low")
+    p.add_argument("--tag", default="herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_adhq0.1t365z3")
+    p.add_argument("--base", default="milk_baseline_adaptive")
+    p.add_argument("--seeds", type=int, default=5, help="ensemble size (seeds 0..n-1)")
+    p.add_argument("--device", default="auto", choices=["auto", "cpu", "mps", "cuda"],
+                   help="compute backend; auto prefers CUDA, then Apple MPS, then CPU")
+    p.add_argument("--out", default="logs/pfoi")
+    p.set_defaults(func=_cmd_specialist_mlp)
+
     p = sub.add_parser("specialist-b", help="G2 Track B: zero-shot Chronos-2 yield per cow x engine cows "
                                             "(week 13, months 6-12), pre-registered keep rule")
     p.add_argument("--tag", default="herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_adhq0.1t365z3")
@@ -2631,6 +3442,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default="logs/pfoi")
     p.set_defaults(func=_cmd_gate_intervals)
 
+    p = sub.add_parser("gate-report", help="stability gate as a classifier: confusion matrix, accuracy, AUC, MAE")
+    p.add_argument("--tag", default="herd_fitted_p1_g0_kf_w24_ck_kn_rk_lag90_hl6_adhq0.1t365z3")
+    p.add_argument("--base", default="milk_baseline_adaptive")
+    p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--out", default="logs/pfoi")
+    p.set_defaults(func=_cmd_gate_report)
+
     p = sub.add_parser("thi-backtest", help="experimental THI forecasts v1/v2 vs persistence and "
                                             "climatology (weather only, aggregates)")
     p.add_argument("--block", default="development", choices=["development", "test"])
@@ -2640,6 +3458,54 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--step", type=int, default=7, help="days between forecast dates")
     p.add_argument("--out", default="logs/pfoi")
     p.set_defaults(func=_cmd_thi_backtest)
+
+    p = sub.add_parser("layer2-cow", help="Layer 2: cow-level Wood mixed model + EBM summed to the herd; "
+                                          "aggregate files only")
+    p.add_argument("--end", default=None, help="last day to load, YYYY-MM-DD (default: the data end)")
+    p.add_argument("--models", nargs="+", default=["wood", "ebm"], choices=["wood", "ebm"])
+    p.add_argument("--score-test", action="store_true",
+                   help="also score recalibrate and test (2026-04 onward); run once, after review")
+    p.add_argument("--ebm-bags", type=int, default=8, help="EBM outer bags")
+    p.add_argument("--ebm-interactions", type=int, default=3, help="EBM pairwise interaction terms")
+    p.add_argument("--no-calendar-level", action="store_true",
+                   help="fit without the half-year calendar level (the first run's model)")
+    p.add_argument("--trailing-days", type=int, default=56, help="trailing level factor window")
+    p.add_argument("--out", default="logs/pfoi_mi2")
+    p.set_defaults(func=_cmd_layer2_cow)
+
+    p = sub.add_parser("cow-yield", help="individual-cow yield model pfoi-cow-yield-1.6.0-dev: "
+                                         "gap excluded, 75/5/20 split, tuning, recal + blend, "
+                                         "comparison of every candidate; aggregates only, "
+                                         "no outlook files, no database writes")
+    p.add_argument("--tag", default="default", help="name of this run (folder under --out)")
+    p.add_argument("--gap", default="exclude", choices=["exclude", "keep"],
+                   help="exclude the May 2022 - Oct 2025 recording gap (default)")
+    p.add_argument("--tune", default="on", choices=["on", "off"],
+                   help="time-series hyperparameter search inside the training block")
+    p.add_argument("--trials-lgbm", type=int, default=30)
+    p.add_argument("--trials-rf", type=int, default=8, help="0 = keep the default forest")
+    p.add_argument("--ebm", default="on", choices=["on", "off"])
+    p.add_argument("--min-source-records", type=int, default=100,
+                   help="records per year below which health/treatment count as unavailable")
+    p.add_argument("--yearly-refit", default="off", choices=["on", "off"],
+                   help="also refit the selected models every test year (slow)")
+    p.add_argument("--jobs", type=int, default=-1, help="CPU cores for LightGBM / forest")
+    p.add_argument("--parallel", default="on", choices=["on", "off"],
+                   help="daily / weekly / monthly models in parallel processes")
+    p.add_argument("--parallel-folds", type=int, default=3)
+    p.add_argument("--windows", type=int, default=0,
+                   help="also train on one equal-record block and test on the next "
+                        "(e.g. 5 blocks -> 4 windows); 0 = off")
+    p.add_argument("--synthetic", action="store_true", help="fictional data smoke run")
+    p.add_argument("--quiet", action="store_true", help="no progress lines")
+    p.add_argument("--out", default="logs/pfoi_mi2")
+    p.set_defaults(func=_cmd_cow_yield)
+
+    p = sub.add_parser("cow-yield-compare", help="side-by-side test accuracy of saved cow-yield "
+                                                 "runs (by --tag)")
+    p.add_argument("--tags", nargs="+", required=True)
+    p.add_argument("--out", default="logs/pfoi_mi2")
+    p.set_defaults(func=_cmd_cow_yield_compare)
 
     p = sub.add_parser("repro-timing", help="M7: reproductive timing (record vs engine), aggregates only")
     p.add_argument("--asof", default=None, help="YYYY-MM-DD (default: the data end)")
@@ -2775,9 +3641,12 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("compare-runs", help="two versions at forecast dates (from build-outlook files)")
     p.add_argument("--origins", nargs="+", required=True, help="YYYY-MM-01 forecast dates")
-    p.add_argument("--base", default="pfoi-1.0.0", choices=["pfoi-1.0.0", "pfoi-1.1.0", "pfoi-1.1.1", PP1_DEV_VERSION])
+    p.add_argument("--base", default="pfoi-1.0.0", choices=["pfoi-1.0.0", "pfoi-1.1.0", "pfoi-1.1.1", PP1_DEV_VERSION,
+                                                               "pfoi-1.7.0-dev", "pfoi-1.8.0-dev"])
     p.add_argument("--candidate", default="pfoi-1.1.0", choices=["pfoi-1.1.0", "pfoi-1.1.1", PP1_DEV_VERSION,
-                                                               "pfoi-1.2.0-dev-persistence"],
+                                                               "pfoi-1.2.0-dev-persistence", "pfoi-1.2.1-dev",
+                                                               "pfoi-1.7.0-dev",
+                                                               "pfoi-1.8.0-dev"],
                    help=f"{PP1_DEV_VERSION} = development build (build-outlook with --k / --intervals aci)")
     p.add_argument("--grain", default="month", choices=["month", "week", "day"],
                    help="day / week: the pfoi-1.1.1 daily and weekly path (earlier versions: 14 days, 13 weeks)")
@@ -2798,6 +3667,124 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--min-obs", type=int, default=8)
     p.add_argument("--out", default="logs/pfoi")
     p.set_defaults(func=_cmd_blend_outlook)
+
+    p = sub.add_parser("cow-torch-outlook", help="pfoi-1.7.0-dev: join privacy-safe aggregate cow-model "
+                                                   "corrections to built herd-engine documents")
+    p.add_argument("--source", default=PP1_DEV_VERSION,
+                   help="structural page-document version under <out>/outlook/")
+    p.add_argument("--artifacts", required=True,
+                   help="folder containing cow_correction_YYYYMM.json aggregate artifacts")
+    p.add_argument("--origins", nargs="*", default=None,
+                   help="forecast dates to build (default: every source document)")
+    p.add_argument("--out", default="logs/pfoi")
+    p.add_argument("--write", action="store_true",
+                   help="after file inspection, publish the documents to c1_output.run_document")
+    p.set_defaults(func=_cmd_cow_torch_outlook)
+
+    p = sub.add_parser("cow-torch-artifact", help="persist a privacy-safe aggregate cow-model path and "
+                                                    "past-only interval calibration")
+    p.add_argument("--origin", required=True, help="forecast date, YYYY-MM-01")
+    p.add_argument("--path", required=True,
+                   help="aggregate daily CSV: date, structural_litres, cow_model_litres, "
+                        "cow_reference_litres[, n_cows]")
+    p.add_argument("--errors", default=None,
+                   help="optional aggregate hybrid backtest errors for forward interval calibration")
+    p.add_argument("--artifacts", required=True, help="destination artifact folder")
+    p.add_argument("--model", default="torch_mlp_small_grp", help="selected Notebook 6 torch model")
+    p.add_argument("--trained-through", default=None,
+                   help="last training date; default is the day before the origin")
+    p.add_argument("--taper-days", type=float, default=120.0,
+                   help="days over which the known-cow correction fades as herd membership changes")
+    p.add_argument("--anchor-correction", type=float, default=0.0,
+                   help="cow correction in L/day for the month before the first forecast month")
+    p.set_defaults(func=_cmd_cow_torch_artifact)
+
+    p = sub.add_parser("cow-torch-produce", help="fit the origin-safe Notebook 6 yield correction and "
+                                                   "persist its aggregate future path")
+    p.add_argument("--origin", required=True, help="forecast date, YYYY-MM-01")
+    p.add_argument("--source", default=PP1_DEV_VERSION,
+                   help="structural page-document version under <out>/outlook/")
+    p.add_argument("--out", default="logs/pfoi", help="root containing the structural outlook")
+    p.add_argument("--artifacts", required=True, help="destination aggregate artifact folder")
+    p.add_argument("--errors", default=None,
+                   help="optional aggregate hybrid backtest errors for interval calibration")
+    p.add_argument("--model", default="torch_mlp_small_grp",
+                   choices=["torch_mlp_small", "torch_mlp_small_recal", "torch_mlp_small_grp",
+                            "torch_mlp_large", "torch_mlp_large_recal", "torch_mlp_large_grp"])
+    p.add_argument("--calibration-days", type=int, default=84,
+                   help="pre-origin out-of-sample block following the neural weight fit")
+    p.add_argument("--recent-days", type=int, default=28,
+                   help="latest part of that block used for the aggregate origin factor")
+    p.add_argument("--min-cows", type=int, default=20)
+    p.add_argument("--taper-days", type=float, default=120.0)
+    p.add_argument("--max-epochs", type=int, default=250)
+    p.add_argument("--ensemble", type=int, default=1)
+    p.add_argument("--device", default="auto", choices=["auto", "mps", "cpu"])
+    p.add_argument("--quiet", action="store_true")
+    p.set_defaults(func=_cmd_cow_torch_produce)
+
+    from .cow_milk_predictor import NEURAL_MILK_VERSION
+    p = sub.add_parser("nb6-selection", help=f"{NEURAL_MILK_VERSION}: read Notebook 6's validation "
+                                              "winners per grain and save the monthly selection")
+    p.add_argument("--run-dir", required=True,
+                   help="Notebook 6 OUT_DIR (…/pfoi-cow-yield-torch-1.6.0-dev/<test>/torch_v3)")
+    p.add_argument("--blend-weights", default=None,
+                   help="aggregate CSV of blend_weights_table(BLEND_SPEC), only if a blend won")
+    p.add_argument("--data-scope", default="clean", choices=["clean", "through_mid2023"])
+    p.add_argument("--out", default="logs/pfoi")
+    p.set_defaults(func=_cmd_nb6_selection)
+
+    p = sub.add_parser("neural-milk-produce", help=f"{NEURAL_MILK_VERSION}: fit, persist and "
+                                                    "reload-verify the Notebook 6 predictor per "
+                                                    "origin; aggregate herd milk files only")
+    p.add_argument("--origins", nargs="+", required=True, help="YYYY-MM-01 forecast dates")
+    p.add_argument("--selection", default=None, help="default <out>/models/<version>/selection_monthly.json")
+    p.add_argument("--source", default=PP1_DEV_VERSION, help="herd-engine version for milking cows")
+    p.add_argument("--cohort-days", type=int, default=28)
+    p.add_argument("--months", type=int, default=1,
+                   help="months to publish (1 = what Notebook 6 validated; more needs --calibration)")
+    p.add_argument("--calibration", default=None,
+                   help="neural-milk-backtest errors CSV: 5-95%% ranges from errors ended by the origin")
+    p.add_argument("--device", default="auto", choices=["auto", "mps", "cpu"])
+    p.add_argument("--out", default="logs/pfoi")
+    p.add_argument("--quiet", action="store_true")
+    p.set_defaults(func=_cmd_neural_milk_produce)
+
+    p = sub.add_parser("neural-milk-backtest", help=f"{NEURAL_MILK_VERSION}: rolling-origin backtest "
+                                                     "of the Notebook 6 milk predictor vs 1.2.0-dev and "
+                                                     "benchmarks (aggregate files only)")
+    p.add_argument("--start", default="2017-01-01")
+    p.add_argument("--end", default="2026-07-01")
+    p.add_argument("--every", type=int, default=1, help="use every n-th monthly origin")
+    p.add_argument("--origins", nargs="*", default=None, help="explicit YYYY-MM-01 origins (overrides start/end/every)")
+    p.add_argument("--max-months", type=int, default=12)
+    p.add_argument("--selection", default=None)
+    p.add_argument("--herd-errors", required=True, nargs="+",
+                   help="1.2.0-dev herd backtest error CSV(s) with monthly milking forecasts")
+    p.add_argument("--herd-model", default="herd_engine")
+    p.add_argument("--milk-errors", nargs="*", default=None,
+                   help="1.2.0-dev milk backtest error CSV(s) to compare on the same periods")
+    p.add_argument("--milk-model", default="milk_baseline_adaptive")
+    p.add_argument("--cohort-days", type=int, default=28)
+    p.add_argument("--out", default="logs/pfoi")
+    p.set_defaults(func=_cmd_neural_milk_backtest)
+
+    p = sub.add_parser("neural-milk-compose", help=f"{NEURAL_MILK_VERSION} page documents: neural "
+                                                    "milk + all non-milk 1.2.0-dev sections (files only)")
+    p.add_argument("--origins", nargs="+", required=True)
+    p.add_argument("--source", default=PP1_DEV_VERSION)
+    p.add_argument("--allow-missing-milk", action="store_true")
+    p.add_argument("--write", action="store_true",
+                   help="after all checks pass, publish to c1_output.run_document as pfoi-1.8.0-dev only")
+    p.add_argument("--out", default="logs/pfoi")
+    p.set_defaults(func=_cmd_neural_milk_compose)
+
+    p = sub.add_parser("milk-panel-check", help="counts behind a compare-runs milk panel (no values)")
+    p.add_argument("--origins", nargs="+", required=True)
+    p.add_argument("--versions", nargs="+", default=[PP1_DEV_VERSION, "pfoi-1.7.0-dev"])
+    p.add_argument("--artifacts", default=None, help="pfoi-1.7.0-dev cow_correction_*.json folder")
+    p.add_argument("--out", default="logs/pfoi")
+    p.set_defaults(func=_cmd_milk_panel_check)
 
     args = parser.parse_args(argv)
     _apply_preset(args)
