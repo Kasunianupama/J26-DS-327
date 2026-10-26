@@ -187,9 +187,9 @@ export function MasterTimeline({ bands = ['milk', 'cows', 'herd', 'events'], pla
               )}
               {switchAt && <ReferenceLine x={switchAt} stroke="#a8770a" strokeDasharray="2 3" label={{ value: 'Record source changes', position: 'insideTopLeft', fontSize: 10, fill: '#a8770a' }} />}
               {milkMode !== 'per_cow' && <Area dataKey="milk_v_band" stroke="none" fill={FORECAST_COLOR} fillOpacity={0.16} isAnimationActive={false} />}
-              <Line dataKey="milk_v" stroke={MILK_COLOR} strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={false} />
+              <Line dataKey="milk_v" stroke={MILK_COLOR} strokeWidth={2} dot={milkDot} connectNulls={false} isAnimationActive={false} />
               <Line dataKey="milk_v_f" stroke={FORECAST_COLOR} strokeWidth={2} strokeDasharray="5 4" dot={false} isAnimationActive={false} />
-              {realised && <Line dataKey="milk_v_r" stroke={MILK_COLOR} strokeWidth={2} dot={outcomeDot(MILK_COLOR)} connectNulls={false} isAnimationActive={false} />}
+              {realised && <Line dataKey="milk_v_r" stroke={MILK_COLOR} strokeWidth={2} dot={outcomeDot(MILK_COLOR)} connectNulls isAnimationActive={false} />}
               {(['milking', 'total_herd'] as const).filter((s) => overlay[s]).flatMap((s) => [
                 <Line key={s} yAxisId="head" dataKey={s} stroke={SERIES_META[s].color} strokeWidth={1.2} strokeOpacity={0.85} dot={false} isAnimationActive={false} />,
                 <Line key={`${s}_f`} yAxisId="head" dataKey={`${s}_f`} stroke={SERIES_META[s].color} strokeWidth={1.2} strokeDasharray="4 3" strokeOpacity={0.85} dot={false} isAnimationActive={false} />,
@@ -200,6 +200,7 @@ export function MasterTimeline({ bands = ['milk', 'cows', 'herd', 'events'], pla
           </ResponsiveContainer>
           <div className="pfie-legend">
             <span><i style={{ background: MILK_COLOR }} />Milk, recorded</span>
+            <span title="Part of the period was not recorded: the value is the average of the recorded days. Shown, not scored."><i style={{ background: '#fff', border: `2px solid ${MILK_COLOR}`, borderRadius: '50%', width: 7, height: 7 }} />Partly recorded (estimate)</span>
             <span><i className="dash" />Forecast</span>
             {realised && <OutcomeLegend color={MILK_COLOR} />}
             {milkMode !== 'per_cow' && <span><i style={{ background: 'rgba(91,127,166,.25)' }} />5–95% range</span>}
@@ -329,6 +330,16 @@ export function MasterTimeline({ bands = ['milk', 'cows', 'herd', 'events'], pla
   );
 }
 
+/** Recorded milk: a dot where a value has no recorded neighbour (else a line would hide it), a ring where
+ *  the period is only partly recorded (an estimate from its recorded days). */
+function milkDot(props: { cx?: number; cy?: number; index?: number; payload?: Row }) {
+  const { cx, cy, index, payload } = props;
+  if (cx == null || cy == null || !payload || typeof payload.milk_v !== 'number') return <g key={`md-${index}`} />;
+  if (payload.milk_v_est) return <circle key={`md-${index}`} cx={cx} cy={cy} r={3} fill="#fff" stroke={MILK_COLOR} strokeWidth={1.6} />;
+  if (payload.milk_v_iso) return <circle key={`md-${index}`} cx={cx} cy={cy} r={2.6} fill={MILK_COLOR} />;
+  return <g key={`md-${index}`} />;
+}
+
 /** Recorded outcomes after the forecast date: the series colour, solid, with ringed dots. */
 const outcomeDot = (color: string, r = 3) => ({ r, fill: '#fff', stroke: color, strokeWidth: 2 });
 
@@ -396,6 +407,11 @@ function withDerived(points: TimelinePoint[], grain: Grain, mode: MilkMode): Row
     const dryR = num(p.dry_r);
     if (milkingR !== null && dryR !== null) row.cows_r = milkingR + dryR;
     return row;
+  }).map((row, i, all) => {
+    /* Flags for the recorded-milk dots: alone between gaps, or estimated from part of the period. */
+    const has = (r?: Row) => !!r && typeof r.milk_v === 'number';
+    if (!has(row)) return row;
+    return { ...row, milk_v_iso: !has(all[i - 1]) && !has(all[i + 1]), milk_v_est: row.milkGap && !row.future };
   });
 }
 
@@ -451,7 +467,8 @@ function MilkTip({ active, payload, grain }: TipProps & { grain: Grain }) {
   if (p.milkSource) rows.push(['Record', p.milkSource === 'shipment' ? 'Shipments' : 'DelPro']);
   const note = p.future
     ? `${p.horizon} ahead · ${confidenceOf(p.quality).toLowerCase()} confidence. Click, then "Explain" for the breakdown.`
-    : p.milkGap ? 'Missing or flagged record: not scored.' : 'Click, then "Explain" for the breakdown.';
+    : p.milkGap ? (perDayV !== null ? 'Partly recorded: average of the recorded days, shown but not scored.'
+      : 'Missing or flagged record: not scored.') : 'Click, then "Explain" for the breakdown.';
   const gapNote = p.future && p.milkGap ? ' The recorded outcome is missing or flagged: not scored.' : '';
   return <TipShell title={p.label} rows={rows} note={note + gapNote} />;
 }

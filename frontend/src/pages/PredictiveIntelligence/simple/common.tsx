@@ -185,6 +185,13 @@ export function NotInRun() {
   return <p className="pfie-mgr-note">{t('Not included in this forecast run.')}</p>;
 }
 
+/** Heat, breeding and mastitis records start at the validation start (newer runs only). */
+export function WindowNote({ run }: { run: PfoiRun }) {
+  const t = useT();
+  const w = run.panels_window;
+  return w ? <p className="pfie-mgr-note">{t('Records from {from} (validation start) to {to} only; nothing earlier is shown.', { from: w.from, to: w.to })}</p> : null;
+}
+
 /** Note shown on monthly-only parts while Daily or Weekly is selected. */
 export function MonthlyOnlyNote({ grain }: { grain: Grain }) {
   const t = useT();

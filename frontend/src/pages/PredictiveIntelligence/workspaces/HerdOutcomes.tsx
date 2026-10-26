@@ -101,7 +101,9 @@ export function HerdOutcomes() {
 
       <Card
         title={<>Mastitis: expected vs recorded <MonthlyOnly /></>}
-        sub={<>Expected episodes = cows at risk × rate from {run.mastitis_rate_period} <KindTag kind="derived" /> · recorded = diagnoses in the records <KindTag kind="measured" /></>}
+        sub={<>{run.mastitis_rate_period
+          ? <>Expected episodes = cows at risk × rate from {run.mastitis_rate_period} <KindTag kind="derived" /></>
+          : <>No expected episodes: no mastitis rate from the validation start on</>} · recorded = diagnoses in the records <KindTag kind="measured" /></>}
       >
         <ResponsiveContainer width="100%" height={230}>
           <ComposedChart data={mastitis} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>

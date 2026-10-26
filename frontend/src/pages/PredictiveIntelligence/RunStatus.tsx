@@ -6,7 +6,7 @@
  */
 
 import { longDate } from '../../data/pfoi';
-import { useRun } from './source';
+import { useModelOrigin, useRun } from './source';
 
 export function RunStatus() {
   const run = useRun();
@@ -26,10 +26,32 @@ export function RunStatus() {
           Origin <b>{longDate(run.origin_date)}</b>
         </span>
         <span title={`Model ${run.model_version} · core ${run.core_version}`}>
-          Run <b>{run.model_version}</b> · core <b>{run.core_version}</b>
+          Run <b>{run.model_version}</b>{run.run_kind ? <> ({run.run_kind})</> : null} · core <b>{run.core_version}</b>
         </span>
       </div>
+      <ModelNotice />
     </>
+  );
+}
+
+/** Says which model's forecast is on screen; warns when an older model's forecast is shown because
+ *  the current model has none for this date. */
+export function ModelNotice() {
+  const run = useRun();
+  const { current, isCurrent, currentFrom, currentTo } = useModelOrigin();
+  if (run.source === 'demo') return null;
+  const kind = run.run_kind ? ` · ${run.run_kind} forecast` : '';
+  if (isCurrent) {
+    return <p className="pfie-model-notice" style={{ margin: '4px 0', fontSize: 12, color: '#4a6a5c' }}>
+      Forecast by <b>{run.model_version}</b>{kind}.</p>;
+  }
+  return (
+    <p className="pfie-model-notice old" role="note" style={{ margin: '6px 0', padding: '6px 10px', fontSize: 12.5,
+      background: '#fbf3e4', border: '1px solid #e6cf9f', borderRadius: 8, color: '#5c4310' }}>
+      ◆ This date shows an <b>older model</b>, <b>{run.model_version}</b>. The current model, <b>{current}</b>,
+      has no forecast for {longDate(run.origin_date)}{currentFrom && currentTo
+        ? <> — its forecasts cover {longDate(currentFrom)} to {longDate(currentTo)}</> : null}.
+    </p>
   );
 }
 

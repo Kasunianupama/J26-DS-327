@@ -285,7 +285,9 @@ function mastitis(run: PfoiRun): SheetSpec {
   const t: TableSpec = { name: 'Mastitis', at: 5, head: ['Month', 'Recorded cases', 'Expected cases'], rows, styles: [undefined, S.dec1, S.dec1] };
   return {
     name: 'Mastitis', widths: [12, 18, 18],
-    rows: header(run, 'Mastitis: expected and recorded cases', `Expected cases use how often mastitis happened in ${run.mastitis_rate_period}. If recorded stays far below expected, cases are probably not all written down. Herd level only.`),
+    rows: header(run, 'Mastitis: expected and recorded cases', run.mastitis_rate_period
+      ? `Expected cases use how often mastitis happened in ${run.mastitis_rate_period}. If recorded stays far below expected, cases are probably not all written down. Herd level only.`
+      : 'No expected cases: there is no mastitis rate from the validation start on. Recorded cases only. Herd level only.'),
     tables: [t],
     charts: [{
       kind: 'combo', title: 'Mastitis cases per month', table: t, catCol: 0,

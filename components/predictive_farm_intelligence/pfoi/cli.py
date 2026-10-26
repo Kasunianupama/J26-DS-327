@@ -3644,6 +3644,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--base", default="pfoi-1.0.0", choices=["pfoi-1.0.0", "pfoi-1.1.0", "pfoi-1.1.1", PP1_DEV_VERSION,
                                                                "pfoi-1.7.0-dev", "pfoi-1.8.0-dev"])
     p.add_argument("--candidate", default="pfoi-1.1.0", choices=["pfoi-1.1.0", "pfoi-1.1.1", PP1_DEV_VERSION,
+                                                               "pfoi-1.2.0-dev-blend",
                                                                "pfoi-1.2.0-dev-persistence", "pfoi-1.2.1-dev",
                                                                "pfoi-1.7.0-dev",
                                                                "pfoi-1.8.0-dev"],

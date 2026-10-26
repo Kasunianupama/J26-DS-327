@@ -1,19 +1,18 @@
 /**
  * Simple view, "One date" tab: every number for the chosen day, week or month
- * with its likely range, and how much of each herd event the records already
- * show. Picking a date also moves the herd movement picture to it.
+ * with its likely range. Picking a date also moves the herd movement picture to it.
  */
 
 import { useEffect } from 'react';
 import {
-  EVENT_SERIES, STOCK_SERIES, confidenceOf, firstTarget, flowSplit, isForecast, type SeriesId,
+  EVENT_SERIES, STOCK_SERIES, confidenceOf, firstTarget, isForecast, type SeriesId,
 } from '../../../data/pfoi';
 import { useRun } from '../source';
 import { usePfoi } from '../state';
 import { useTimelinePoints } from '../panels/MasterTimeline';
 import { periodText, useLang, useT } from './i18n';
 import { Fact, valueAt } from './PointExplain';
-import { Box, Explain, HISTORY, PLAIN_CONFIDENCE, PLAIN_SERIES, SimpleTable, about, hasRange, litres, pct, whole } from './common';
+import { Box, Explain, HISTORY, PLAIN_CONFIDENCE, PLAIN_SERIES, SimpleTable, about, hasRange, litres, whole } from './common';
 
 const SERIES: SeriesId[] = [...STOCK_SERIES, ...EVENT_SERIES, 'mastitis_episodes'];
 
@@ -71,25 +70,7 @@ export function PeriodTab() {
       />
 
       {future && isForecast(run, grain, 'calvings') && (
-        <>
-          <h4 className="pfie-mgr-h4">{t('How sure are the herd events?')}</h4>
-          <div className="pfie-mgr-known">
-            {EVENT_SERIES.map((s) => {
-              const split = flowSplit(run, grain, period, s);
-              if (!split) return null;
-              const total = split.determined + split.rate_driven;
-              const share = total ? split.determined / total : 0;
-              return (
-                <div key={s} className="row">
-                  <span className="nm">{t(PLAIN_SERIES[s])}</span>
-                  <span className="bar" aria-hidden><i style={{ width: `${share * 100}%` }} /></span>
-                  <span className="txt">{!total ? t('none expected') : t('{n} expected · {p} already known', { n: about(total), p: pct(share) })}</span>
-                </div>
-              );
-            })}
-          </div>
-          <Explain>{t('"Already known" means the records already show it, for example a calving from a confirmed pregnancy. The rest is estimated from recent rates.')}</Explain>
-        </>
+        <Explain>{t('"Already known" means the records already show it, for example a calving from a confirmed pregnancy. The rest is estimated from recent rates.')}</Explain>
       )}
     </Box>
   );

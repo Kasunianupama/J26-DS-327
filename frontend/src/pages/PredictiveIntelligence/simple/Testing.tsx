@@ -1,19 +1,17 @@
 /**
- * Simple view, "Model tests" tab: which information helps, what happens when
- * milk records stop, and which sensor signals are used yet. Same rows as the
- * detailed Model evaluation tab; every result keeps its status.
+ * Simple view, "Model tests" tab: what happens when milk records stop, and
+ * which sensor signals are used yet. Same rows as the detailed Model
+ * evaluation tab; every result keeps its status.
  */
 
 import { useState } from 'react';
-import { type EvidenceStatus, type LadderRow } from '../../../data/pfoi';
 import { useRun } from '../source';
-import { Rich, useT, type T } from './i18n';
-import { Box, DemoLine, Explain, NotInRun, PLAIN_STATUS, SimpleTable } from './common';
+import { useT, type T } from './i18n';
+import { Box, DemoLine, Explain, NotInRun, SimpleTable } from './common';
 
 export function TestingTab() {
   return (
     <>
-      <Ladder />
       <Outage />
       <Signals />
     </>
@@ -26,72 +24,6 @@ const ahead = (t: T, g: string, x: string) => {
   if (g === 'weekly') return n === 1 ? t('Next week') : t('Next {n} weeks', { n });
   return n === 1 ? t('Tomorrow') : t('Next {n} days', { n });
 };
-const BAND: Record<LadderRow['band'], string> = { all: 'All periods', normal: 'Normal weather', heat: 'Hot periods', recovery: 'After a gap in records' };
-/* Ladder steps are labelled by the model run (`--rung`); the usual ones in plain words, others as given. */
-const RUNG: Record<string, string> = {
-  persistence: 'Simple rule: same as last time',
-  'current model': 'The forecast model, basic version',
-  '+ recent records': '+ the most recent records',
-  '+ heat': '+ heat stress',
-  '+ sensors': '+ milking-sensor signals',
-  'oracle heat': 'Heat as it really turned out (best case)',
-};
-
-function Status({ s }: { s: EvidenceStatus }) {
-  const t = useT();
-  const m = PLAIN_STATUS[s] ?? { label: s, tone: 'muted' as const };
-  return <span className={`pfie-status ${m.tone}`}>{t(m.label)}</span>;
-}
-
-function Ladder() {
-  const run = useRun();
-  const t = useT();
-  const rows = run.evidence_ladder ?? [];
-  const cells = [...new Set(rows.map((r) => `${r.grain}|${r.horizon}`))];
-  const [cellPick, setCell] = useState<string | null>(null);
-  const [band, setBand] = useState<LadderRow['band']>('all');
-  if (!rows.length) return <Box title={t('Which information helps the forecast')}><NotInRun /></Box>;
-  const cell = cellPick && cells.includes(cellPick) ? cellPick : cells[0];
-  const [grain, h] = cell.split('|');
-  const bands = [...new Set(rows.map((r) => r.band))] as LadderRow['band'][];
-  const b = bands.includes(band) ? band : 'all';
-  const sel = rows.filter((r) => r.grain === grain && String(r.horizon) === h && r.band === b);
-
-  return (
-    <Box
-      title={`${t('Which information helps the forecast')}`}
-      actions={
-        <>
-          <select value={cell} onChange={(e) => setCell(e.target.value)} aria-label={t('Look ahead')}>
-            {cells.map((c) => { const [g, x] = c.split('|'); return <option key={c} value={c}>{ahead(t, g, x)}</option>; })}
-          </select>
-          <select value={b} onChange={(e) => setBand(e.target.value as LadderRow['band'])} aria-label={t('Periods')}>
-            {bands.map((x) => <option key={x} value={x}>{t(BAND[x])}</option>)}
-          </select>
-        </>
-      }
-    >
-      <SimpleTable
-        head={[t('Forecast uses'), t('Error compared with "same as last time"'), t('Cases'), t('How far to trust this result')]}
-        textCols={[3]}
-        rows={sel.map((r) => [
-          <b>{t(RUNG[r.rung] ?? r.rung)}</b>,
-          r.ratio_to_reference == null ? '–' : (
-            <span className={r.ratio_to_reference < 1 ? 'up' : r.ratio_to_reference > 1 ? 'down' : ''}>
-              {r.ratio_to_reference < 1 ? t('{n}% smaller', { n: Math.round((1 - r.ratio_to_reference) * 100) })
-                : r.ratio_to_reference > 1 ? t('{n}% bigger', { n: Math.round((r.ratio_to_reference - 1) * 100) }) : t('the same')}
-            </span>
-          ),
-          r.n,
-          <Status s={r.status} />,
-        ])}
-      />
-      <Explain><Rich text={t('If the error gets smaller as a line is added, that information helps. **"Best case only"** uses the weather that really happened, which nobody knows in advance.')} /></Explain>
-      <DemoLine run={run} />
-    </Box>
-  );
-}
-
 function Outage() {
   const run = useRun();
   const t = useT();

@@ -173,6 +173,8 @@ export interface PfoiRun {
   realised?: ActualRow[];
   /** Last data day whose outcomes `realised` holds, or null. */
   realised_through?: string | null;
+  /** Which kind of forecast this run is: 'live', 'validation', 'test' (newer models). */
+  run_kind?: string;
   /** Forecasts from earlier monthly origins (monthly milk), for the replay. */
   replay: OutlookRow[];
   /** Why the forecast for a target moved between consecutive origins. */
@@ -182,8 +184,12 @@ export interface PfoiRun {
   generations: GenerationRow[];
   fertility: FertilityRow[];
   coverage: CoverageRow[];
-  /** Period the mastitis rate was taken from, shown next to every expected-episode value. */
+  /** Period the mastitis rate was taken from, shown next to every expected-episode value.
+   *  Empty when no rate from the validation start on exists (no expected episodes then). */
   mastitis_rate_period: string;
+  /** Heat, breeding, herd make-up and mastitis rows start here (the validation start);
+   *  breeding rows use `label` as their one period. Missing on older documents. */
+  panels_window?: { from: string; to: string; label: string; note?: string };
   /** Moves between herd groups per period (see MoveRow). */
   moves?: MoveRow[];
 
@@ -404,11 +410,11 @@ export interface RegistryRow {
 export const HORIZONS: Record<Grain, number[]> = {
   day: [1, 7, 14, 30, 91, 182, 365],
   week: [1, 4, 13, 26, 52],
-  month: [1, 3, 6],
+  month: [1, 3, 6, 12],
 };
 
 /** Upper bound of any published step; the run's own last step is view.maxHorizon. */
-export const MAX_HORIZON: Record<Grain, number> = { day: 366, week: 52, month: 12 };
+export const MAX_HORIZON: Record<Grain, number> = { day: 366, week: 52, month: 24 };
 
 /** History shown before the origin, in periods; -1 = all recorded history. */
 export const HISTORY_ALL = -1;

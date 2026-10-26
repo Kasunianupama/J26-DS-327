@@ -233,12 +233,19 @@ class FakeHerdSource:
         out["max_date"] = known_until - timedelta(days=1)
         return self._leaky("cow_open_dim", out, known_until)
 
-    def generation_yield(self, asof):
+    @staticmethod
+    def _periods(asof, since, default):
+        """Calendar periods, or with ``since`` the one window period (as the SQL source)."""
+        from components.predictive_farm_intelligence.pfoi.data import window_label
+
+        return default if since is None else (window_label(since, asof),)
+
+    def generation_yield(self, asof, since=None):
         """Synthetic yield strata (M8): generation 1 yields 10 % more than generation 0 in
         every stratum, but has more early-lactation days (a composition difference)."""
         self.calls.append(("generation_yield", asof))
         rows = []
-        for period in ("2020-2022", "2023-2026"):
+        for period in self._periods(asof, since, ("2020-2022", "2023-2026")):
             for gen, lift, early in (("0", 1.0, 100.0), ("1", 1.1, 300.0)):
                 for par in ("1", "2"):
                     for band, base, days in (("0-60", 12.0, early), ("151-305", 6.0, 200.0)):
@@ -247,10 +254,10 @@ class FakeHerdSource:
         return pd.DataFrame(rows, columns=["period", "generation_group", "parity_group", "dim_band",
                                            "heat_band", "cow_days", "litres"])
 
-    def generation_days(self, asof):
+    def generation_days(self, asof, since=None):
         self.calls.append(("generation_days", asof))
         rows = []
-        for period in ("2020-2022", "2023-2026"):
+        for period in self._periods(asof, since, ("2020-2022", "2023-2026")):
             for gen in ("0", "1"):
                 for par in ("1", "2"):
                     rows += [(period, gen, par, "milking", 3000.0), (period, gen, par, "dry_pregnant", 700.0),
@@ -259,18 +266,19 @@ class FakeHerdSource:
         return pd.DataFrame(rows, columns=["period", "generation_group", "parity_group", "state",
                                            "animal_days"])
 
-    def generation_alarms(self, asof):
+    def generation_alarms(self, asof, since=None):
         self.calls.append(("generation_alarms", asof))
-        return pd.DataFrame([("2023-2026", "0", 1000.0, 50.0, 20.0), ("2023-2026", "1", 800.0, 64.0, 24.0)],
+        p = self._periods(asof, since, ("2023-2026",))[0]
+        return pd.DataFrame([(p, "0", 1000.0, 50.0, 20.0), (p, "1", 800.0, 64.0, 24.0)],
                             columns=["period", "generation_group", "cow_days", "alarm_cow_days",
                                      "persistent_cow_days"])
 
-    def repro_steps(self, asof):
+    def repro_steps(self, asof, since=None):
         """Synthetic reproductive-step counts (M7): per period and parity, first service around
         day 60, conception around day 110, some cows leave or are still open."""
         self.calls.append(("repro_steps", asof))
         rows = []
-        for period in ("2015-2019", "2020-2022", "2023-2026"):
+        for period in self._periods(asof, since, ("2015-2019", "2020-2022", "2023-2026")):
             for par in ("1", "2", "3+"):
                 for step, day, n_ev in (("first_ai", 60, 80), ("conception", 110, 60),
                                         ("calving_interval", 390, 50)):
@@ -442,8 +450,10 @@ class FakeHerdSource:
                              "milk_days_scoreable_pct": 0.95, "weather_complete_pct": 0.9,
                              "health_records": 10, "max_date": end - timedelta(days=1)})
 
-    def generation_fertility(self):
-        return pd.DataFrame({"generation_group": ["0", "1"], "calving_period": ["2020-2022"] * 2,
+    def generation_fertility(self, asof=None, since=None):
+        self.calls.append(("generation_fertility", asof, since))
+        p = "2020-2022" if asof is None or since is None else self._periods(asof, since, ())[0]
+        return pd.DataFrame({"generation_group": ["0", "1"], "calving_period": [p] * 2,
                              "lactations": [100, 80], "conceptions": [70, 50],
                              "services_per_conception": [3.5, 4.2], "pct_aborted": [3.0, 4.0]})
 

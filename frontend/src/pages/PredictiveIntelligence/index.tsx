@@ -14,20 +14,18 @@ import {
 } from '../../data/pfoi';
 import { PfoiProvider, usePfoi, type HerdTab, type Workspace } from './state';
 import { RunProvider, useRun } from './source';
-import { ForecastInfo, RunStatus } from './RunStatus';
+import { RunStatus } from './RunStatus';
 import { FindingsDrawer, PointDrawer } from './panels/Drawers';
 import { FutureWorkspace, OutlookBrief } from './workspaces/Future';
 import { MilkSupply } from './workspaces/MilkSupply';
 import { Reproduction } from './workspaces/Reproduction';
 import { HerdOutcomes } from './workspaces/HerdOutcomes';
 import { HerdGenetics } from './workspaces/HerdGenetics';
-import { ModelEvaluation } from './workspaces/ModelEvaluation';
 import { Tabs } from './ui';
 import { DateField } from './DateField';
 import { Icon, type IconName } from './icons';
 import { MetricDeck } from './deck';
 import { OutcomeBar } from './panels/OutcomeBar';
-import { RecordStatusBanner } from './panels/Pp1Panels';
 import { ManagerView } from './ManagerView';
 import { useUser } from '../../context/UserContext';
 import './pfie.css';
@@ -35,7 +33,6 @@ import './pfie.css';
 const WORKSPACES: { id: Workspace; label: string; icon: IconName }[] = [
   { id: 'outlook', label: 'Farm Outlook', icon: 'outlook' },
   { id: 'herd', label: 'Herd & Production', icon: 'herd' },
-  { id: 'confidence', label: 'Model evaluation', icon: 'confidence' },
 ];
 
 const HERD_TABS: { id: HerdTab; label: string }[] = [
@@ -118,7 +115,7 @@ function Shell() {
             ))}
           </div>
 
-          {workspace !== 'confidence' && <span className="pfie-row tight pfie-horizon">
+          <span className="pfie-row tight pfie-horizon">
             <span className="pfie-seg compact" role="group" aria-label="Forecast grain">
               {GRAINS.map((g) => (
                 <button key={g.id} aria-pressed={grain === g.id} onClick={() => setGrain(g.id)}>{g.label}</button>
@@ -144,7 +141,7 @@ function Shell() {
               historyFrom={historyFrom}
               setHistoryFrom={setHistoryFrom}
             />
-          </span>}
+          </span>
         </nav>}
       </header>
 
@@ -160,13 +157,6 @@ function Shell() {
                 model outputs but is not Farm X data, not a forecast and not a backtest result.
               </div>
             )}
-
-            {/* Run details and record checks live with the model evaluation; Outlook leads with the forecast date and the main numbers. */}
-            {workspace === 'confidence' && <>
-              <ForecastInfo />
-              <RecordStatusBanner />
-              <ModelEvaluation />
-            </>}
 
             {workspace === 'outlook' && <>
               <OutcomeBar />

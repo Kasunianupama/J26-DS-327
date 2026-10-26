@@ -157,10 +157,19 @@ export interface MilkRow {
   band: [number, number] | null;
   actual: number | null;
   lastYear: number | null;
+  /** Recorded value estimated from part of the period (shown, not scored). */
+  partial?: boolean;
+  /** A recorded value with no recorded neighbour (drawn as a dot so it is not lost). */
+  isolated?: boolean;
+  /** Dotted join across a short stretch without records (never across long gaps). */
+  bridge?: number | null;
 }
 
+/** Longest stretch without records that is still joined by a dotted line, per grain. */
+const MAX_BRIDGE: Record<Grain, number> = { day: 7, week: 3, month: 2 };
+
 export function milkRows(run: PfoiRun, grain: Grain, steps: number, label: (p: string) => string, history = HISTORY[grain]): MilkRow[] {
-  return timeline(run, grain, steps, history).map((p) => {
+  const rows: MilkRow[] = timeline(run, grain, steps, history).map((p) => {
     const lyP = yearBefore(p.period, grain);
     const ly = actualRow(run, grain, lyP, 'milk_litres');
     return {
@@ -172,9 +181,37 @@ export function milkRows(run: PfoiRun, grain: Grain, steps: number, label: (p: s
       band: (p.milk_litres_band as [number, number] | undefined) ?? null,
       actual: p.future ? (p.milk_litres_r as number | undefined) ?? null : null,
       lastYear: ly && ly.value !== null ? perDay('milk_litres', ly.value, grain, lyP) : null,
+      partial: !p.future && p.milkGap && typeof p.milk_litres === 'number',
+      bridge: null,
     };
   });
+  /* Join short stretches without records with a dotted line (interpolated), and mark lone values. */
+  const has = (i: number) => i >= 0 && i < rows.length && !rows[i].future && rows[i].recorded !== null;
+  rows.forEach((r, i) => { if (has(i)) r.isolated = !has(i - 1) && !has(i + 1); });
+  let last = -1;
+  rows.forEach((r, i) => {
+    if (!has(i)) return;
+    const gap = i - last - 1;
+    if (last >= 0 && gap > 0 && gap <= MAX_BRIDGE[grain]) {
+      const a = rows[last].recorded as number, b = r.recorded as number;
+      for (let k = last; k <= i; k++) rows[k].bridge = a + ((b - a) * (k - last)) / (i - last);
+      rows[last].isolated = false; r.isolated = false;
+    }
+    last = i;
+  });
+  return rows;
 }
+
+/** Recorded milk: a ring where the period is only partly recorded, a dot for monthly/weekly values and lone days. */
+const recordedDot = (grain: Grain) => function Dot(props: { cx?: number; cy?: number; index?: number; payload?: MilkRow }) {
+  const { cx, cy, index, payload } = props;
+  if (cx == null || cy == null || !payload || payload.recorded === null) return <g key={`rd-${index}`} />;
+  if (payload.partial) return <circle key={`rd-${index}`} cx={cx} cy={cy} r={3.5} fill="#fff" stroke={MILK_COLOR} strokeWidth={2} />;
+  if (grain !== 'day' || payload.isolated) return <circle key={`rd-${index}`} cx={cx} cy={cy} r={grain === 'day' ? 2.5 : 3} fill={MILK_COLOR} />;
+  return <g key={`rd-${index}`} />;
+};
+const ACTUAL_COLOR = '#17231f';
+
 
 export function MilkChart({ selection }: { selection?: PointSelection }) {
   const run = useRun();
@@ -203,9 +240,10 @@ export function MilkChart({ selection }: { selection?: PointSelection }) {
                 <YAxis tick={CHART_TICK} width={58} tickFormatter={(v: number) => fmtInt(v)} domain={['auto', 'auto']} />
                 <Tooltip content={picked ? () => null : <MilkTip grain={grain} />} />
                 <Area dataKey="band" stroke="none" fill={FORECAST_COLOR} fillOpacity={0.14} isAnimationActive={false} />
-                <Line dataKey="recorded" stroke={MILK_COLOR} strokeWidth={3} dot={grain === 'day' ? false : { r: 3 }} connectNulls={false} isAnimationActive={false} />
+                <Line dataKey="bridge" stroke={MILK_COLOR} strokeWidth={1.6} strokeDasharray="2 4" dot={false} connectNulls={false} isAnimationActive={false} />
+                <Line dataKey="recorded" stroke={MILK_COLOR} strokeWidth={3} dot={recordedDot(grain)} connectNulls={false} isAnimationActive={false} />
                 <Line dataKey="expected" stroke={FORECAST_COLOR} strokeWidth={3} strokeDasharray="7 5" dot={false} connectNulls isAnimationActive={false} />
-                {realised && <Scatter dataKey="actual" fill="#fff" stroke="#17231f" strokeWidth={2} isAnimationActive={false} />}
+                {realised && <Line dataKey="actual" stroke={ACTUAL_COLOR} strokeWidth={2} dot={grain === 'day' ? false : { r: 3.5, fill: '#fff', stroke: ACTUAL_COLOR, strokeWidth: 2 }} connectNulls isAnimationActive={false} />}
                 {start && <ReferenceLine x={start} stroke="#17231f" strokeDasharray="3 3" label={{ value: t('Forecast starts'), position: 'top', fontSize: 12, fill: '#34483f' }} />}
                 {pickedLabel && <ReferenceLine x={pickedLabel} stroke={MILK_COLOR} strokeWidth={8} strokeOpacity={0.18} />}
               </ComposedChart>
@@ -213,6 +251,8 @@ export function MilkChart({ selection }: { selection?: PointSelection }) {
           </div>
           <Legend items={[
             { label: t('Recorded'), color: MILK_COLOR },
+            ...(rows.some((r) => r.partial) ? [{ label: t('Partly recorded (estimate)'), kind: 'dot' as const }] : []),
+            ...(rows.some((r) => r.bridge !== null && r.recorded === null) ? [{ label: t('No record (joined)'), color: MILK_COLOR, kind: 'dash' as const }] : []),
             { label: t('Expected'), color: FORECAST_COLOR, kind: 'dash' },
             { label: t('Likely range'), kind: 'band' },
             ...(realised ? [{ label: t('What actually happened'), kind: 'dot' as const }] : []),
@@ -246,7 +286,7 @@ function MilkTip({ active, payload, grain }: { active?: boolean; payload?: { pay
   if (!active || !payload?.length) return null;
   const r = payload[0].payload;
   const rows: [string, string][] = [];
-  if (r.recorded !== null) rows.push([t('Recorded'), `${litres(r.recorded)} L`]);
+  if (r.recorded !== null) rows.push([r.partial ? t('Partly recorded (estimate)') : t('Recorded'), `${litres(r.recorded)} L`]);
   else if (r.expected !== null) rows.push([t('Expected'), `${litres(r.expected)} L`]);
   if (r.future && r.band) rows.push([t('Likely range'), `${litres(r.band[0])} – ${litres(r.band[1])}`]);
   if (r.actual !== null) rows.push([t('What actually happened'), `${litres(r.actual)} L`]);
@@ -298,7 +338,7 @@ export function HerdChart({ selection }: { selection?: PointSelection }) {
                 {pickedLabel && <ReferenceLine x={pickedLabel} stroke={MILK_COLOR} strokeWidth={8} strokeOpacity={0.18} />}
                 {shown.map((s) => <Line key={s} dataKey={s} stroke={COLOR[s]} strokeWidth={s === 'total_herd' ? 3 : 2.2} dot={false} isAnimationActive={false} />)}
                 {shown.map((s) => <Line key={`${s}_f`} dataKey={`${s}_f`} stroke={COLOR[s]} strokeWidth={s === 'total_herd' ? 3 : 2.2} strokeDasharray="7 5" dot={false} isAnimationActive={false} />)}
-                {realised && shown.map((s) => <Scatter key={`${s}_r`} dataKey={`${s}_r`} fill="#fff" stroke={COLOR[s]} strokeWidth={2} isAnimationActive={false} />)}
+                {realised && shown.map((s) => <Line key={`${s}_r`} dataKey={`${s}_r`} stroke={COLOR[s]} strokeWidth={1.6} strokeDasharray={grain === 'day' ? '1 2' : undefined} dot={grain === 'day' ? false : { r: 3, fill: '#fff', stroke: COLOR[s], strokeWidth: 2 }} connectNulls isAnimationActive={false} />)}
                 <Tooltip content={({ active, payload }) => {
                   const r = payload?.[0]?.payload as Record<string, number | string | null> | undefined;
                   if (picked || !active || !r) return null;

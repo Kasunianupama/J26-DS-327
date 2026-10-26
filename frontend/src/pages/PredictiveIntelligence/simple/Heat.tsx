@@ -12,7 +12,7 @@ import { TipShell } from '../ui';
 import { Rich, dateLabel, periodText, useLang, useT } from './i18n';
 import { PickHint, PointExplanation, usePointPick } from './PointExplain';
 import { ChartView, useChartStart } from './ChartView';
-import { Box, CHART_TICK, DemoLine, Explain, FORECAST_COLOR, Legend, NotInRun } from './common';
+import { Box, CHART_TICK, DemoLine, Explain, FORECAST_COLOR, Legend, NotInRun, WindowNote } from './common';
 
 const RECORDED = '#a44b3c';
 const LIMIT = '#a8770a';
@@ -107,6 +107,7 @@ export function HeatTab() {
     <ChartView title={t('Heat stress')} actions={null} controls={controls}>
       {(expanded) => <>
       <p className="pfie-mgr-note">{t('Weather up to {d}', { d: dateLabel(h.last_weather_day, lang) })}</p>
+      <WindowNote run={run} />
       <Explain><Rich text={t('The value is daily maximum **THI (Temperature–Humidity Index)**, combining temperature and humidity. It has **no unit and is not °C**. Higher values mean greater heat stress risk.')} /></Explain>
       <p className="pfie-mgr-note">{t('These are thresholds from this herd’s past weather, not universal safe limits.')}</p>
       {hot !== null && <p className="pfie-mgr-note">

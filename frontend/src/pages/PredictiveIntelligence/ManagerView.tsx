@@ -13,7 +13,8 @@ import {
   confidenceOf, findings, flowTotals, fmtInt, headline, horizonOptions, isForecast, milkBreakdown,
   type Finding, type Grain, type PfoiRun,
 } from '../../data/pfoi';
-import { useRun, useRunPicker } from './source';
+import { useModelOrigin, useRun, useRunPicker } from './source';
+import { ModelNotice } from './RunStatus';
 import { usePfoi } from './state';
 import { Icon } from './icons';
 import { LangProvider, Rich, aheadText, dateLabel, periodText, useLang, useT, type T } from './simple/i18n';
@@ -43,6 +44,7 @@ export function ManagerView({ onDetailed }: { onDetailed: () => void }) {
 }
 
 const GRAINS: { id: Grain; label: string }[] = [
+  { id: 'day', label: 'Daily' },
   { id: 'week', label: 'Weekly' },
   { id: 'month', label: 'Monthly' },
 ];
@@ -155,6 +157,7 @@ function ForecastDate() {
   const t = useT();
   const { lang } = useLang();
   const { origins, origin, setOrigin, loading } = useRunPicker();
+  const { models, current } = useModelOrigin();
   const latest = origins[origins.length - 1];
   const [open, setOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
@@ -218,6 +221,7 @@ function ForecastDate() {
                   >
                     <span>{dateLabel(o, lang)}</span>
                     {o === latest && <small>{t('latest')}</small>}
+                    {models[o] && models[o] !== current && <small title={models[o]} style={{ color: '#8a6414' }}>{t('older model')}</small>}
                     {o === origin && <b aria-hidden>✓</b>}
                   </button>
                 ))}
@@ -229,6 +233,7 @@ function ForecastDate() {
         </>
       ) : <b>{dateLabel(run.origin_date, lang)}</b>}
       {loading && <span className="muted">…</span>}
+      <ModelNotice />
     </span>
   );
 }
@@ -286,9 +291,13 @@ function ShortAnswer({ steps }: { steps: number }) {
           change={mc} foot={milk ? (hasRange(milk.lower, milk.upper) ? t('likely {a} – {b}', { a: litres(milk.lower), b: litres(milk.upper) }) : t('no likely range published')) : undefined} />
         <Tile label={t('Cows in milk')} value={cows ? fmtInt(cows.value) : '—'}
           change={cc} foot={cows && hasRange(cows.lower, cows.upper) ? t('likely {a} – {b}', { a: fmtInt(cows.lower), b: fmtInt(cows.upper) }) : undefined} />
-        <Tile label={`${t('Calvings')} · ${ahead}`} value={calvings ? fmtInt(calvings.total) : '—'}
-          foot={calvings && calvings.total > 0 ? t('{n}% already known in calf', { n: Math.round((calvings.determined / calvings.total) * 100) }) : undefined} />
-        <Tile label={`${t('Mastitis cases')} · ${ahead}`} value={mastitis ? `~${fmtInt(mastitis.pathTotal)}` : '—'} foot={t('rough guide')} />
+        {calvings && Math.round(calvings.total) > 0 && (
+          <Tile label={`${t('Calvings')} · ${ahead}`} value={fmtInt(calvings.total)}
+            foot={t('{n}% already known in calf', { n: Math.round((calvings.determined / calvings.total) * 100) })} />
+        )}
+        {mastitis && Math.round(mastitis.pathTotal) > 0 && (
+          <Tile label={`${t('Mastitis cases')} · ${ahead}`} value={`~${fmtInt(mastitis.pathTotal)}`} foot={t('rough guide')} />
+        )}
       </div>
     </section>
   );

@@ -1,23 +1,20 @@
 /**
  * Simple view, "How far to trust this" tab: how close the forecast came, the
  * forecast against simple rules of thumb, accuracy by record quality, the
- * record checks, what the records cover, and a look back at an earlier
- * forecast. Same rows as the detailed Forecast Confidence workspace.
+ * record checks and what the records cover. Same rows as the detailed
+ * Forecast Confidence workspace.
  */
 
-import { useMemo, useState } from 'react';
-import { Area, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { useState } from 'react';
 import {
-  confidenceOf, fmtInt, hasRealised, headline, isForecast, outcomeScore, replayOrigins, replayPath,
+  confidenceOf, fmtInt, hasRealised, headline, isForecast, outcomeScore,
   type BacktestRow, type BenchmarkModel, type SeriesId,
 } from '../../../data/pfoi';
 import { useRun } from '../source';
 import { usePfoi } from '../state';
-import { TipShell } from '../ui';
-import { Rich, aheadText, dateLabel, perGrain, periodText, useLang, useT } from './i18n';
-import { Reasons } from './Reasons';
+import { Rich, aheadText, dateLabel, perGrain, useLang, useT } from './i18n';
 import {
-  Box, CHART_TICK, DemoLine, Explain, FORECAST_COLOR, Legend, MILK_COLOR, PLAIN_CONFIDENCE, PLAIN_SERIES, SimpleTable, litres, pct,
+  Box, DemoLine, Explain, PLAIN_CONFIDENCE, PLAIN_SERIES, SimpleTable, litres, pct,
 } from './common';
 
 export function TrustTab() {
@@ -28,7 +25,6 @@ export function TrustTab() {
       <ByRecordQuality />
       <RecordChecks />
       <Coverage />
-      <LookBack />
     </>
   );
 }
@@ -206,88 +202,6 @@ function Coverage() {
         rows={run.coverage.map((c) => [c.year, fmtInt(c.reliable_cow_days), pct(c.milk_days_scoreable_pct), pct(c.weather_complete_pct), fmtInt(c.health_records)])}
       />
       <Explain>{t('A "cow-day" is one cow on one day. More good records make a more reliable forecast.')}</Explain>
-    </Box>
-  );
-}
-
-function LookBack() {
-  const run = useRun();
-  const t = useT();
-  const { lang } = useLang();
-  const origins = replayOrigins(run);
-  const [origin, setOrigin] = useState(() => [...origins].reverse()
-    .find((o) => replayPath(run, o).filter((p) => p.actual !== null && p.scoreable).length >= 6)
-    ?? origins[Math.max(0, origins.length - 7)] ?? '');
-  const path = useMemo(() => replayPath(run, origin).map((p) => ({ ...p, label: periodText(p.period, 'month', lang, true) })), [run, origin, lang]);
-  const prev = origins[origins.indexOf(origin) - 1];
-  const targets = path.filter((p) => prev && p.horizon <= 11).map((p) => p.period);
-  const [target, setTarget] = useState<string | null>(null);
-  const shown = target && targets.includes(target) ? target : targets[0] ?? null;
-  const scored = path.filter((p) => p.actual !== null && p.scoreable);
-  const inside = scored.filter((p) => p.actual! >= p.band[0] && p.actual! <= p.band[1]).length;
-  if (!origins.length) return null;
-
-  return (
-    <Box
-      title={`${t('Look back: an earlier forecast')}`}
-      sub={`${t('By month')}`}
-      actions={
-        <label className="pfie-mgr-select">{t('Made in')}
-          <select value={origin} onChange={(e) => { setOrigin(e.target.value); setTarget(null); }}>
-            {origins.map((o) => <option key={o} value={o}>{periodText(o, 'month', lang)}</option>)}
-          </select>
-        </label>
-      }
-    >
-      <p className="pfie-mgr-lead">
-        {scored.length > 0
-          ? <Rich text={t('The real milk was inside the likely range in **{a} of {b}** months.', { a: inside, b: scored.length })} />
-          : t('What happened is not recorded yet for these months.')}
-      </p>
-      <div style={{ height: 240 }}>
-        <ResponsiveContainer>
-          <ComposedChart data={path} margin={{ top: 12, right: 12, bottom: 0, left: 0 }}>
-            <CartesianGrid stroke="#eef2f0" vertical={false} />
-            <XAxis dataKey="label" tick={CHART_TICK} />
-            <YAxis tick={CHART_TICK} width={58} tickFormatter={(v: number) => fmtInt(v)} domain={['auto', 'auto']} />
-            <Area dataKey="band" stroke="none" fill={FORECAST_COLOR} fillOpacity={0.14} isAnimationActive={false} />
-            <Line dataKey="forecast" stroke={FORECAST_COLOR} strokeDasharray="7 5" strokeWidth={2.5} dot={false} isAnimationActive={false} />
-            <Line dataKey="actual" stroke={MILK_COLOR} strokeWidth={2.5} dot={{ r: 3 }} connectNulls={false} isAnimationActive={false} />
-            <Tooltip content={({ active, payload }) => {
-              const p = payload?.[0]?.payload as (typeof path)[number] | undefined;
-              if (!active || !p) return null;
-              return <TipShell title={periodText(p.period, 'month', lang)} rows={[
-                [t('Forecast then'), `${litres(p.forecast)} L`, FORECAST_COLOR],
-                [t('Likely range'), `${litres(p.band[0])} – ${litres(p.band[1])}`],
-                [t('What happened'), p.actual !== null ? `${litres(p.actual)} L` : '—', MILK_COLOR],
-              ]} />;
-            }} />
-          </ComposedChart>
-        </ResponsiveContainer>
-      </div>
-      <Legend items={[{ label: t('Forecast then'), color: FORECAST_COLOR, kind: 'dash' }, { label: t('Likely range'), kind: 'band' }, { label: t('What happened'), color: MILK_COLOR }]} />
-
-      {prev && shown && (() => {
-        const rev = run.revisions.filter((r) => r.origin_date === origin && r.target_period === shown);
-        const parts = rev.map((r) => ({ factor: r.factor, value: r.contribution }));
-        const now = path.find((p) => p.period === shown)?.forecast ?? 0;
-        const delta = parts.reduce((s, p) => s + p.value, 0);
-        return (
-          <>
-            <div className="pfie-mgr-card-head">
-              <h4 className="pfie-mgr-h4">{t('Why did this forecast change from the month before?')}</h4>
-              <label className="pfie-mgr-select pfie-noprint">
-                <select value={shown} onChange={(e) => setTarget(e.target.value)} aria-label={t('Month')}>
-                  {targets.map((x) => <option key={x} value={x}>{periodText(x, 'month', lang)}</option>)}
-                </select>
-              </label>
-            </div>
-            <Reasons parts={parts} start={now - delta} end={now} isPast={false}
-              fromLabel={t('the {m} forecast', { m: periodText(prev, 'month', lang) })} toLabel={t('the {m} forecast', { m: periodText(origin, 'month', lang) })} />
-          </>
-        );
-      })()}
-      <DemoLine run={run} />
     </Box>
   );
 }

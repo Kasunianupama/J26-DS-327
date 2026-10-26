@@ -8,13 +8,15 @@ import { useState } from 'react';
 import { firstTarget, fmtInt, type ReproStepRow } from '../../../data/pfoi';
 import { useRun } from '../source';
 import { Rich, periodText, useLang, useT } from './i18n';
-import { Box, DemoLine, Explain, NotInRun, SimpleTable, pct } from './common';
+import { Box, DemoLine, Explain, NotInRun, SimpleTable, WindowNote, pct } from './common';
 
 const GENS = ['0', '1', '2', '3+'] as const;
 
 export function BreedingTab() {
+  const run = useRun();
   return (
     <>
+      <WindowNote run={run} />
       <Timing />
       <Fertility />
       <MakeUp />
@@ -91,8 +93,11 @@ function Fertility() {
           ['', t('Pregnancies lost'), ...gens.map((g) => { const c = cell(p, g); return c ? `${c.abortion_pct.toFixed(1)}%` : '–'; })],
         ])}
       />
-      <Explain title={t('What is a generation?')}>
-        <Rich text={t('How many generations of a cow\'s mother line were born on this farm (0 = the starting point). **Fewer services per pregnancy is better.** Compare within the same years only.')} />
+      <Explain>
+        <p><Rich text={t('**Generation** counts how many generations of a cow\'s mother line were born on this farm. Gen 0 cows were bought in or were here at the start; Gen 1 are their daughters and Gen 2 their granddaughters.')} /></p>
+        <p><Rich text={t('**Services per pregnancy** is the average number of inseminations a cow needed before she became pregnant. 1.0 means every cow became pregnant at the first service. **Lower is better.** Cows that never became pregnant are not counted.')} /></p>
+        <p><Rich text={t('**Pregnancies lost** is the share of lactations in which a pregnancy was lost (abortion). **Lower is better.**')} /></p>
+        <p><Rich text={t('Compare generations **within the same years only**. Later generations exist only in later years, so differences across years mix up time and generation. These are past records, not forecasts, and they do not show genetic effects.')} /></p>
       </Explain>
     </Box>
   );

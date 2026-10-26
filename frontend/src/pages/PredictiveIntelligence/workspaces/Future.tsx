@@ -75,9 +75,6 @@ export function FutureWorkspace() {
             <button className="pfie-btn" onClick={() => openDrawer({ kind: 'point', period: milk!.period, grain })}>
               Explain {periodLabel(milk!.period, grain)} <Icon name="arrowRight" size={13} />
             </button>
-            <button className="pfie-btn" onClick={() => go('confidence')}>
-              How accurate has this been? <Icon name="arrowRight" size={13} />
-            </button>
           </div>
         </Card>
       )}

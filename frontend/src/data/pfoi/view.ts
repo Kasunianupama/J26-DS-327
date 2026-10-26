@@ -171,7 +171,8 @@ export function timeline(run: PfoiRun, grain: Grain, horizon: number, history = 
       }
       if (future) {
         const r = realisedRow(run, grain, period, s);
-        if (r && r.value !== null && r.scoreable) p[`${s}_r`] = round2(perDay(s, r.value, grain, period));
+        /* Drawn whenever recorded (partly recorded periods too, shaded as a gap); only scoreable ones are scored. */
+        if (r && r.value !== null) p[`${s}_r`] = round2(perDay(s, r.value, grain, period));
         if (s === 'milk_litres' && r) {
           p.milkSource = r.source;
           p.milkGap = r.value === null || !r.scoreable;
@@ -469,7 +470,8 @@ export function findings(run: PfoiRun): Finding[] {
     expectedMilking += actualRow(run, 'month', m, 'milking')?.value ?? 0;
   }
   const nextYear = flowlessSum(run, 'mastitis_episodes');
-  out.push({
+  // No rate from the validation start on: no expected episodes to compare with.
+  if (run.mastitis_rate_period) out.push({
     id: 'mastitis-gap',
     kind: 'Data limitation',
     severity: 'attention',

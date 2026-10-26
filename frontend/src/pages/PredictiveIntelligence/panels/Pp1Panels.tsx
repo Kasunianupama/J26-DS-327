@@ -153,7 +153,7 @@ export function HeatOutlook() {
       </ResponsiveContainer>
       <p className="pfie-chart-note">
         Heat is measured against this herd&apos;s own past daily max THI (75th percentile {h.knot_p75 ?? '–'}, 90th {h.knot_p90 ?? '–'}),
-        not a universal threshold. Source: {h.source}. Whether heat improves the milk forecast is shown in Model evaluation.
+        not a universal threshold. Source: {h.source}.
       </p>
       <DemoNote run={run} />
     </Card>

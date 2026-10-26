@@ -24,7 +24,6 @@ import {
   SERIES_META,
   fmt1,
   fmtInt,
-  fmtSigned,
   type MoveGroup,
   type MoveRow,
   type SeriesId,
@@ -383,12 +382,6 @@ export function HerdMovement() {
                   <tspan className="sep"> · </tspan>
                   <tspan className={out >= 0.05 ? 'out' : 'none'}>{out >= 0.05 ? `−${fmt1(out)}` : '−0'}</tspan>
                 </text>
-                {delta !== null && delta !== 0 && (
-                  <text x={cx + r * 0.75} y={cy - r * 0.75} className={`delta ${delta > 0 ? 'up' : 'down'}`}>
-                    <title>{`Head count ${delta > 0 ? 'up' : 'down'} ${Math.abs(delta)} on the previous ${grain}`}</title>
-                    {fmtSigned(delta)}
-                  </text>
-                )}
                 {arrived >= 0.05 && (
                   <text x={cx - r * 0.7 - 20} y={cy - r * 0.7 - 20} className="stub in" textAnchor="end">+{fmt1(arrived)}</text>
                 )}
